@@ -1,0 +1,38 @@
+sequenceDiagram
+  autonumber
+  actor U as Operator
+  participant CLI as cli.ts
+  participant CMD as cmdAsk
+  participant APR as approval.ts
+  participant REG as AdapterRegistry
+  participant SESS as session store
+  participant AD as Adapter
+  participant LAD as modelLadder
+  participant EX as exec.ts
+  participant AG as Local CLI
+
+  U->>CLI: agentctl ask --to agent
+  CLI->>CMD: prompt + opts
+  CMD->>APR: assertApproved(prompt)
+  alt destructive intent without --approve
+    APR-->>U: exit 3 blocked
+  end
+  CMD->>REG: get adapter + check capabilities
+  opt --session or --resume
+    CMD->>SESS: load or create session
+    Note over SESS: claude native resume id<br/>others prepend transcript
+  end
+  CMD->>AD: invoke(AdapterRequest)
+  loop model tier step-down
+    AD->>EX: run(argv[])
+    EX->>AG: subprocess stdin prompt
+    AG-->>EX: stdout stderr
+    EX-->>AD: ExecOutcome
+    alt usage limit exhausted
+      AD->>LAD: next model in ladder
+      LAD->>SESS: limits.json cooldown
+    end
+  end
+  AD-->>CMD: AdapterResult text usage
+  CMD->>SESS: saveSession turns native ids
+  CMD-->>U: output exit 0 or 1

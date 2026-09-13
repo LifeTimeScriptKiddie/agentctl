@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.agentctl/
+*.log
+.DS_Store
+# agentctl run outputs in examples are ephemeral
+examples/**/candidates/
+examples/**/evaluations/
+examples/**/trace.jsonl
+examples/**/final.md
+examples/**/failure-report.md
+examples/**/.run.lock
+*.tgz
+
+.loopctl/
+.env
+.env.*
+*.sqlite
+*.db
+*.pem
+*.key
+.build-out.txt
+
+__pycache__/
+*.pyc

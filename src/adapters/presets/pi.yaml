@@ -1,0 +1,37 @@
+name: pi
+family: subprocess
+transport: subprocess
+parse: text
+optional: true
+# Pi's -p switch selects non-interactive print mode; the prompt itself is the
+# final argv value. Keep sessions off here because agentctl owns orchestration
+# state, and expose only read-only context tools in this lane.
+promptDelivery: arg
+commandTemplate:
+  - pi
+  - -p
+  - --mode
+  - text
+  - --no-session
+  - --tools
+  - read,grep,find,ls
+  - "{prompt}"
+# Example provider-qualified model roster. Configure these for your provider account.
+models:
+  flag: --model
+  default: openai-codex/gpt-5.6-luna
+  options:
+    - openai-codex/gpt-5.3-codex-spark
+    - openai-codex/gpt-5.6-luna
+    - openai-codex/gpt-5.6-terra
+    - openai-codex/gpt-5.6-sol
+    - openai-codex/gpt-6-astra
+healthProbe: [which, pi]
+capabilities:
+  canReadFiles: true
+  canWriteFiles: false
+  canRunShell: false
+  canAccessNetwork: false
+  canUseBrowser: false
+  canModifyRepo: false
+  canPublish: false

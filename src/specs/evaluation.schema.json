@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "needsUserInput": {
+      "default": false,
+      "type": "boolean"
+    },
+    "checks": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "passed"
+        ]
+      }
+    },
+    "failures": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "repairable": {
+            "default": true,
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "message"
+        ]
+      }
+    },
+    "revisionInstructions": {
+      "default": "",
+      "type": "string"
+    },
+    "confidence": {
+      "default": 0.5,
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": [
+    "iteration",
+    "passed",
+    "score"
+  ]
+}

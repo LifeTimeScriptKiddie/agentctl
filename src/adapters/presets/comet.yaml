@@ -1,0 +1,25 @@
+name: comet
+family: browser
+transport: browser
+parse: text
+optional: true
+# Drives perplexity.ai in a dedicated, Playwright-controlled browser. NOTE: Comet
+# disables the browser-context CDP methods Playwright needs, so connectOverCDP
+# can't attach to it — we drive Google Chrome instead (same Perplexity result;
+# the adapter uses no Comet-specific features). Read-only / evidence role.
+# Dedicated debug port (9333) so it never collides with your real Comet/Chrome.
+cdpEndpoint: "http://127.0.0.1:9333"
+# Auto-launch a dedicated Chrome instance (separate profile + debug port) if none
+# is reachable — so you never touch your main browser. Log into Perplexity once
+# in the managed window; the profile persists.
+autoLaunch: false
+appName: Google Chrome
+userDataDir: null   # → ~/.agentctl/chrome-profile
+capabilities:
+  canReadFiles: false
+  canWriteFiles: false
+  canRunShell: false
+  canAccessNetwork: true
+  canUseBrowser: true
+  canModifyRepo: false
+  canPublish: false

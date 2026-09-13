@@ -1,0 +1,31 @@
+flowchart TD
+  START(["agentctl run run-dir"]) --> DRY{--dry-run?}
+  DRY -->|yes| DRYAD["swap adapters → dryRun"]
+  DRY -->|no| LOAD["load run.yaml task.md rubric.md"]
+  DRYAD --> LOAD
+  LOAD --> LOCK["acquire .run.lock"]
+  LOCK --> LOOP{"iteration ≤ maxIterations<br/>and status running"}
+
+  LOOP --> GEN["generator adapter<br/>buildGeneratorPrompt"]
+  GEN --> CAND["write candidates/iter-NNN.md"]
+  CAND --> VAL["validators.ts<br/>headings · forbidden patterns"]
+  VAL -->|checks fail| DFAIL["deterministic fail evaluation"]
+  VAL -->|checks pass| EVAL["evaluator adapter<br/>buildEvaluatorPrompt"]
+  EVAL --> EJSON["write evaluations/iter-NNN.json"]
+  DFAIL --> EJSON
+  EJSON --> DEC["policy.ts decide()"]
+
+  DEC -->|accept| PASS["write final.md<br/>status passed"]
+  DEC -->|pause| PAUSE["status paused<br/>needs user input"]
+  DEC -->|stop| FAIL["write failure-report.md"]
+  DEC -->|retry| REV["revision instructions<br/>to next generator turn"]
+  REV --> LOOP
+
+  GEN --> TRACE["append trace.jsonl redacted"]
+  EVAL --> TRACE
+  DEC --> TRACE
+  DEC --> STATE["save state.json"]
+
+  PASS --> UNLOCK["release lock"]
+  PAUSE --> UNLOCK
+  FAIL --> UNLOCK

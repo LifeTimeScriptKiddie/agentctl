@@ -1,0 +1,12 @@
+name: dry_run
+family: dry_run
+transport: dry_run
+parse: text
+# A built-in offline adapter (no external calls). Naming it as generator/evaluator
+# in run.yaml yields a generic always-passing loop; `run --dry-run` seeds a
+# validation-aware variant instead.
+capabilities:
+  canReadFiles: true
+  canWriteFiles: false
+  canModifyRepo: false
+  canPublish: false

@@ -1,0 +1,373 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "agents": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "subprocess",
+              "docker_exec",
+              "browser",
+              "dry_run"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "subprocess",
+              "docker_exec",
+              "browser",
+              "dry_run"
+            ]
+          },
+          "parse": {
+            "default": "text",
+            "type": "string",
+            "enum": [
+              "claude_json",
+              "codex_lastmsg",
+              "agy_json",
+              "text",
+              "json_extract"
+            ]
+          },
+          "optional": {
+            "default": false,
+            "type": "boolean"
+          },
+          "capabilities": {
+            "default": {
+              "canReadFiles": false,
+              "canWriteFiles": false,
+              "canRunShell": false,
+              "canAccessNetwork": false,
+              "canUseBrowser": false,
+              "canModifyRepo": false,
+              "canPublish": false
+            },
+            "type": "object",
+            "properties": {
+              "canReadFiles": {
+                "default": false,
+                "type": "boolean"
+              },
+              "canWriteFiles": {
+                "default": false,
+                "type": "boolean"
+              },
+              "canRunShell": {
+                "default": false,
+                "type": "boolean"
+              },
+              "canAccessNetwork": {
+                "default": false,
+                "type": "boolean"
+              },
+              "canUseBrowser": {
+                "default": false,
+                "type": "boolean"
+              },
+              "canModifyRepo": {
+                "default": false,
+                "type": "boolean"
+              },
+              "canPublish": {
+                "default": false,
+                "type": "boolean"
+              }
+            }
+          },
+          "commandTemplate": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "promptDelivery": {
+            "default": "arg",
+            "type": "string",
+            "enum": [
+              "arg",
+              "stdin",
+              "file"
+            ]
+          },
+          "promptPrefix": {
+            "default": "",
+            "type": "string"
+          },
+          "environment": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "workdir": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedToolsFlag": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modelFlag": {
+            "default": "-m",
+            "type": "string"
+          },
+          "models": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "flag": {
+                    "default": "-m",
+                    "type": "string"
+                  },
+                  "default": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "stepDown": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effort": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "flag": {
+                    "default": "-c",
+                    "type": "string"
+                  },
+                  "key": {
+                    "default": "model_reasoning_effort",
+                    "type": "string"
+                  },
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "default"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "supportsResume": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "idFrom": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "json_session_id",
+                          "codex_thread",
+                          "agy_conversation"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "resumeStyle": {
+                    "default": "append_flag",
+                    "type": "string",
+                    "enum": [
+                      "append_flag",
+                      "codex_resume"
+                    ]
+                  },
+                  "resumeFlag": {
+                    "default": "--resume",
+                    "type": "string"
+                  },
+                  "resumeExtraArgs": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "containerResolve": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "preferName": {
+                    "type": "string"
+                  },
+                  "byImage": {
+                    "type": "string"
+                  },
+                  "rejectAutoremove": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "preferName",
+                  "byImage"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "toolsets": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cdpEndpoint": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "autoLaunch": {
+            "default": false,
+            "type": "boolean"
+          },
+          "appName": {
+            "default": "Comet",
+            "type": "string"
+          },
+          "userDataDir": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "healthProbe": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "family",
+          "transport"
+        ]
+      }
+    }
+  },
+  "required": [
+    "agents"
+  ]
+}

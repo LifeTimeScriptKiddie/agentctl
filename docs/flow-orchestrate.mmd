@@ -1,0 +1,35 @@
+flowchart TD
+  START(["agentctl orchestrate goal"]) --> APR["approval on goal text"]
+  APR --> PLAN["claude opus planner<br/>JSON plan"]
+  PLAN --> DRY{--dry-plan?}
+  DRY -->|yes| SHOW["print plan exit"]
+  DRY -->|no| RESUME{--resume?}
+  RESUME -->|yes| LOAD["load orchestrations/hash.json"]
+  RESUME -->|no| STEPS
+  LOAD --> STEPS
+
+  subgraph STEPS["Per step loop"]
+    S1["routeStepAgent<br/>needs capabilities hard filter"]
+    S2["approveStep instruction"]
+    S3["dispatch worker agent<br/>claude→sonnet codex→shell"]
+    S4["claude opus verify<br/>accept retry fail"]
+    S1 --> S2
+    S2 -->|blocked| BLOCKED["status blocked"]
+    S2 -->|ok| S3 --> S4
+    S4 -->|fail retries left| S3
+    S4 -->|fail replans left| REPLAN["opus replan"]
+    REPLAN --> S1
+    S4 -->|pass| NEXT["next step"]
+  end
+
+  STEPS --> BUDGET{budget exceeded?}
+  BUDGET -->|yes| BSTOP["status budget"]
+  BUDGET -->|no| MORE{more steps?}
+  MORE -->|yes| STEPS
+  MORE -->|no| SYNTH{--no-synth?}
+  SYNTH -->|no| SYN["opus synthesis"]
+  SYNTH -->|yes| DONE
+  SYN --> DONE(["status done + save run json"])
+  BLOCKED --> SAVE
+  BSTOP --> SAVE
+  DONE --> SAVE["route-log.jsonl + orchestrations/hash.json"]
