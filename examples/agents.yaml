@@ -1,0 +1,24 @@
+# Optional workspace overrides. Entries override packaged presets by name or
+# register a new prompt-in/answer-out CLI. No TypeScript adapter is needed for
+# ordinary subprocess agents.
+agents:
+  # Example only: uncomment and adapt for a CLI that reads a prompt from stdin
+  # and writes its final answer as plain text.
+  # local_llm:
+  #   name: local_llm
+  #   family: subprocess
+  #   transport: subprocess
+  #   parse: text
+  #   promptDelivery: stdin
+  #   commandTemplate: [my-llm, run, --plain]
+  #   models:
+  #     flag: --model
+  #     default: balanced
+  #     options: [fast, balanced, deep]
+  #   healthProbe: [which, my-llm]
+  #   capabilities:
+  #     canReadFiles: false
+  #     canRunShell: false
+  #     canAccessNetwork: false
+  #     canModifyRepo: false
+  #     canPublish: false

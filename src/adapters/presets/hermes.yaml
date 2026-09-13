@@ -1,0 +1,18 @@
+name: hermes
+family: docker_exec
+transport: docker_exec
+parse: text
+containerResolve:
+  preferName: hermes-gateway-local      # the persistent gateway container
+  byImage: nousresearch/hermes-agent     # fallback discovery by image
+  rejectAutoremove: true                 # never bind the transient *-cli-run-* container
+# Pin a toolset to constrain Hermes' tools once valid toolset names are confirmed
+# at smoke time (hermes -z PROMPT -t TOOLSETS). Left null until verified to avoid
+# passing an unverified flag value that could error.
+toolsets: null
+capabilities:
+  canReadFiles: true
+  canRunShell: true
+  canAccessNetwork: true
+  canModifyRepo: false
+  canPublish: false

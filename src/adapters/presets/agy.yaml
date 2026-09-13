@@ -1,0 +1,38 @@
+name: agy
+family: subprocess
+transport: subprocess
+parse: agy_json
+optional: true
+promptDelivery: arg
+promptPrefix: |-
+  For current or online facts, use the built-in web search tool directly and
+  include source URLs in the final answer. Never run Bash, terminal, or any
+  command. If the request asks for image generation or editing, use the
+  nanobanana MCP tools directly and report the generated file path(s). Return
+  only the final answer for the user.
+
+  User task:
+
+
+commandTemplate:
+  - agy
+  - --prompt
+  - "{prompt}"
+  - --output-format
+  - json
+# Native Antigravity conversations can be resumed by id when callers opt into
+# agentctl sessions; without --session, every call remains an independent turn.
+session:
+  supportsResume: true
+  idFrom: agy_conversation
+  resumeStyle: append_flag
+  resumeFlag: --conversation
+healthProbe: [which, agy]
+capabilities:
+  canReadFiles: true
+  canWriteFiles: true
+  canRunShell: false
+  canAccessNetwork: true
+  canUseBrowser: false
+  canModifyRepo: false
+  canPublish: false

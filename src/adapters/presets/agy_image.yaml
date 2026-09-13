@@ -1,0 +1,39 @@
+name: agy_image
+family: subprocess
+transport: subprocess
+parse: agy_json
+optional: true
+promptDelivery: arg
+promptPrefix: |-
+  You are the Antigravity NanoBanana image lane. Use the nanobanana MCP server
+  tools directly: generate_image for new images, edit_image for existing images,
+  restore_image for restoration, and the specialized icon/pattern/story/diagram
+  tools when appropriate. Execute the tool call; do not merely describe an
+  image. If a NanoBanana tool reports an error or no model capacity, stop and
+  return that provider error clearly. Never use Bash, Python, a terminal, or a
+  fallback command to draw or create an image. Report generated file path(s)
+  and any error clearly.
+
+  User image request:
+
+
+commandTemplate:
+  - agy
+  - --prompt
+  - "{prompt}"
+  - --output-format
+  - json
+session:
+  supportsResume: true
+  idFrom: agy_conversation
+  resumeStyle: append_flag
+  resumeFlag: --conversation
+healthProbe: [which, agy]
+capabilities:
+  canReadFiles: true
+  canWriteFiles: true
+  canRunShell: false
+  canAccessNetwork: true
+  canUseBrowser: false
+  canModifyRepo: false
+  canPublish: false

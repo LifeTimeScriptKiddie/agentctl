@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "adapter": {
+      "type": "string"
+    },
+    "transport": {
+      "type": "string",
+      "enum": [
+        "subprocess",
+        "docker_exec",
+        "browser",
+        "dry_run"
+      ]
+    },
+    "exitCode": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "stdout": {
+      "default": "",
+      "type": "string"
+    },
+    "stderr": {
+      "default": "",
+      "type": "string"
+    },
+    "normalizedText": {
+      "default": "",
+      "type": "string"
+    },
+    "normalizedJson": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usage": {
+      "default": {
+        "inputTokens": null,
+        "outputTokens": null,
+        "costUsd": null
+      },
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "default": null,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputTokens": {
+          "default": null,
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "costUsd": {
+          "default": null,
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "failureClass": {
+      "default": "none",
+      "type": "string",
+      "enum": [
+        "none",
+        "not_configured",
+        "timeout",
+        "nonzero_exit",
+        "parse_error",
+        "transport_error",
+        "usage_limit"
+      ]
+    },
+    "rawPath": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sessionId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "steppedDown": {
+      "default": 0,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "ok",
+    "adapter",
+    "transport",
+    "exitCode",
+    "durationMs"
+  ]
+}

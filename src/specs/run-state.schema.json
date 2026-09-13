@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "status": {
+      "default": "initialized",
+      "type": "string",
+      "enum": [
+        "initialized",
+        "running",
+        "passed",
+        "stopped",
+        "paused",
+        "failed"
+      ]
+    },
+    "iteration": {
+      "default": 0,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "maxIterations": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "taskType": {
+      "default": "document_draft",
+      "type": "string",
+      "enum": [
+        "document_draft",
+        "code_patch",
+        "research_note",
+        "tool_enabled_task"
+      ]
+    },
+    "budgets": {
+      "default": {
+        "wallClockSeconds": 1800,
+        "maxTokens": null,
+        "maxCostUsd": null,
+        "noProgressRounds": 2,
+        "repeatedFailureRounds": 2
+      },
+      "type": "object",
+      "properties": {
+        "wallClockSeconds": {
+          "default": 1800,
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxTokens": {
+          "default": null,
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxCostUsd": {
+          "default": null,
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "noProgressRounds": {
+          "default": 2,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "repeatedFailureRounds": {
+          "default": 2,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "validation": {
+      "default": {
+        "requiredHeadings": [],
+        "forbiddenPatterns": [],
+        "minScore": 0.9
+      },
+      "type": "object",
+      "properties": {
+        "requiredHeadings": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbiddenPatterns": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "minScore": {
+          "default": 0.9,
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "adapters": {
+      "default": {
+        "generator": "claude",
+        "evaluator": "claude"
+      },
+      "type": "object",
+      "properties": {
+        "generator": {
+          "default": "claude",
+          "type": "string"
+        },
+        "evaluator": {
+          "default": "claude",
+          "type": "string"
+        }
+      }
+    },
+    "history": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "iteration": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "candidatePath": {
+            "type": "string"
+          },
+          "evaluationPath": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "failureFingerprint": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "iteration",
+          "candidatePath",
+          "evaluationPath",
+          "score",
+          "passed"
+        ]
+      }
+    },
+    "best": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "score": {
+              "type": "number"
+            },
+            "candidatePath": {
+              "type": "string"
+            },
+            "evaluationPath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "score",
+            "candidatePath",
+            "evaluationPath"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "runId",
+    "maxIterations"
+  ]
+}

@@ -1,0 +1,57 @@
+name: cursor
+family: subprocess
+transport: subprocess
+# cursor-agent --output-format text prints the final answer as plain text.
+parse: text
+promptDelivery: arg
+commandTemplate:
+  - cursor-agent
+  - -p
+  - --output-format
+  - text
+  # ask = read-only Q&A mode (no edits). `-p` alone would grant write+shell,
+  # so --mode ask is the control here, mirroring codex's `-s read-only`.
+  - --mode
+  - ask
+  # cursor-agent refuses to run non-interactively in an untrusted dir. --trust
+  # scopes to the cwd only; it is NOT --yolo/-f (which would allow all commands).
+  - --trust
+  # belt-and-braces: explicitly pin the sandbox rather than inheriting config.
+  - --sandbox
+  - enabled
+  - "{prompt}"
+# Cursor bills per-request against the subscription, so default to Cursor's own
+# fast in-house model; escalate per-invocation with --model.
+model: composer-2.5
+modelFlag: --model
+models:
+  flag: --model
+  default: composer-2.5
+  # Curated subset verified against `cursor-agent models` on 2026-09-09.
+  # Keep one model per useful tier/job instead of mirroring the full catalog.
+  # DELIBERATELY EXCLUDED: claude-fable-5-thinking-* — Cursor flags them "NO ZDR"
+  # and Cursor is a third-party endpoint, so the Fable tier must not be reached
+  # through here (see DECISION-RUBRIC §2/§3 third-party trust).
+  options:
+    - composer-2.5
+    - composer-2.5-fast
+    - muse-spark-1.3-minimal
+    - gemini-3.8-flash-low
+    - gpt-5.6-luna-high
+    - gpt-5.6-terra-high
+    - gpt-5.6-sol-high
+    - claude-sonnet-5-high
+    - claude-opus-5-thinking-high
+    - gpt-5.3-codex
+    - cursor-grok-4.6-high-fast
+# `--resume [chatId]` exists, but the chat id is not emitted on the text path;
+# capturing it would need --output-format json + a new idFrom parser. Deferred:
+# agentctl falls back to its persisted transcript.
+session: null
+healthProbe: [which, cursor-agent]
+capabilities:
+  canReadFiles: true
+  canRunShell: false
+  canModifyRepo: false
+  canAccessNetwork: true
+  canPublish: false

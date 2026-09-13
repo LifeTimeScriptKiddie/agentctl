@@ -1,0 +1,106 @@
+%% agentctl — system flow architecture
+%% Render: npx @mermaid-js/mermaid-cli -i flow-architecture.mmd -o flow-architecture.svg
+
+flowchart TB
+  USER(["Operator / harness"])
+
+  subgraph ENTRY["① Entry"]
+    CLI["cli.ts"]
+    REPL["repl.ts"]
+  end
+
+  subgraph CMD["② Commands"]
+    ASK["ask"]
+    ROUTE["route"]
+    ORCH["orchestrate"]
+    RUN["run"]
+    CHAT["chat REPL"]
+  end
+
+  subgraph SAFE["③ Safety spine"]
+    APR["approval.ts"]
+    REG["AdapterRegistry"]
+    RTR["router.ts"]
+    POL["policy.ts"]
+    VAL["validators.ts"]
+    RED["redact.ts"]
+  end
+
+  subgraph CTRL["④ Controllers"]
+    ORC["orchestrator"]
+    CTL["controller loop"]
+  end
+
+  EX["⑤ exec.ts argv-only"]
+
+  subgraph ADP["⑥ Adapters"]
+    SUB["subprocess"]
+    AGY["agy / agy_image"]
+    BRW["browser comet"]
+    DRY["dry_run"]
+  end
+
+  subgraph AGT["⑦ Local CLIs"]
+    CLAUDE["claude"]
+    CODEX["codex"]
+    CURSOR["cursor-agent"]
+    AGYCLI["agy"]
+    COMET["comet CDP"]
+  end
+
+  subgraph STORE["⑧ Persistence"]
+    S1["sessions/"]
+    S2["limits.json"]
+    S3["route-log.jsonl"]
+    S4["orchestrations/"]
+    S5["run-dir artifacts"]
+  end
+
+  USER --> CLI
+  USER --> REPL
+  CLI --> ASK
+  CLI --> ROUTE
+  CLI --> ORCH
+  CLI --> RUN
+  REPL --> CHAT
+
+  ASK --> APR
+  ROUTE --> APR
+  ORCH --> APR
+  CHAT --> APR
+
+  ASK --> REG
+  ROUTE --> RTR
+  RTR --> REG
+  ORCH --> ORC
+  ORC --> RTR
+  RUN --> CTL
+  CTL --> REG
+  ORC --> REG
+
+  REG --> SUB
+  REG --> AGY
+  REG --> BRW
+  REG --> DRY
+
+  SUB --> EX
+  AGY --> EX
+  BRW --> EX
+
+  EX --> CLAUDE
+  EX --> CODEX
+  EX --> CURSOR
+  EX --> AGYCLI
+  EX --> COMET
+
+  CTL --> POL
+  CTL --> VAL
+  CTL --> RED
+
+  ASK --> S1
+  CHAT --> S1
+  SUB --> S2
+  ROUTE --> S3
+  ORCH --> S3
+  ORCH --> S4
+  RUN --> S5

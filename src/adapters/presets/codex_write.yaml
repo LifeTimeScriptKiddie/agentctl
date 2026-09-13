@@ -1,0 +1,31 @@
+name: codex_write
+family: subprocess
+transport: subprocess
+parse: codex_lastmsg
+# Explicit repository-editing lane. Keep the ordinary `codex` preset read-only;
+# callers must opt into this preset and pin workdir to an isolated worktree.
+promptDelivery: stdin
+commandTemplate:
+  - codex
+  - exec
+  - --json
+  - --skip-git-repo-check
+  - -s
+  - workspace-write
+model: gpt-5.6-luna
+modelFlag: -m
+effort:
+  flag: -c
+  key: model_reasoning_effort
+  default: max
+  options: [minimal, low, medium, high, max]
+models:
+  flag: -m
+  default: gpt-5.6-luna
+  options: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol, gpt-6-astra]
+healthProbe: [which, codex]
+capabilities:
+  canReadFiles: true
+  canRunShell: true
+  canModifyRepo: true
+  canPublish: false

@@ -1,0 +1,20 @@
+runId: basic-doc-001
+maxIterations: 3
+taskType: document_draft
+budgets:
+  wallClockSeconds: 600
+  noProgressRounds: 2
+  repeatedFailureRounds: 2
+validation:
+  requiredHeadings:
+    - "## Overview"
+    - "## Examples"
+  forbiddenPatterns:
+    - "TODO"
+    - "FIXME"
+  minScore: 0.9
+# Real adapters for normal runs; `agentctl run --dry-run` overrides both with an
+# offline, validation-seeded dry-run adapter (no model calls).
+adapters:
+  generator: claude
+  evaluator: claude

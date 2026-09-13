@@ -1,0 +1,39 @@
+name: claude
+family: subprocess
+transport: subprocess
+optional: true
+parse: claude_json
+# prompt on stdin avoids ARG_MAX limits on large prompts; -p reads stdin.
+promptDelivery: stdin
+commandTemplate:
+  - claude
+  - -p
+  - --output-format
+  - json
+# evaluator/critic roles append this flag with read-only tools.
+disallowedToolsFlag: --disallowedTools
+# per-invocation model switching (claude accepts an alias or a full name).
+# Claude 5 generation: fable (top tier, draws usage credits), opus/sonnet
+# aliases now resolve to Opus 5 / Sonnet 5; haiku stays the cheap tier.
+models:
+  flag: --model
+  default: null            # null → the claude CLI's own default model
+  options: [fable, opus, sonnet, haiku]
+  # Automatic step-down when a tier's usage limit is exhausted: fable → opus →
+  # sonnet. haiku is intentionally NOT a rung — dropping two tiers silently
+  # would change the answer's character more than it saves; ask for it
+  # explicitly. Off-ladder models never auto-step.
+  stepDown: [fable, opus, sonnet]
+# native session memory: claude's JSON output carries session_id; replay it with
+# --resume so the agent keeps its own real conversation thread across turns.
+session:
+  supportsResume: true
+  idFrom: json_session_id
+  resumeStyle: append_flag
+  resumeFlag: --resume
+healthProbe: [which, claude]
+capabilities:
+  canReadFiles: true
+  canRunShell: false
+  canModifyRepo: false
+  canPublish: false

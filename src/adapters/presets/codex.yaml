@@ -1,0 +1,59 @@
+name: codex
+family: subprocess
+transport: subprocess
+parse: codex_lastmsg
+# codex exec reads instructions from stdin when no prompt arg is given.
+promptDelivery: stdin
+commandTemplate:
+  - codex
+  - exec
+  - --json
+  - --skip-git-repo-check
+  - -s
+  - read-only
+# Codex ask/delegate default stays on the cheap/fast tier (luna) at MAX
+# reasoning effort. Orchestrate planning uses gpt-6-astra via
+# DEFAULT_ORCHESTRATOR_MODEL (see orchestrateRoster.ts) — not this default.
+# Escalate worker steps luna → terra → sol → astra when cheaper tiers fail.
+model: gpt-5.6-luna
+modelFlag: -m
+# Reasoning effort is pinned here (rendered as `-c model_reasoning_effort="…"`)
+# rather than inherited from ~/.codex/config.toml — a delegated call must not
+# change behaviour because the user retuned their interactive Codex config.
+# Default is max (buy thinking time on the cheap tier); override per call with
+# `agentctl ask --to codex --effort <level>`.
+effort:
+  flag: -c
+  key: model_reasoning_effort
+  default: max
+  options: [minimal, low, medium, high, max]
+# per-invocation model switching; default keeps the cheap $20-budget-safe pin.
+models:
+  flag: -m
+  default: gpt-5.6-luna
+  options: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol, gpt-6-astra]
+# NOTE: there is no approval flag in `codex exec`; sandbox is the control.
+# A code-editing lane would use a separate preset with -s workspace-write.
+# native session memory is DEFERRED (agentctl falls back to its persisted
+# transcript for codex). Machinery implemented + unit-tested. VERIFIED so far:
+#   - `codex exec resume <id>` is the resume path; thread id comes from the
+#     `thread.started` event (idFrom: codex_thread).
+#   - `codex exec resume` does NOT accept `-s/--sandbox`, but DOES accept `-c`
+#     config overrides. The sandbox config key is `sandbox_mode`.
+# STILL TO VERIFY before enabling (one live 2-call test): that
+#   `-c sandbox_mode="read-only"` actually takes effect on resume (i.e. an
+#   unknown/ignored key must not silently fall back to a permissive default).
+# Don't weaken the sandbox to get memory. Once
+# verified, uncomment — resumeExtraArgs re-asserts the sandbox the subcommand
+# doesn't inherit:
+# session:
+#   supportsResume: true
+#   idFrom: codex_thread
+#   resumeStyle: codex_resume
+#   resumeExtraArgs: ['-c', 'sandbox_mode="read-only"']
+healthProbe: [which, codex]
+capabilities:
+  canReadFiles: true
+  canRunShell: false
+  canModifyRepo: false
+  canPublish: false
