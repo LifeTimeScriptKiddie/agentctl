@@ -67,3 +67,74 @@ The committed lockfile preserves reviewed dependency versions. Respect a 14-day 
 ## License
 
 MIT. Dependencies remain under their respective licenses and are installed separately, not vendored into this repository.
+
+## Local agent monitoring
+
+AgentWatch's read-only collectors now live inside agentctl. They need no separate
+AgentWatch installation, process, registry, or runtime dependency. agentctl owns
+live operations; iseeagents remains the project for recorded workflow evidence.
+
+```bash
+agentctl monitor --once --json
+agentctl monitor --table
+agentctl monitor --statusline
+agentctl watch --interval 5
+agentctl monitor --feed "$HOME/.cache/agentctl/monitor.json" --interval 5
+```
+
+Monitoring currently requires macOS, an ordinary current-user account, and the
+host's `ps`, `lsof`, and `nettop` commands. It does not require elevated privileges.
+`monitor` defaults to one JSON snapshot. `watch` requires an interactive terminal;
+Ctrl-C or SIGTERM stops refreshes. Feed/watch collection is sequential, with a
+3–3600 second refresh interval (default 5). Shutdown interrupts the wait between
+samples; an in-progress collector may finish before shutdown, bounded by its
+command timeout. A snapshot takes approximately three seconds for network sampling.
+
+The table shows **observed agent families**, including manually launched agents.
+Network totals cover each family's matched process trees. They are not per-job
+measurements, proof of progress, provider identification, or billing data. No PID
+is treated as authorization to control an observed process. Use `agentctl status`
+for controller run state; dispatch, cancellation, permissions, and existing chat
+commands retain their existing paths. Exact invocation correlation and automatic
+iseeagents event export are not implemented by this migration.
+
+### Snapshot contract and privacy
+
+JSON retains AgentWatch schema 1 for existing consumers: `generated_at`, host UID,
+collector status, sampling mode/window, and agent-family process/byte fields.
+Consumers must check `generated_at` for freshness and collector status for
+availability; zero bytes after collector failure do not mean zero traffic.
+`state: unknown` takes precedence over the legacy `activity` field. Legacy
+`activity: active` means recent network/session evidence only, never verified job
+progress. The table calls this a `signal`. Family totals must not be assigned to
+individual parallel workers. Comet traffic remains excluded from AI activity.
+
+Only session-file metadata is inspected; session bodies and command arguments are
+never emitted. Model enrichment only probes loopback listener ports discovered
+for matched current-user processes. `AGENTCTL_MONITOR_OLLAMA_PORT` and
+`AGENTCTL_MONITOR_LMSTUDIO_PORT` select a discovered port; legacy
+`AGENTWATCH_OLLAMA_PORT` / `AGENTWATCH_LMSTUDIO_PORT` aliases remain accepted.
+
+Feed files use atomic replacement and mode `0600`. Newly created feed directories
+use `0700`; existing parent directory permissions are left intact. No feed file is
+written unless requested. Collector failures appear as unknown/warnings; fatal
+collection errors stop the command and leave an existing feed's timestamp intact.
+
+### DesktopMon migration
+
+DesktopMon installations that invoke `node ENTRY --once --json` can point their
+configured entrypoint at this package's built `dist/monitor/compat.js`:
+
+```bash
+node /path/to/agentctl/dist/monitor/compat.js --once --json
+```
+
+This is a compatibility entrypoint within agentctl, not another installed product.
+It shares the `monitor` options and collector implementation. Existing consumers
+can also read a feed produced by `agentctl monitor --feed`. No existing DesktopMon
+configuration or background service is changed by building this package.
+
+Library users can import `collectMonitorOutput`, `MonitorOutput`, `runFeed`, and
+`writeFeedAtomic` from the package root. The standalone AgentWatch control plane,
+registration store, dispatch adapters, and conversation UI were not imported;
+agentctl's existing control and chat implementations remain authoritative.
