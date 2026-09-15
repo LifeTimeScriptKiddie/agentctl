@@ -57,3 +57,8 @@ export { buildJsonEnvelope, emitJson, stripAnsi } from './format/output.js';
 export type { OutputFormat, JsonEnvelope } from './format/output.js';
 
 export * from './schema/index.js';
+
+// Read-only local observation API; dispatch continues through the existing adapters.
+export { collectOutput as collectMonitorOutput } from './monitor/collect.js';
+export { writeFeedAtomic, runFeed } from './monitor/feed.js';
+export type { AgentwatchOutput as MonitorOutput, AgentReport as MonitorAgentReport } from './monitor/types.js';

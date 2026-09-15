@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
+import { registerMonitorCommands } from './monitor/command.js';
 import { DEFAULT_ORCHESTRATOR_AGENT } from './core/orchestrateRoster.js';
 import { startRepl } from './repl.js';
 import type { OutputFormat } from './format/output.js';
@@ -280,6 +281,7 @@ export function buildProgram(): Command {
       process.exitCode = await cmdRun({ dir, dryRun: false, approve: opts.approve }, stdio);
     });
 
+  registerMonitorCommands(program);
   return program;
 }
 
