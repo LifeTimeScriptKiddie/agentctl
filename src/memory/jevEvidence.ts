@@ -1,4 +1,4 @@
-import type { EvidenceCandidate } from './layaEvidence.js';
+import type { EvidenceCandidate, EvidenceErrorCode } from './layaEvidence.js';
 import type { MemoryProvider } from './layaEvidence.js';
 
 const RUBRIC =
@@ -14,8 +14,17 @@ export interface JevEvidenceResult {
   model?: string;
   latencyMs?: number;
   error?: string;
+  errorCode?: EvidenceErrorCode;
   reason?: string;
   unavailable?: boolean;
+}
+
+class InvalidAnswerError extends Error {}
+
+function jevErrorCode(e: unknown): EvidenceErrorCode {
+  if (e instanceof InvalidAnswerError || e instanceof SyntaxError) return 'invalid_response';
+  const name = (e as { name?: unknown } | null)?.name;
+  return name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'request_failed';
 }
 
 /** Optional hosted TypeSafe Jev gate (requires TYPESAFE_API_KEY). Independent of local Laya. */
@@ -40,25 +49,25 @@ function validateChoice(
   answer: unknown,
   valid: Set<string>,
 ): { choice: string | null; confidence?: number; probabilities?: Record<string, number> } {
-  if (!answer || typeof answer !== 'object') throw new Error('invalid answer type');
+  if (!answer || typeof answer !== 'object') throw new InvalidAnswerError('invalid answer type');
   const a = answer as Record<string, unknown>;
-  if (a.type !== 'choice') throw new Error('invalid answer type');
+  if (a.type !== 'choice') throw new InvalidAnswerError('invalid answer type');
   const choice = a.choice;
   const probs = a.probabilities;
   if (typeof choice !== 'string' || !valid.has(choice) || typeof probs !== 'object' || probs === null) {
-    throw new Error('invalid choice or probability keys');
+    throw new InvalidAnswerError('invalid choice or probability keys');
   }
   const probMap = probs as Record<string, number>;
-  if (new Set(Object.keys(probMap)).size !== valid.size) throw new Error('invalid probability keys');
+  if (new Set(Object.keys(probMap)).size !== valid.size) throw new InvalidAnswerError('invalid probability keys');
   for (const v of Object.values(probMap)) {
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) throw new Error('invalid probabilities');
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) throw new InvalidAnswerError('invalid probabilities');
   }
   const sum = Object.values(probMap).reduce((a, b) => a + b, 0);
-  if (Math.abs(sum - 1) > 0.02) throw new Error('probabilities do not sum to one');
+  if (Math.abs(sum - 1) > 0.02) throw new InvalidAnswerError('probabilities do not sum to one');
   const max = Math.max(...Object.values(probMap));
   const chosenProb = probMap[choice];
   if (chosenProb === undefined || chosenProb + 1e-9 < max) {
-    throw new Error('selected choice is not maximal');
+    throw new InvalidAnswerError('selected choice is not maximal');
   }
   const confidence = typeof a.confidence === 'number' ? a.confidence : chosenProb;
   return {
@@ -78,7 +87,7 @@ export async function selectJevEvidence(
   }
   const key = process.env.TYPESAFE_API_KEY?.trim();
   if (!key) {
-    return { ok: false, unavailable: true, error: 'TYPESAFE_API_KEY not set', choice: null };
+    return { ok: false, unavailable: true, error: 'TYPESAFE_API_KEY not set', errorCode: 'not_configured', choice: null };
   }
   const valid = new Set([...candidates.map(c => c.id), 'none']);
   const packet = {
@@ -122,6 +131,7 @@ export async function selectJevEvidence(
         ok: false,
         unavailable: true,
         error: json.error ?? `TypeSafe HTTP ${res.status}`,
+        errorCode: 'http_error',
         choice: null,
         latencyMs: Math.round(performance.now() - t0),
       };
@@ -141,6 +151,7 @@ export async function selectJevEvidence(
       ok: false,
       unavailable: true,
       error: e instanceof Error ? e.message : String(e),
+      errorCode: jevErrorCode(e),
       choice: null,
       latencyMs: Math.round(performance.now() - t0),
     };

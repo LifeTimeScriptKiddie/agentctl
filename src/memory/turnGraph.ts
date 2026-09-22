@@ -124,6 +124,19 @@ export function resetTurnGraphCache(): void {
   cachedSpec = undefined;
 }
 
+/**
+ * The trace as returned to HTTP callers: Laya/Jev error text (paths, stderr,
+ * upstream messages) is dropped and only `error_code` remains. Local CLI
+ * traces keep the text.
+ */
+export function publicGraphTrace(trace: GraphTraceStep[]): GraphTraceStep[] {
+  return trace.map((step) => {
+    if (!step.detail || !('error' in step.detail)) return step;
+    const { error: _error, ...detail } = step.detail;
+    return { ...step, detail };
+  });
+}
+
 function traceStep(
   trace: GraphTraceStep[],
   node: string,
@@ -216,6 +229,7 @@ export async function runContextRetrievalGraph(
           evidenceStatus = 'jev_unavailable_keyword_fallback';
           traceStep(trace, step.id, step.action, 'jev_unavailable', t0, {
             error: judgment.error?.slice(0, 200),
+            error_code: judgment.errorCode ?? 'evidence_error',
           });
           break;
         }
@@ -252,6 +266,7 @@ export async function runContextRetrievalGraph(
           evidenceStatus = 'laya_unavailable_keyword_fallback';
           traceStep(trace, step.id, step.action, 'laya_unavailable', t0, {
             error: judgment.error?.slice(0, 200),
+            error_code: judgment.errorCode ?? 'evidence_error',
           });
           break;
         }

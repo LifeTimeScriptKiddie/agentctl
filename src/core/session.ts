@@ -6,6 +6,7 @@ import {
 } from '../schema/session.js';
 import { agentctlHome } from './agentHome.js';
 import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
+import { redactDeep } from './redact.js';
 
 /** Root for persisted chat sessions: ~/.agentctl/sessions (override via AGENTCTL_HOME). */
 export function sessionsDir(): string {
@@ -53,7 +54,11 @@ export class SessionWriteConflict extends Error {
   }
 }
 
-/** Atomic private write (unique temp + rename, 0600 in a 0700 dir) so a crash can't leave a half-written session. */
+/**
+ * Atomic private write (unique temp + rename, 0600 in a 0700 dir) so a crash
+ * can't leave a half-written session. The transcript is redacted on the way to
+ * disk, whichever caller (ask, chat) built it; `rec` itself is not modified.
+ */
 export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchangedSince?: number }): void {
   const path = sessionPath(rec.id);
   ensurePrivateDir(sessionsDir());
@@ -63,7 +68,7 @@ export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchange
       throw new SessionWriteConflict(onDisk.updatedAt);
     }
   }
-  const withStamp = { ...rec, updatedAt: now };
+  const withStamp = { ...rec, transcript: redactDeep(rec.transcript), updatedAt: now };
   writePrivateFile(path, JSON.stringify(withStamp, null, 2));
 }
 

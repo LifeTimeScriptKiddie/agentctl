@@ -344,6 +344,14 @@ export class SubprocessAdapter implements AgentAdapter {
       };
     }
 
+    if (this.preset.parse === 'claude_json' && parsed.normalizedJson?.is_error === true) {
+      const text = typeof parsed.normalizedJson.result === 'string' ? parsed.normalizedJson.result.trim() : '';
+      const reason = text || 'claude reported an error result';
+      return { ...failResult({adapter: this.name, transport: this.transport, failureClass: 'parse_error',
+        reason, durationMs, stdout: outcome.stdout, exitCode: outcome.exitCode,
+        stderr: outcome.stderr ? `${reason}\n${outcome.stderr}` : reason,
+        model, steppedDown}), normalizedJson: parsed.normalizedJson, usage };
+    }
     if (this.preset.parse === 'cursor_json' && parsed.normalizedJson?.is_error === true) {
       return { ...failResult({adapter: this.name, transport: this.transport, failureClass: 'parse_error',
         reason: 'Cursor reported an error result', durationMs, stdout: outcome.stdout, stderr: outcome.stderr,

@@ -67,11 +67,29 @@ export function readTrustedConfig(path: string): string | null {
   return file.entries.some((e) => e.sha256 === hash) ? content.toString('utf8') : null;
 }
 
-/** Record the file's current hash. Earlier hashes for the same path are replaced. */
-export function trustConfig(path: string, now = new Date()): { path: string; sha256: string; content: string } {
+/** The file as it would be trusted: real path, text and hash, without recording anything. */
+export function readConfigForTrust(path: string): { path: string; sha256: string; content: string } {
+  const real = realpathSync(path);
+  const content = readFileSync(real);
+  return { path: real, sha256: configHash(real, content), content: content.toString('utf8') };
+}
+
+/**
+ * Record the file's current hash. Earlier hashes for the same path are replaced.
+ * With `expectedSha256` (the hash of what the user reviewed), a file that
+ * changed since is refused.
+ */
+export function trustConfig(
+  path: string,
+  now = new Date(),
+  expectedSha256?: string,
+): { path: string; sha256: string; content: string } {
   const real = realpathSync(path);
   const content = readFileSync(real);
   const sha256 = configHash(real, content);
+  if (expectedSha256 !== undefined && sha256 !== expectedSha256) {
+    throw new Error(`${real} changed while it was being reviewed; run \`agentctl config trust\` again`);
+  }
   const file = loadTrustFile();
   file.entries = file.entries.filter((e) => e.path !== real && e.sha256 !== sha256);
   file.entries.push({ sha256, path: real, trustedAt: now.toISOString() });

@@ -9,14 +9,23 @@
  */
 const REDACTION = '[REDACTED]';
 
-const PATTERNS: Array<[RegExp, string]> = [
+/** Example values in docs and code samples: xxxxxxxx, <your-token>, ${TOKEN}, ********. */
+const PLACEHOLDER = /^(?:x{3,}|\*{3,}|<[^>]*>|\$\{[^}]*\}|\[REDACTED\])$/i;
+
+function redactKeyValue(match: string, key: string, value: string): string {
+  return value.length < 8 || PLACEHOLDER.test(value) ? match : `${key}=${REDACTION}`;
+}
+
+type Replacement = string | ((match: string, ...groups: string[]) => string);
+
+const PATTERNS: Array<[RegExp, Replacement]> = [
   // PEM private keys, whole block (literal or JSON-escaped newlines).
   [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^"]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, REDACTION],
   // URL credentials: scheme://user:pass@host → scheme://[REDACTED]@host
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:"'\\]+:[^\s/@"'\\]+@/gi, `$1${REDACTION}@`],
   [/sk-ant-[A-Za-z0-9_-]{8,}/g, REDACTION], // Anthropic
   [/sk-[A-Za-z0-9_-]{16,}/g, REDACTION], // OpenAI-style
-  [/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, REDACTION], // bearer tokens
+  [/\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, REDACTION], // bearer tokens (20+ chars, so not "bearer of")
   [/AIza[0-9A-Za-z_-]{20,}/g, REDACTION], // Google API keys
   [/github_pat_[A-Za-z0-9_]{20,}/g, REDACTION], // GitHub fine-grained PATs
   [/gh[pousr]_[A-Za-z0-9]{20,}/g, REDACTION], // GitHub tokens
@@ -24,13 +33,16 @@ const PATTERNS: Array<[RegExp, string]> = [
   [/xox[baprs]-[A-Za-z0-9-]{8,}/g, REDACTION], // Slack tokens
   [/AKIA[0-9A-Z]{16}/g, REDACTION], // AWS access key id
   [/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTION], // JWT
-  // password=/token=/secret=/api_key= query or kv values (also access_token=…).
-  [/(?<![A-Za-z0-9])(password|token|secret|api_key)=[^\s&"'\\,;]+/gi, `$1=${REDACTION}`],
+  // password=/token=/secret=/api_key= query or kv values (also access_token=…),
+  // 8+ chars and not a placeholder.
+  [/(?<![A-Za-z0-9])(password|token|secret|api_key)=([^\s&"'\\,;]+)/gi, redactKeyValue],
 ];
 
 export function redact(text: string): string {
   let out = text;
-  for (const [re, replacement] of PATTERNS) out = out.replace(re, replacement);
+  for (const [re, replacement] of PATTERNS) {
+    out = typeof replacement === 'string' ? out.replace(re, replacement) : out.replace(re, replacement);
+  }
   return out;
 }
 

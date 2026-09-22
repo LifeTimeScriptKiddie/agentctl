@@ -23,6 +23,19 @@ export interface EvidenceCandidate {
   source?: string;
 }
 
+/** Fixed failure codes for Laya/Jev, safe to return to HTTP callers (the `error` text is not). */
+export type EvidenceErrorCode =
+  | 'not_configured'
+  | 'script_missing'
+  | 'spawn_failed'
+  | 'timeout'
+  | 'output_too_large'
+  | 'process_failed'
+  | 'http_error'
+  | 'request_failed'
+  | 'invalid_response'
+  | 'evidence_error';
+
 export interface LayaEvidenceResult {
   ok: boolean;
   choice: string | null;
@@ -31,6 +44,7 @@ export interface LayaEvidenceResult {
   model?: string;
   latencyMs?: number;
   error?: string;
+  errorCode?: EvidenceErrorCode;
   reason?: string;
   unavailable?: boolean;
 }
@@ -92,6 +106,7 @@ function layaTimeoutMs(): number {
 
 interface LayaProcessResult {
   error?: Error;
+  errorCode?: 'spawn_failed' | 'timeout' | 'output_too_large';
   status?: number | null;
   stdout?: string;
   stderr?: string;
@@ -109,7 +124,7 @@ function runLayaProcess(
     try {
       child = spawn(python, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) {
-      resolve({ error: e instanceof Error ? e : new Error(String(e)) });
+      resolve({ error: e instanceof Error ? e : new Error(String(e)), errorCode: 'spawn_failed' });
       return;
     }
     let stdout = '';
@@ -123,19 +138,19 @@ function runLayaProcess(
     };
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish({ error: new Error(`laya subprocess timed out after ${timeoutMs}ms`) });
+      finish({ error: new Error(`laya subprocess timed out after ${timeoutMs}ms`), errorCode: 'timeout' });
     }, timeoutMs);
     const collect = (which: 'stdout' | 'stderr') => (chunk: Buffer | string) => {
       if (which === 'stdout') stdout += chunk.toString();
       else stderr += chunk.toString();
       if (stdout.length + stderr.length > LAYA_MAX_OUTPUT) {
         child.kill('SIGKILL');
-        finish({ error: new Error('laya subprocess output exceeded 4 MiB') });
+        finish({ error: new Error('laya subprocess output exceeded 4 MiB'), errorCode: 'output_too_large' });
       }
     };
     child.stdout?.on('data', collect('stdout'));
     child.stderr?.on('data', collect('stderr'));
-    child.on('error', error => finish({ error }));
+    child.on('error', error => finish({ error, errorCode: 'spawn_failed' }));
     child.on('close', status => finish({ status, stdout, stderr }));
     // The child may exit before reading stdin; that surfaces through 'close'.
     child.stdin?.on('error', () => {});
@@ -172,7 +187,7 @@ export async function selectEvidence(
   }
   const script = process.env.AGENTCTL_LAYA_SCRIPT ?? bundledScriptPath();
   if (!existsSync(script)) {
-    return { ok: false, unavailable: true, error: `Laya script missing: ${script}`, choice: null };
+    return { ok: false, unavailable: true, error: `Laya script missing: ${script}`, errorCode: 'script_missing', choice: null };
   }
   const python = resolvePython(cfg);
   const payload = {
@@ -196,18 +211,24 @@ export async function selectEvidence(
     releaseLayaSlot();
   }
   if (proc.error) {
-    return { ok: false, unavailable: true, error: proc.error.message, choice: null };
+    return { ok: false, unavailable: true, error: proc.error.message, errorCode: proc.errorCode ?? 'spawn_failed', choice: null };
   }
   if (proc.status !== 0) {
     const err = (proc.stderr || proc.stdout || 'laya subprocess failed').trim();
-    return { ok: false, unavailable: true, error: err.slice(0, 2000), choice: null };
+    return { ok: false, unavailable: true, error: err.slice(0, 2000), errorCode: 'process_failed', choice: null };
   }
+  let parsed: LayaEvidenceResult;
   try {
-    const parsed = JSON.parse(proc.stdout ?? '') as LayaEvidenceResult;
-    return { ...parsed, choice: parsed.choice ?? null };
+    parsed = JSON.parse(proc.stdout ?? '') as LayaEvidenceResult;
   } catch {
-    return { ok: false, unavailable: true, error: 'invalid JSON from laya_evidence.py', choice: null };
+    return { ok: false, unavailable: true, error: 'invalid JSON from laya_evidence.py', errorCode: 'invalid_response', choice: null };
   }
+  const { errorCode: _scriptCode, ...rest } = parsed;
+  return {
+    ...rest,
+    choice: parsed.choice ?? null,
+    ...(parsed.ok === false || parsed.unavailable ? { errorCode: 'evidence_error' as const } : {}),
+  };
 }
 
 export const MEMORY_PROVIDERS = ['cursor', 'codex', 'claude', 'pi', 'laya', 'jev', 'local'] as const;

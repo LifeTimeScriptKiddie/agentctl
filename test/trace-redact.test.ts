@@ -7,9 +7,9 @@ import { appendEvent, hashText } from '../src/core/trace.js';
 
 describe('redact', () => {
   it('redacts bearer tokens', () => {
-    const out = redact('Authorization: Bearer abc.def.ghijklmnop tail');
+    const out = redact('Authorization: Bearer abc.def.ghijklmnopqrst tail');
     expect(out).toContain('[REDACTED]');
-    expect(out).not.toContain('abc.def.ghijklmnop');
+    expect(out).not.toContain('abc.def.ghijklmnopqrst');
   });
   it('redacts sk- style keys', () => {
     expect(redact('key sk-0123456789012345abcd more')).toContain('[REDACTED]');

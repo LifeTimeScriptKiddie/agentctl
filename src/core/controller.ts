@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, rmSync } from 'node:fs';
+import { readFileSync, openSync, closeSync, rmSync } from 'node:fs';
 import { relative } from 'node:path';
 import type { AgentAdapter } from '../adapters/protocol.js';
 import type { RunState } from '../schema/runState.js';
@@ -12,6 +12,7 @@ import { normalizeEvaluation, failClosedEvaluation, failureFingerprint } from '.
 import { decide } from './policy.js';
 import { appendEvent, hashText } from './trace.js';
 import { redact } from './redact.js';
+import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 import { ApprovalRequiredError, findDestructive } from '../approval.js';
 
 export interface ControllerDeps {
@@ -29,8 +30,9 @@ export interface RunOptions {
   approve?: boolean;
 }
 
+/** Candidates, evaluations and reports hold model output: 0600, atomically. */
 function writeEnsured(path: string, content: string): void {
-  writeFileSync(path, content, 'utf8');
+  writePrivateFile(path, content);
 }
 
 function acquireLock(lockPath: string): void {
@@ -88,8 +90,8 @@ export async function runLoop(
   }
 
   let state = loadRunState(dir);
-  mkdirSync(paths.candidatesDir, { recursive: true });
-  mkdirSync(paths.evaluationsDir, { recursive: true });
+  ensurePrivateDir(paths.candidatesDir);
+  ensurePrivateDir(paths.evaluationsDir);
   acquireLock(paths.lock);
 
   const start = now();

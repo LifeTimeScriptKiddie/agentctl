@@ -6,7 +6,7 @@ import * as laya from '../src/memory/layaEvidence.js';
 import * as jev from '../src/memory/jevEvidence.js';
 import { MemoryStore, type Memory } from '../src/memory/store.js';
 import { createMemoryServerForTest } from '../src/memory/serve.js';
-import { resetTurnGraphCache, runContextRetrievalGraph } from '../src/memory/turnGraph.js';
+import { publicGraphTrace, resetTurnGraphCache, runContextRetrievalGraph } from '../src/memory/turnGraph.js';
 
 // Security review M3: request flags can't switch on evidence gates the operator
 // hasn't enabled, and Jev never receives confidential memories.
@@ -82,6 +82,47 @@ describe('memory serve evidence flags', () => {
     expect(select).toHaveBeenCalledTimes(1);
   });
 
+  it('L4 trace: graph traces in responses carry Laya/Jev error codes, not their error text', async () => {
+    await start();
+    vi.stubEnv('AGENTCTL_LAYA_EVIDENCE', '1');
+    const layaDetail = 'Traceback: /Users/op/.venv-laya/lib/python3.12/site-packages/laya/model.py line 9';
+    vi.spyOn(laya, 'selectEvidence').mockResolvedValue({
+      ok: false, unavailable: true, choice: null, error: layaDetail, errorCode: 'process_failed',
+    });
+    const fetchJson = async (path: string, body: Record<string, unknown>) => {
+      const r = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${SERVE_TOKEN}` },
+        body: JSON.stringify({ workspace: 'w', query: 'rollback owner', include_graph_trace: true, ...body }),
+      });
+      return { status: r.status, text: await r.text() };
+    };
+    const gateStep = (trace: Array<{ action: string; detail?: Record<string, unknown> }>, action: string) =>
+      trace.find(s => s.action === action)?.detail;
+
+    const context = await fetchJson('/v1/context', { laya_evidence: true });
+    expect(context.status).toBe(200);
+    expect(context.text).not.toContain('Traceback');
+    expect(context.text).not.toContain('/Users/op');
+    const ctxBody = JSON.parse(context.text) as { bundle: { graph_trace: Array<{ action: string; detail?: Record<string, unknown> }> } };
+    expect(gateStep(ctxBody.bundle.graph_trace, 'laya_evidence_gate')).toEqual({ error_code: 'process_failed' });
+
+    const turn = await fetchJson('/v1/turn', { laya_evidence: true });
+    expect(turn.status).toBe(200);
+    expect(turn.text).not.toContain('Traceback');
+    const turnBody = JSON.parse(turn.text) as { context_bundle: { graph_trace: Array<{ action: string; detail?: Record<string, unknown> }> } };
+    expect(gateStep(turnBody.context_bundle.graph_trace, 'laya_evidence_gate')).toEqual({ error_code: 'process_failed' });
+
+    vi.stubEnv('AGENTCTL_JEV_EVIDENCE', '1');
+    vi.spyOn(jev, 'selectJevEvidence').mockResolvedValue({
+      ok: false, unavailable: true, choice: null, error: 'TypeSafe says: key sk-live-abcdef is revoked', errorCode: 'http_error',
+    });
+    const jevTurn = await fetchJson('/v1/turn', { jev_evidence: true });
+    expect(jevTurn.text).not.toContain('revoked');
+    const jevBody = JSON.parse(jevTurn.text) as { context_bundle: { graph_trace: Array<{ action: string; detail?: Record<string, unknown> }> } };
+    expect(gateStep(jevBody.context_bundle.graph_trace, 'jev_evidence_gate')).toEqual({ error_code: 'http_error' });
+  });
+
   it('ignores jev_evidence:true and provider:"jev" unless the operator enabled Jev', async () => {
     await start();
     const select = vi.spyOn(jev, 'selectJevEvidence').mockResolvedValue({ ok: true, choice: null });
@@ -125,6 +166,36 @@ describe('jev evidence gate withholds confidential memories', () => {
     const sent = select.mock.calls[0]![1].map(c => c.id);
     expect(sent).toEqual(['pub', 'int']);
     expect(result.memories.map(m => m.id)).toEqual(['pub']);
+  });
+
+  it('keeps the error text in the local trace alongside the code, and publicGraphTrace drops only the text', async () => {
+    vi.spyOn(jev, 'selectJevEvidence').mockResolvedValue({
+      ok: false, unavailable: true, choice: null, error: 'fetch failed: ECONNREFUSED', errorCode: 'request_failed',
+    });
+    const result = await run([memory('pub', 'public')]);
+    const step = result.trace.find(s => s.action === 'jev_evidence_gate')!;
+    expect(step.detail).toEqual({ error: 'fetch failed: ECONNREFUSED', error_code: 'request_failed' });
+    const pub = publicGraphTrace(result.trace);
+    expect(pub.find(s => s.action === 'jev_evidence_gate')?.detail).toEqual({ error_code: 'request_failed' });
+    expect(pub.find(s => s.action === 'fts_hybrid_fetch')).toEqual(result.trace.find(s => s.action === 'fts_hybrid_fetch'));
+  });
+
+  it('Jev and Laya report fixed error codes at the source', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', undefined);
+    expect((await jev.selectJevEvidence('q', [{ id: 'a', text: 't' }])).errorCode).toBe('not_configured');
+    vi.stubEnv('TYPESAFE_API_KEY', 'k');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503, json: async () => ({ error: 'upstream down' }) }));
+    expect((await jev.selectJevEvidence('q', [{ id: 'a', text: 't' }])).errorCode).toBe('http_error');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ answers: {} }) }));
+    expect((await jev.selectJevEvidence('q', [{ id: 'a', text: 't' }])).errorCode).toBe('invalid_response');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'TimeoutError' })));
+    expect((await jev.selectJevEvidence('q', [{ id: 'a', text: 't' }])).errorCode).toBe('timeout');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+    expect((await jev.selectJevEvidence('q', [{ id: 'a', text: 't' }])).errorCode).toBe('request_failed');
+    vi.unstubAllGlobals();
+
+    vi.stubEnv('AGENTCTL_LAYA_SCRIPT', join(tmpdir(), 'agentctl-no-such-laya-script.py'));
+    expect((await laya.selectEvidence('q', [{ id: 'a', text: 't' }])).errorCode).toBe('script_missing');
   });
 
   it('skips the Jev call entirely when every candidate is confidential', async () => {
