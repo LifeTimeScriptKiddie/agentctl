@@ -15,7 +15,7 @@ const runMock = vi.mocked(exec.run);
 const EMPTY_MCP = join(presetsDir(), 'empty-mcp.json');
 const CLAUDE_ARGS = [
   '-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob',
-  '--strict-mcp-config', '--mcp-config', EMPTY_MCP,
+  '--strict-mcp-config', '--mcp-config', EMPTY_MCP, '--setting-sources', 'user',
 ];
 
 function req(p: Partial<AdapterRequest> & { role: AdapterRequest['role'] }): AdapterRequest {
@@ -44,6 +44,8 @@ describe('buildInvocation argv (against real presets)', () => {
     for (const role of ['generator', 'evaluator', 'chat'] as const) {
       const inv = buildInvocation(loadPreset('claude'), req({ role }));
       expect(inv.args).toContain('--strict-mcp-config');
+      // project .claude/ hooks must never load (security review D)
+      expect(inv.args.join(' ')).toContain('--setting-sources user');
       const i = inv.args.indexOf('--mcp-config');
       expect(inv.args[i + 1]).toBe(EMPTY_MCP);
     }

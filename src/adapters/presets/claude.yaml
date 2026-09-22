@@ -19,6 +19,11 @@ commandTemplate:
   - --strict-mcp-config
   - --mcp-config
   - "{asset:empty-mcp.json}"
+  # Load only user settings: project .claude/settings.json hooks are shell
+  # commands chosen by the working directory (verified 2026-09-22 that a
+  # project UserPromptSubmit hook runs under `claude -p` without this flag).
+  - --setting-sources
+  - user
 # evaluator/critic roles append this flag with read-only tools.
 disallowedToolsFlag: --disallowedTools
 # per-invocation model switching (claude accepts an alias or a full name).
