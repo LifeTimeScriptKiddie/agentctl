@@ -1,13 +1,7 @@
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { parse as parseYaml } from 'yaml';
-import type { AdapterRequest } from './schema/index.js';
-import type { Usage } from './schema/result.js';
-import { NULL_USAGE } from './schema/result.js';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { RunState } from './schema/runState.js';
-import { AgentsConfigSchema } from './schema/agents.js';
 import { AdapterRegistry } from './adapters/registry.js';
-import type { AgentAdapter } from './adapters/protocol.js';
 import { runLoop, type ControllerDeps } from './core/controller.js';
 import { loadRunState } from './core/state.js';
 import { runPaths } from './core/paths.js';
@@ -17,31 +11,48 @@ import { readPrompt } from './assets.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { color, agentColor } from './util/colors.js';
 import {
-  loadSession, newSession, saveSession, latestSession, addTurn, setNative,
-  listSessions, deleteSession, pruneSessions, SessionWriteConflict, boundTranscript,
+  listSessions, deleteSession, pruneSessions,
 } from './core/session.js';
 import { buildWorkerPrompt } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
-import type { SessionRecord, SessionTurn } from './schema/session.js';
-import { formatStatus, type AgentStatus } from './status.js';
+import { formatStatus } from './status.js';
 import {
   route, type RouterAgent,
 } from './core/router.js';
+import type { StepOutcome } from './core/orchestrator.js';
 import {
-  runOrchestration, buildPlannerPrompt, buildVerifyPrompt, buildSynthesisPrompt, buildReplanPrompt, parseVerify,
-  type OrchestrateDeps, type StepOutcome,
-} from './core/orchestrator.js';
-import {
-  buildAgentRoster, formatRosterForPlanner,
-  DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL, resolveOrchestratorModel,
+  DEFAULT_ORCHESTRATOR_AGENT, resolveOrchestratorModel,
 } from './core/orchestrateRoster.js';
 import { visibleAgentNames } from './core/orchestrateRuntime.js';
-import { findDestructive } from './approval.js';
-import { appendFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { agentctlHome } from './core/agentHome.js';
-import { createHash } from 'node:crypto';
-import { redact } from './core/redact.js';
+import { loadRegistry, collectStatus } from './core/loadRegistry.js';
+import {
+  askOne, askAll,
+} from './core/ask.js';
+import {
+  resolveSession, resolveSessionScope, persistSessionExchange,
+  type ResolvedSession,
+} from './core/sessionFlow.js';
+import {
+  runOrchestrateGoal, orchestrationRunPath, logRoute, logHallucinationIncidents,
+} from './core/orchestrateFlow.js';
+
+export {
+  loadRegistry, collectStatus,
+  askOne, askAll,
+  resolveSession, resolveSessionScope, persistSessionExchange,
+  runOrchestrateGoal, orchestrationRunPath, logRoute, logHallucinationIncidents,
+};
+export { fanoutTargets, boundedEvidence, chatRequest } from './core/ask.js';
+export { appendSessionExchange, renderTranscript } from './core/sessionFlow.js';
+export {
+  createOrchestrateDeps,
+} from './core/orchestrateFlow.js';
+export type { RegistryOptions } from './core/loadRegistry.js';
+export type { AskResult } from './core/ask.js';
+export type { ResolvedSession } from './core/sessionFlow.js';
+export type {
+  OrchCallPhase, OrchestrateHooks, RunOrchestrateGoalOpts,
+} from './core/orchestrateFlow.js';
 import {
   agentAsk,
   agentRoute,
@@ -63,356 +74,10 @@ export interface IO {
   err: (s: string) => void;
 }
 
-export interface RegistryOptions {
-  /** Directories searched for agents.yaml (first match wins after configPath). */
-  searchDirs?: string[];
-  /** Explicit agents.yaml path (or set AGENTCTL_CONFIG). */
-  configPath?: string;
-}
-
-function mergeAgentsFile(reg: AdapterRegistry, path: string): void {
-  reg.mergeConfig(AgentsConfigSchema.parse(parseYaml(readFileSync(path, 'utf8'))));
-}
-
-/** Packaged presets, overlaid with agents.yaml from AGENTCTL_CONFIG or searchDirs. */
-export function loadRegistry(
-  options: string[] | RegistryOptions = [process.cwd()],
-): AdapterRegistry {
-  const opts: RegistryOptions = Array.isArray(options)
-    ? { searchDirs: options }
-    : options;
-  const searchDirs = opts.searchDirs ?? [process.cwd()];
-  const reg = AdapterRegistry.fromPackaged();
-  const configPath = opts.configPath ?? process.env.AGENTCTL_CONFIG;
-  if (configPath && existsSync(configPath)) {
-    mergeAgentsFile(reg, configPath);
-    return reg;
-  }
-  for (const d of searchDirs) {
-    const p = join(d, 'agents.yaml');
-    if (existsSync(p)) {
-      mergeAgentsFile(reg, p);
-      break;
-    }
-  }
-  return reg;
-}
-
 export const stdio: IO = {
   out: (s) => process.stdout.write(s + '\n'),
   err: (s) => process.stderr.write(s + '\n'),
 };
-
-export interface ResolvedSession {
-  record: SessionRecord;
-  persist: (r: SessionRecord) => void;
-}
-
-/** `--session-scope` wins; else inherit `--briefing-workspace`; else unscoped resume rules. */
-export function resolveSessionScope(opts: { sessionScope?: string; briefingWorkspace?: string }): string | null | undefined {
-  if (opts.sessionScope) return opts.sessionScope;
-  const briefing = resolveBriefingWorkspace(opts.briefingWorkspace);
-  if (briefing) return briefing;
-  return undefined;
-}
-
-/**
- * Resolve a durable session from CLI intent: `--resume` → most recent in scope;
- * `--session <name>` → load or create by name; neither → null (ephemeral).
- */
-export function resolveSession(
-  opts: { session?: string | undefined; resume?: boolean; scope?: string | null },
-  now: () => number = Date.now,
-): ResolvedSession | null {
-  let record: SessionRecord | null = null;
-  if (opts.resume) {
-    record = latestSession(opts.scope);
-    if (!record) return null;
-  } else if (opts.session) {
-    let existing: SessionRecord | null;
-    try {
-      existing = loadSession(opts.session);
-    } catch (e) {
-      throw new Error(
-        `session '${opts.session}' is unreadable (${e instanceof Error ? e.message : String(e)}). ` +
-          `Move or delete the file under ~/.agentctl/sessions/ to start fresh.`,
-      );
-    }
-    if (existing && opts.scope != null && existing.scope != null && existing.scope !== opts.scope) {
-      throw new Error(
-        `session '${opts.session}' belongs to scope '${existing.scope}', not '${opts.scope}'.`,
-      );
-    }
-    record = existing ?? newSession(now(), opts.session, opts.scope ?? null);
-  } else {
-    return null;
-  }
-  return { record, persist: (r) => saveSession(r, now()) };
-}
-
-/** Shared text/API persistence contract; store the original prompt, never replayed context. */
-function appendSessionExchange(
-  rec: SessionRecord, prompt: string, agent: string, result: AskResult,
-): SessionRecord {
-  const lastUser = [...rec.transcript].reverse().find((t) => t.role === 'user');
-  const last = rec.transcript.at(-1);
-  if (lastUser?.text === prompt && last?.role === 'assistant') return rec;
-  let next = lastUser?.text === prompt && last?.role === 'user'
-    ? rec
-    : addTurn(rec, { role: 'user', agent: null, text: prompt });
-  next = addTurn(next, {
-    role: 'assistant', agent,
-    text: result.ok ? result.text : `(failed: ${result.failureClass})`,
-  });
-  if (result.ok && result.sessionId) next = setNative(next, agent, result.sessionId);
-  return next;
-}
-
-export function persistSessionExchange(
-  sess: ResolvedSession, prompt: string, agent: string, result: AskResult,
-): void {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const base = attempt === 0 ? sess.record : (loadSession(sess.record.id) ?? sess.record);
-    const next = appendSessionExchange(base, prompt, agent, result);
-    try {
-      saveSession(next, Date.now(), { ifUnchangedSince: base.updatedAt });
-      sess.record = next;
-      return;
-    } catch (e) {
-      if (!(e instanceof SessionWriteConflict)) throw e;
-    }
-  }
-  throw new Error('session persistence failed: too many concurrent writers');
-}
-
-/** Render a session transcript as faux multi-turn context for non-native agents. */
-export function renderTranscript(turns: SessionTurn[], msg: string, maxChars = 16_000): string {
-  const bounded = boundTranscript(turns, maxChars);
-  if (bounded.length === 0) return msg;
-  const ctx = bounded
-    .map((t) => (t.role === 'user' ? `User: ${t.text}` : `${t.agent ?? 'assistant'}: ${t.text}`))
-    .join('\n');
-  return `${ctx}\nUser: ${msg}\nAssistant:`;
-}
-
-function chatRequest(
-  prompt: string,
-  timeoutSeconds: number,
-  model: string | null = null,
-  resumeSessionId: string | null = null,
-  effort: string | null = null,
-): AdapterRequest {
-  return {
-    role: 'chat', prompt, outputContract: 'text', contextPaths: [],
-    timeoutSeconds, maxTurns: 1, allowedTools: [], workdir: null, model, effort, resumeSessionId,
-  };
-}
-
-export interface AskResult {
-  agent: string;
-  ok: boolean;
-  text: string;
-  failureClass: string;
-  /** native session id captured from the CLI this call, for resume (null if none). */
-  sessionId: string | null;
-  /** reported cost for this call in USD, or null if the CLI didn't report it. */
-  costUsd: number | null;
-  /** token usage when the CLI reports it (input/output/cost). */
-  usage: Usage;
-  /** model that actually served the call (null = the CLI's own default). */
-  model: string | null;
-  /** rungs auto-stepped down the model ladder after a usage limit (0 = none). */
-  steppedDown: number;
-  /** Redacted, size-bounded native adapter output for evidence-aware verification. */
-  evidence: string;
-}
-
-function boundedEvidence(text: string, max = 48_000): string {
-  const clean = redact(text).trim();
-  if (clean.length <= max) return clean;
-  const half = Math.floor((max - 31) / 2);
-  return `${clean.slice(0, half)}\n...[evidence clipped]...\n${clean.slice(-half)}`;
-}
-
-export async function askOne(
-  adapter: AgentAdapter,
-  prompt: string,
-  timeoutSeconds: number,
-  model: string | null = null,
-  resumeSessionId: string | null = null,
-  effort: string | null = null,
-  signal?: AbortSignal,
-): Promise<AskResult> {
-  const r = await adapter.invoke(
-    chatRequest(prompt, timeoutSeconds, model, resumeSessionId, effort),
-    signal ? { signal } : undefined,
-  );
-  return {
-    agent: adapter.name,
-    ok: r.ok,
-    text: r.ok ? r.normalizedText : r.stderr || r.failureClass,
-    failureClass: r.failureClass,
-    sessionId: r.sessionId ?? null,
-    costUsd: r.usage?.costUsd ?? null,
-    usage: r.usage ?? NULL_USAGE,
-    model: r.model ?? null,
-    steppedDown: r.steppedDown ?? 0,
-    evidence: boundedEvidence(r.stdout),
-  };
-}
-
-export type OrchCallPhase = 'plan' | 'verify' | 'replan' | 'synth';
-
-export interface OrchestrateHooks {
-  onOrchCallStart?: (phase: OrchCallPhase) => void;
-  onOrchCall?: (phase: OrchCallPhase, result: AskResult) => void;
-  onDispatchStart?: (agent: string, model: string | null, effort: string | null) => void;
-  onDispatch?: (result: AskResult) => void;
-}
-
-/** Build orchestration deps (codex sol planner by default). */
-export function createOrchestrateDeps(
-  registry: AdapterRegistry,
-  agents: RouterAgent[],
-  rosterText: string,
-  timeoutSeconds: number,
-  orchName: string = DEFAULT_ORCHESTRATOR_AGENT,
-  orchModel: string | null = DEFAULT_ORCHESTRATOR_MODEL,
-  noSynth = false,
-  hooks: OrchestrateHooks = {},
-  signal?: AbortSignal,
-): OrchestrateDeps {
-  const orchestrator = () => registry.resolveRole('chat', orchName);
-  const orchCall = async (prompt: string, phase: OrchCallPhase) => {
-    hooks.onOrchCallStart?.(phase);
-    const r = await askOne(orchestrator(), prompt, timeoutSeconds, orchModel, null, 'high', signal);
-    hooks.onOrchCall?.(phase, r);
-    return r;
-  };
-
-  return {
-    agents,
-    plan: async (goal) => {
-      const r = await orchCall(buildPlannerPrompt(goal, rosterText), 'plan');
-      return { text: r.text, costUsd: r.costUsd };
-    },
-    dispatch: async (agent, instruction, model, effort) => {
-      hooks.onDispatchStart?.(agent, model, effort);
-      const r = await askOne(
-        registry.resolveRole('chat', agent), instruction, timeoutSeconds, model, null, effort, signal,
-      );
-      hooks.onDispatch?.(r);
-      return { ok: r.ok, text: r.text, costUsd: r.costUsd, evidence: r.evidence };
-    },
-    verify: async (step, output, evidence) => {
-      const r = await orchCall(buildVerifyPrompt(step, output, evidence), 'verify');
-      return { ...parseVerify(r.text), costUsd: r.costUsd };
-    },
-    replan: async (goal, failed, outcomes) => {
-      const r = await orchCall(buildReplanPrompt(goal, failed, outcomes), 'replan');
-      return { text: r.text, costUsd: r.costUsd };
-    },
-    ...(noSynth
-      ? {}
-      : {
-          synthesize: async (goal, outcomes) => {
-            const r = await orchCall(buildSynthesisPrompt(goal, outcomes), 'synth');
-            return { text: r.text, costUsd: r.costUsd };
-          },
-          verifySynthesis: async (goal, synthesis, outcomes) => {
-            const sourceOutputs = outcomes
-              .map((o) => `## verified step ${o.id} (${o.agent})\n${o.output}`)
-              .join('\n\n');
-            const synthesisStep = {
-              id: 'synthesis', instruction: `Audit the final answer for goal: ${goal}`,
-              type: 'reason' as const, needs: [],
-              acceptance: 'Every material final-answer claim is supported by a verified step output.',
-              dependsOn: outcomes.map((o) => o.id),
-            };
-            const r = await orchCall(
-              buildVerifyPrompt(synthesisStep, synthesis, sourceOutputs, 'synthesis'), 'verify',
-            );
-            return { ...parseVerify(r.text), costUsd: r.costUsd };
-          },
-        }),
-  };
-}
-
-export interface RunOrchestrateGoalOpts {
-  goal: string;
-  timeoutSeconds: number;
-  orchestrator?: string;
-  orchestratorModel?: string | null;
-  noSynth?: boolean;
-  dryPlan?: boolean;
-  approve?: boolean;
-  budgetUsd?: number;
-  maxReplans?: number;
-  completed?: StepOutcome[];
-  onStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
-  hooks?: OrchestrateHooks;
-  shouldAbort?: () => boolean;
-  signal?: AbortSignal;
-}
-
-export async function runOrchestrateGoal(
-  registry: AdapterRegistry,
-  opts: RunOrchestrateGoalOpts,
-) {
-  const health = await registry.healthcheck();
-  const agents: RouterAgent[] = registry.names().map((name) => ({
-    name,
-    capabilities: registry.get(name).capabilities(),
-    available: health[name]?.available ?? false,
-    models: registry.getPreset(name)?.models?.options ?? [],
-    effortLevels: registry.getPreset(name)?.effort?.options ?? [],
-  }));
-  const rosterText = formatRosterForPlanner(buildAgentRoster(registry, health));
-  const orchName = opts.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT;
-  const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
-  const deps = createOrchestrateDeps(
-    registry, agents, rosterText, opts.timeoutSeconds, orchName, orchModel, opts.noSynth ?? false,
-    opts.hooks ?? {}, opts.signal,
-  );
-  return runOrchestration(opts.goal, deps, {
-    dryPlan: opts.dryPlan ?? false,
-    approveStep: (instruction) => (opts.approve ?? false) || findDestructive(instruction) === null,
-    completed: opts.completed,
-    onStep: opts.onStep,
-    shouldAbort: opts.shouldAbort,
-    ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
-    ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),
-  });
-}
-
-/**
- * Agents targeted by `--to all`: conversational adapters only. Excludes the
- * offline dry_run and browser/evidence adapters (Comet), which are slow and
- * meant for explicit `--to comet`, not every fan-out.
- */
-export function fanoutTargets(registry: AdapterRegistry): string[] {
-  return registry.names().filter((n) => n !== 'dry_run' && registry.get(n).transport !== 'browser');
-}
-
-export async function askAll(
-  registry: AdapterRegistry,
-  prompt: string,
-  timeoutSeconds: number,
-): Promise<AskResult[]> {
-  const targets = fanoutTargets(registry);
-  const settled = await Promise.allSettled(
-    targets.map((n) => askOne(registry.resolveRole('chat', n), prompt, timeoutSeconds)),
-  );
-  return settled.map((s, i) =>
-    s.status === 'fulfilled'
-      ? s.value
-      : {
-          agent: targets[i]!, ok: false, text: String(s.reason), failureClass: 'error',
-          sessionId: null, costUsd: null, usage: NULL_USAGE, model: null, steppedDown: 0,
-          evidence: '',
-        },
-  );
-}
 
 // ---- command handlers (return process exit codes) ----
 
@@ -543,32 +208,6 @@ export async function cmdAsk(
   return 1;
 }
 
-/**
- * Probe every agent and assemble its status row: availability + detail (live
- * healthcheck), effective model, and whether a native session is active.
- */
-export async function collectStatus(
-  registry: AdapterRegistry,
-  opts: { model?: (agent: string) => string | null; nativeAgents?: Set<string> } = {},
-): Promise<AgentStatus[]> {
-  const health = await registry.healthcheck();
-  const names = visibleAgentNames(registry.names(), health);
-  return names.map((name) => {
-    const preset = registry.getPreset(name);
-    const chosen = opts.model?.(name) ?? null;
-    const def = preset?.models?.default ?? preset?.model ?? null;
-    const model = chosen ?? (def ? `${def} (default)` : 'CLI default');
-    const h = health[name];
-    return {
-      name,
-      available: h?.available ?? false,
-      detail: h?.detail ?? '',
-      model,
-      sessionActive: opts.nativeAgents?.has(name) ?? false,
-    };
-  });
-}
-
 export async function cmdStatus(
   registry: AdapterRegistry,
   args: { watch: boolean; format?: OutputFormat },
@@ -599,57 +238,6 @@ export async function cmdStatus(
     });
   });
   return 0;
-}
-
-/** Best-effort provenance log: one JSON line per routing decision. */
-function logRoute(entry: Record<string, unknown>): void {
-  try {
-    const base = agentctlHome();
-    const path = join(base, 'route-log.jsonl');
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, JSON.stringify({ ts: Date.now(), ...entry }) + '\n', 'utf8');
-  } catch {
-    /* logging is never fatal */
-  }
-}
-
-/** Persist material claim failures so users can inspect patterns across agents/runs. */
-function logHallucinationIncidents(
-  goal: string,
-  outcomes: StepOutcome[],
-  synthesisVerification?: StepOutcome['verification'],
-): void {
-  try {
-    const path = join(agentctlHome(), 'hallucination-log.jsonl');
-    mkdirSync(dirname(path), { recursive: true });
-    for (const outcome of outcomes) {
-      const history = outcome.verificationHistory ?? (outcome.verification ? [outcome.verification] : []);
-      history.forEach((verification, index) => {
-        const claims = (verification.claims ?? []).filter(
-          (c) => c.status === 'unsupported' || c.status === 'contradicted',
-        );
-        if (claims.length === 0) return;
-        const record = {
-          ts: new Date().toISOString(), goal, step: outcome.id, agent: outcome.agent,
-          model: outcome.model, attempt: index + 1, attempts: outcome.attempts,
-          correctedByRetry: outcome.ok && index < history.length - 1,
-          feedback: verification.feedback, claims,
-        };
-        appendFileSync(path, `${redact(JSON.stringify(record))}\n`, 'utf8');
-      });
-    }
-    const synthesisClaims = (synthesisVerification?.claims ?? []).filter(
-      (c) => c.status === 'unsupported' || c.status === 'contradicted',
-    );
-    if (synthesisClaims.length > 0) {
-      appendFileSync(path, `${redact(JSON.stringify({
-        ts: new Date().toISOString(), goal, step: 'synthesis', agent: 'orchestrator',
-        feedback: synthesisVerification?.feedback, claims: synthesisClaims,
-      }))}\n`, 'utf8');
-    }
-  } catch {
-    /* diagnostics are best-effort and never change the run result */
-  }
 }
 
 export async function cmdRoute(
@@ -876,18 +464,6 @@ export async function cmdDelegate(
     },
     io,
   );
-}
-
-/**
- * Plan → route → execute → verify orchestration. Default orchestrator is codex
- * (gpt-6-astra): it plans, verifies, synthesizes, and picks agent+model per step.
- * Steps route to the planner's chosen executor (cursor, codex, claude, agy, …).
- */
-/** Where a resumable orchestration run is persisted, keyed by goal hash. */
-function orchestrationRunPath(goal: string): string {
-  const base = agentctlHome();
-  const hash = createHash('sha1').update(goal).digest('hex').slice(0, 12);
-  return join(base, 'orchestrations', `${hash}.json`);
 }
 
 export async function cmdOrchestrate(

@@ -1,4 +1,5 @@
-import { askOne, loadRegistry } from '../commands.js';
+import { askOne } from '../core/ask.js';
+import { loadRegistry } from '../core/loadRegistry.js';
 import type { ContextBundle } from './contextBundle.js';
 import { formatGatewayTurnPrefix } from './gatewayClient.js';
 
