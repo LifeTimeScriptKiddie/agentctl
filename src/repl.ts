@@ -101,6 +101,8 @@ export interface ReplOptions {
   autoRoute?: boolean;
   /** route plain messages through codex-sol orchestration (default true). */
   orchMode?: boolean;
+  /** allow orchestrated steps that need shell/repo-write/publish lanes (chat --approve). */
+  approve?: boolean;
   /** immediate status line while a slow handler runs (e.g. orchestration). */
   onProgress?: (line: string) => void;
   /** redraw header dashboard after each turn (default true in TTY chat). */
@@ -126,6 +128,7 @@ export class ReplSession {
   private readonly createdAt: number;
   private readonly orchAgent: string;
   private readonly orchModel: string;
+  private readonly approve: boolean;
   private readonly onProgress?: (line: string) => void;
   private readonly tui: boolean;
   private ui: ReplUIHooks = {};
@@ -142,6 +145,7 @@ export class ReplSession {
     this.orchMode = opts.orchMode ?? true;
     this.orchAgent = DEFAULT_ORCHESTRATOR_AGENT;
     this.orchModel = DEFAULT_ORCHESTRATOR_MODEL;
+    this.approve = opts.approve ?? false;
     this.onProgress = opts.onProgress;
     this.tui = opts.tui ?? true;
     this.persist = opts.persist;
@@ -381,7 +385,7 @@ export class ReplSession {
         orchestrator: this.orchAgent,
         orchestratorModel: this.orchModel,
         dryPlan,
-        approve: false,
+        approve: this.approve,
         onStep: (o, all) => {
           this.ui.onOrchStep?.(o, all);
           this.ui.onStateChange?.();
@@ -593,7 +597,7 @@ export class ReplSession {
   }
 }
 
-export interface ReplStartOptions extends Pick<ReplOptions, 'session' | 'persist' | 'orchMode' | 'tui'> {}
+export interface ReplStartOptions extends Pick<ReplOptions, 'session' | 'persist' | 'orchMode' | 'tui' | 'approve'> {}
 
 export async function startRepl(
   registry: AdapterRegistry,

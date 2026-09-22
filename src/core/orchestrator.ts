@@ -5,6 +5,7 @@ import { readPlannerRoutingRules } from '../assets.js';
 import { suggestEffort, escalateWorker } from './effortEscalation.js';
 import type { AdapterCapabilities } from '../schema/capabilities.js';
 import { createHash } from 'node:crypto';
+import { quoteUntrusted } from './untrusted.js';
 
 // ---- plan parsing (fail-closed) -------------------------------------------
 
@@ -196,11 +197,21 @@ export interface OrchestrateDeps {
   agents: RouterAgent[];
 }
 
+export type ApproveStep = (
+  step: PlanStep,
+  routedAgentCaps: AdapterCapabilities | null,
+  composedPrompt: string,
+) => boolean;
+
 export interface OrchestrateOptions {
   dryPlan?: boolean;
   maxRetriesPerStep?: number;
-  /** approval gate for a step; return true to allow, false to block. */
-  approveStep?: (step: PlanStep) => boolean;
+  /**
+   * Approval gate, called after routing and before every dispatch attempt with
+   * the routed agent's capabilities and the exact prompt about to be sent.
+   * Return true to allow, false to block.
+   */
+  approveStep?: ApproveStep;
   /** hard cost ceiling in USD; orchestration stops (status 'budget') once exceeded. */
   budgetUsd?: number;
   /** max times the plan may be revised on a step failure (replan edge). Default 0. */
@@ -217,10 +228,14 @@ export interface OrchestrateOptions {
 function stepPrompt(step: PlanStep, feedback: string | null, deps: StepOutcome[] = []): string {
   let base = step.instruction;
   if (deps.length > 0) {
-    const ctx = deps.map((d) => `## from ${d.id} (${d.agent})\n${d.output}`).join('\n\n');
+    const ctx = deps
+      .map((d) => `## from ${d.id} (${d.agent})\n${quoteUntrusted(`output of step ${d.id}`, d.output)}`)
+      .join('\n\n');
     base = `Context from prior steps you depend on:\n${ctx}\n\n---\n${base}`;
   }
-  return feedback ? `${base}\n\n(Revise — a prior attempt was rejected: ${feedback})` : base;
+  return feedback
+    ? `${base}\n\n(Revise — a prior attempt was rejected. Verifier feedback:)\n${quoteUntrusted('verifier feedback', feedback)}`
+    : base;
 }
 
 function clipNote(text: string, max = 220): string {
@@ -259,13 +274,14 @@ async function dispatchStep(
   instruction: string,
   model: string | null,
   effort: string | null,
+  allowFallback: (agent: string) => boolean = () => true,
 ): Promise<{ result: DispatchResult; agent: string; model: string | null }> {
   const r = await deps.dispatch(agent, instruction, model, effort);
   if (r.ok) return { result: r, agent, model };
 
   if (agent === 'agy') {
     const cometUp = deps.agents.some((a) => a.name === 'comet' && a.available);
-    if (cometUp) {
+    if (cometUp && allowFallback('comet')) {
       const r2 = await deps.dispatch('comet', instruction, null, null);
       const combinedCost = addCost(r.costUsd ?? null, r2.costUsd);
       if (r2.ok) return { result: { ...r2, costUsd: combinedCost }, agent: 'comet', model: null };
@@ -289,16 +305,11 @@ async function runStep(
   deps: OrchestrateDeps,
   maxRetries: number,
   depOutcomes: StepOutcome[],
-  approveStep?: (step: PlanStep) => boolean,
+  approveStep?: ApproveStep,
   shouldAbort?: () => boolean,
 ): Promise<StepOutcome> {
   const fingerprint = stepFingerprint(step);
-  if (approveStep && !approveStep(step)) {
-    return {
-      id: step.id, agent: null, model: null, effort: null, ok: false, attempts: 0,
-      output: '', note: 'blocked by approval gate', costUsd: null, fingerprint,
-    };
-  }
+  const capsOf = (name: string) => deps.agents.find((a) => a.name === name)?.capabilities ?? null;
   const routed = routeStepAgent(step, deps.agents);
   const agent = routed.agent;
   if (!agent) {
@@ -319,9 +330,20 @@ async function runStep(
       note = 'cancelled';
       break;
     }
+    const prompt = stepPrompt(step, feedback, depOutcomes);
+    if (approveStep && !approveStep(step, capsOf(worker), prompt)) {
+      return {
+        id: step.id, agent: attempts > 0 ? worker : null, model: attempts > 0 ? model : null,
+        effort: attempts > 0 ? effort : null, ok: false, attempts,
+        output: '', note: 'blocked by approval gate', costUsd: cost, fingerprint,
+        ...(verification ? { verification } : {}),
+        ...(verificationHistory.length ? { verificationHistory } : {}),
+      };
+    }
     attempts += 1;
     const sent = await dispatchStep(
-      deps, worker, stepPrompt(step, feedback, depOutcomes), model, effort,
+      deps, worker, prompt, model, effort,
+      approveStep ? (fallback) => approveStep(step, capsOf(fallback), prompt) : undefined,
     );
     worker = sent.agent;
     model = sent.model;
@@ -559,15 +581,19 @@ export function buildVerifyPrompt(
     `AUDITED STAGE: ${stage}`,
     '',
     'OUTPUT:',
-    output,
+    quoteUntrusted(`${stage} output`, output),
     '',
     'UNTRUSTED EXECUTION EVIDENCE:',
-    evidence || '(no adapter/tool trace was available; do not assume execution occurred)',
+    evidence
+      ? quoteUntrusted('execution evidence', evidence)
+      : '(no adapter/tool trace was available; do not assume execution occurred)',
   ].join('\n');
 }
 
 export function buildSynthesisPrompt(goal: string, outcomes: StepOutcome[]): string {
-  const body = outcomes.map((o) => `## step ${o.id} (${o.agent})\n${o.output}`).join('\n\n');
+  const body = outcomes
+    .map((o) => `## step ${o.id} (${o.agent})\n${quoteUntrusted(`output of step ${o.id}`, o.output)}`)
+    .join('\n\n');
   return [
     'You are the SYNTHESIZER. Combine the step outputs into a single, coherent answer',
     `to the original goal. Be concise and do not repeat the steps verbatim.`,
@@ -589,7 +615,8 @@ export function buildReplanPrompt(goal: string, failed: StepOutcome, outcomes: S
     '',
     `GOAL: ${goal}`,
     `ALREADY SUCCEEDED: ${doneIds}`,
-    `FAILED STEP: ${failed.id} (${failed.agent}) — ${failed.note}`,
+    `FAILED STEP: ${failed.id} (${failed.agent}) — failure note:`,
+    quoteUntrusted(`failure note for step ${failed.id}`, failed.note),
   ].join('\n');
 }
 
