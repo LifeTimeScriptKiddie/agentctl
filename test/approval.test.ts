@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ApprovalRequiredError, assertApproved, findDestructive, stepApprovalBlock,
+  GATED_CAPABILITIES, gatedCapability, gateInjectedContext,
 } from '../src/approval.js';
 import type { AdapterCapabilities } from '../src/schema/capabilities.js';
 
@@ -92,6 +93,51 @@ describe('findDestructive: new patterns and benign near-misses', () => {
   });
 });
 
+describe('findDestructive: verified N3 bypasses are closed', () => {
+  it('joins backslash-newline continuations before scanning', () => {
+    expect(findDestructive('git -C . \\\npush')).toBe('git-push');
+    expect(findDestructive('git -C . \\\r\npush origin main')).toBe('git-push');
+    expect(findDestructive('npm \\\n  publish')).toBe('npm-publish');
+    expect(findDestructive('rm -r \\\n -f build')).toBe('rm-rf');
+  });
+
+  it('keeps ordinary line breaks as separators, and a joined harmless line stays harmless', () => {
+    expect(findDestructive('git status\npush the button')).toBeNull();
+    expect(findDestructive('see C:\\temp\\\nthen push the button')).toBeNull();
+  });
+
+  it('strips U+034F, U+FE00-U+FE0F, U+E0000-U+E007F and all \\p{Cf} inside a keyword', () => {
+    expect(findDestructive('git pu\u034Fsh origin')).toBe('git-push');
+    expect(findDestructive('gi\uFE0Ft push')).toBe('git-push');
+    expect(findDestructive('git pus\uFE00h')).toBe('git-push');
+    expect(findDestructive('git p\u{E0075}ush')).toBe('git-push');
+    expect(findDestructive('npm pub\u{E0000}lish')).toBe('npm-publish');
+    expect(findDestructive('npm pub\u{E007F}lish')).toBe('npm-publish');
+    expect(findDestructive('git pu\u2061sh')).toBe('git-push');
+    expect(findDestructive('git pu\u061Csh')).toBe('git-push');
+  });
+
+  it.each([
+    // [indirection, destructive example, id, benign near-miss]
+    ['variable holding git', 'g=git; $g push', 'variable-push', 'echo $USER pushed the fix'],
+    ['braced/quoted variable with options', 'G=git; "${G}" -C . push origin', 'variable-push', 'cp $HOME/bin/push.sh /tmp/'],
+    ['variable before publish', 'n=npm; $n publish --access public', 'variable-push', 'Set $EDITOR then publish the post'],
+    ['variable glued to a word', 'g=gi; ${g}t push', 'variable-push', 'export PUSH_URL=$REMOTE; echo done'],
+    ['eval of a quoted string', 'eval "g""it pu""sh"', 'shell-eval', 'run the eval suite and report'],
+    ['eval of a variable', 'c=x; eval $c', 'shell-eval', 'evaluate the rubric strictly'],
+    ['eval of a substitution', 'eval "$(cat payload.txt)"', 'shell-eval', 'the eval results look good'],
+    ['base64 -d | sh', 'echo Z2l0IHB1c2g= | base64 -d | sh', 'decode-pipe-shell', 'base64 -d key.b64 > key.bin'],
+    ['base64 --decode | bash', 'base64 --decode payload.txt | sudo bash', 'decode-pipe-shell', 'echo aGk= | base64 --decode | jq .'],
+    ['base64 -d inside $(…)', 'git $(echo cHVzaA== | base64 -d)', 'decode-pipe-shell', 'echo "$(base64 key.bin)"'],
+    ['$(…) containing push', 'x=$(printf "%s" push); git "$x"', 'subshell-push', 'echo "$(git rev-parse HEAD)"'],
+    ['$(…) containing publish', 'npm $(echo publish)', 'subshell-push', '$(date) pushed build'],
+    ['$(…) glued before push', '$(printf gi)t push origin main', 'subshell-push', 'VERSION=$(cat v.txt); echo ready'],
+  ])('%s', (_name, destructive, id, benign) => {
+    expect(findDestructive(destructive)).toBe(id);
+    expect(findDestructive(benign), benign).toBeNull();
+  });
+});
+
 describe('assertApproved', () => {
   it('labels injected-context blocks differently from user prompt blocks', () => {
     expect(() => assertApproved('git push', false)).toThrow(/prompt requests a destructive/);
@@ -121,5 +167,45 @@ describe('stepApprovalBlock', () => {
   it('allows read-only steps with benign prompts', () => {
     expect(stepApprovalBlock({ needs: ['canReadFiles', 'canAccessNetwork'] }, caps({ canAccessNetwork: true }), 'git status')).toBeNull();
     expect(stepApprovalBlock({ needs: [] }, null, 'summarize the README')).toBeNull();
+  });
+
+  it('gates canWriteFiles in needs and routed capabilities', () => {
+    expect(GATED_CAPABILITIES).toContain('canWriteFiles');
+    expect(stepApprovalBlock({ needs: ['canWriteFiles'] }, caps(), 'x')).toBe('capability:canWriteFiles');
+    expect(stepApprovalBlock({ needs: [] }, caps({ canWriteFiles: true, canAccessNetwork: true }), 'search'))
+      .toBe('capability:canWriteFiles');
+    expect(gatedCapability(caps({ canWriteFiles: true }))).toBe('canWriteFiles');
+    expect(gatedCapability(caps({ canAccessNetwork: true, canUseBrowser: true }))).toBeNull();
+  });
+});
+
+describe('gateInjectedContext', () => {
+  const gate = (p: Partial<Parameters<typeof gateInjectedContext>[0]>) => gateInjectedContext({
+    context: 'briefing: keep going', agent: 'lane', caps: caps(), approve: false, approveContext: false, ...p,
+  });
+
+  it('includes when there is no context', () => {
+    expect(gate({ context: '  ', caps: caps({ canRunShell: true }) })).toEqual({ action: 'include' });
+  });
+
+  it.each(['canRunShell', 'canModifyRepo', 'canPublish', 'canWriteFiles'] as const)(
+    'drops context for a %s target unless approveContext; approve alone is not enough',
+    (cap) => {
+      for (const approve of [false, true]) {
+        const d = gate({ caps: caps({ [cap]: true }), approve });
+        expect(d.action).toBe('drop');
+        expect(d.action === 'drop' && d.warning).toMatch(new RegExp(`lane has ${cap}.*--approve-context`));
+      }
+      expect(gate({ caps: caps({ [cap]: true }), approveContext: true })).toEqual({ action: 'include' });
+    },
+  );
+
+  it('read-only targets keep the pattern scan, overridden by approve or approveContext', () => {
+    const d = gate({ context: 'then $g push' });
+    expect(d.action).toBe('block');
+    expect(d.action === 'block' && d.error.source).toBe('injected-context');
+    expect(gate({ context: 'then $g push', approve: true })).toEqual({ action: 'include' });
+    expect(gate({ context: 'then $g push', approveContext: true })).toEqual({ action: 'include' });
+    expect(gate({})).toEqual({ action: 'include' });
   });
 });

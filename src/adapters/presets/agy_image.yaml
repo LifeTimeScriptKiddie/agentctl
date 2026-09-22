@@ -19,10 +19,13 @@ promptPrefix: |-
   User image request:
 
 
+# --sandbox: see agy.yaml (terminal restrictions; no per-run MCP/tool flag, so
+# this canWriteFiles lane stays behind the approval capability gate).
 commandTemplate:
   - agy
   - --prompt
   - "{prompt}"
+  - --sandbox
   - --output-format
   - json
 session:

@@ -51,8 +51,9 @@ export function buildProgram(): Command {
     .option('--gateway-url <url>', 'memory gatekeeper base URL (overrides AGENTCTL_GATEWAY_URL; uses POST /v1/turn)')
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
+    .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
-    .action(async (promptArg: string | undefined, opts: { to: string; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; format: string }) => {
+    .action(async (promptArg: string | undefined, opts: { to: string; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; approveContext: boolean; format: string }) => {
       const prompt = (promptArg ?? (await readStdin())).trim();
       if (!prompt) {
         stdio.err('no prompt given (pass as an argument or via stdin)');
@@ -63,7 +64,7 @@ export function buildProgram(): Command {
       process.exitCode = await cmdAsk(
         registry,
         {
-          to: opts.to, prompt, timeoutSeconds: Number(opts.timeout), approve: opts.approve,
+          to: opts.to, prompt, timeoutSeconds: Number(opts.timeout), approve: opts.approve, approveContext: opts.approveContext,
           model: opts.model ?? null, effort: opts.effort ?? null, session: opts.session, resume: opts.resume,
           briefingWorkspace: opts.briefingWorkspace,
           sessionScope: opts.sessionScope,
@@ -129,8 +130,9 @@ export function buildProgram(): Command {
     .option('--gateway-url <url>', 'memory gatekeeper base URL (overrides AGENTCTL_GATEWAY_URL)')
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
+    .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
-    .action(async (taskArg: string | undefined, opts: { dryRoute: boolean; explain: boolean; llm: boolean; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; format: string }) => {
+    .action(async (taskArg: string | undefined, opts: { dryRoute: boolean; explain: boolean; llm: boolean; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; approveContext: boolean; format: string }) => {
       const task = (taskArg ?? (await readStdin())).trim();
       if (!task) {
         stdio.err('no task given (pass as an argument or via stdin)');
@@ -141,7 +143,7 @@ export function buildProgram(): Command {
         loadRegistry(),
         {
           task, dryRoute: opts.dryRoute, explain: opts.explain, llm: opts.llm, timeoutSeconds: Number(opts.timeout),
-          approve: opts.approve, model: opts.model ?? null, effort: opts.effort ?? null,
+          approve: opts.approve, approveContext: opts.approveContext, model: opts.model ?? null, effort: opts.effort ?? null,
           session: opts.session, resume: opts.resume, briefingWorkspace: opts.briefingWorkspace,
           sessionScope: opts.sessionScope, gatewayUrl: opts.gatewayUrl ?? null,
           format: parseFormat(opts.format),
@@ -168,12 +170,13 @@ export function buildProgram(): Command {
     .option('--gateway-url <url>', 'memory gatekeeper base URL (overrides AGENTCTL_GATEWAY_URL)')
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
+    .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (taskArg: string | undefined, opts: {
       to?: string; dryRoute: boolean; verbose: boolean; explain: boolean; llm: boolean;
       model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string;
       sessionScope?: string; gatewayUrl?: string;
-      timeout: string; approve: boolean; format: string;
+      timeout: string; approve: boolean; approveContext: boolean; format: string;
     }) => {
       const task = (taskArg ?? (await readStdin())).trim();
       if (!task) {
@@ -185,7 +188,7 @@ export function buildProgram(): Command {
         loadRegistry(),
         {
           task, dryRoute: opts.dryRoute, verbose: opts.verbose, explain: opts.explain, llm: opts.llm,
-          timeoutSeconds: Number(opts.timeout), approve: opts.approve,
+          timeoutSeconds: Number(opts.timeout), approve: opts.approve, approveContext: opts.approveContext,
           model: opts.model ?? null, effort: opts.effort ?? null,
           session: opts.session, resume: opts.resume, briefingWorkspace: opts.briefingWorkspace,
           sessionScope: opts.sessionScope, gatewayUrl: opts.gatewayUrl ?? null,
@@ -205,7 +208,8 @@ export function buildProgram(): Command {
     .option('--resume', 'resume the most recent session', false)
     .option('--plain', 'classic scroll-only chat (no header dashboard)', false)
     .option('--approve', 'allow orchestrated steps on shell/repo-write/publish lanes', false)
-    .action(async (opts: { agent?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean; approve: boolean }) => {
+    .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
+    .action(async (opts: { agent?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean; approve: boolean; approveContext: boolean }) => {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
         stdio.err(
           'agentctl chat requires an interactive terminal (stdin and stdout must be TTYs).\n' +
@@ -242,6 +246,7 @@ export function buildProgram(): Command {
           ...(sess ? { session: sess.record, persist: sess.persist } : {}),
           tui: !opts.plain,
           approve: opts.approve,
+          approveContext: opts.approveContext,
         },
       );
     });

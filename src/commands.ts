@@ -7,7 +7,7 @@ import { runPaths } from './core/paths.js';
 import { dryRunForValidation } from './adapters/dryRun.js';
 import { launchManagedBrowser } from './adapters/browser.js';
 import { readPrompt } from './assets.js';
-import { assertApproved, ApprovalRequiredError } from './approval.js';
+import { assertApproved, ApprovalRequiredError, gatedCapability } from './approval.js';
 import { color, agentColor } from './util/colors.js';
 import {
   listSessions, deleteSession, pruneSessions, InvalidSessionIdError,
@@ -228,7 +228,7 @@ function renderOrchestration(result: OrchestrateCommandResult, io: IO): void {
 export async function cmdAsk(
   registry: AdapterRegistry,
   args: {
-    to: string; prompt: string; timeoutSeconds: number; approve: boolean;
+    to: string; prompt: string; timeoutSeconds: number; approve: boolean; approveContext?: boolean;
     model?: string | null; effort?: string | null; session?: string | undefined; resume?: boolean;
     briefingWorkspace?: string;
     sessionScope?: string;
@@ -242,6 +242,7 @@ export async function cmdAsk(
     prompt: args.prompt,
     timeoutSeconds: args.timeoutSeconds,
     approve: args.approve,
+    approveContext: args.approveContext ?? false,
     model: args.model ?? null,
     effort: args.effort ?? null,
     session: args.session,
@@ -295,7 +296,7 @@ export async function cmdRoute(
   registry: AdapterRegistry,
   args: {
     task: string; dryRoute: boolean; explain: boolean; timeoutSeconds: number;
-    approve: boolean; model?: string | null; effort?: string | null;
+    approve: boolean; approveContext?: boolean; model?: string | null; effort?: string | null;
     session?: string | undefined; resume?: boolean; llm?: boolean;
     briefingWorkspace?: string; sessionScope?: string;
     format?: OutputFormat;
@@ -310,6 +311,7 @@ export async function cmdRoute(
     llm: args.llm,
     timeoutSeconds: args.timeoutSeconds,
     approve: args.approve,
+    approveContext: args.approveContext ?? false,
     model: args.model ?? null,
     effort: args.effort ?? null,
     session: args.session,
@@ -356,7 +358,7 @@ export async function cmdRoute(
 export async function cmdDelegate(
   registry: AdapterRegistry,
   args: {
-    task: string; timeoutSeconds: number; approve: boolean;
+    task: string; timeoutSeconds: number; approve: boolean; approveContext?: boolean;
     model?: string | null; effort?: string | null; session?: string | undefined; resume?: boolean;
     llm?: boolean; explain?: boolean; verbose?: boolean; dryRoute?: boolean;
     to?: string; briefingWorkspace?: string; sessionScope?: string;
@@ -373,6 +375,7 @@ export async function cmdDelegate(
     llm: args.llm,
     timeoutSeconds: args.timeoutSeconds,
     approve: args.approve,
+    approveContext: args.approveContext ?? false,
     model: args.model ?? null,
     effort: args.effort ?? null,
     session: args.session,
@@ -579,7 +582,19 @@ export async function cmdRun(args: RunArgs, io: IO): Promise<number> {
   }
 
   const deps = buildRunDeps(state, args);
-  const final = await runLoop(args.dir, deps, { dryRun: args.dryRun });
+  const cap = args.approve ? null : gatedCapability(deps.generator.capabilities());
+  if (cap) {
+    io.err(`blocked: run generator/repairer '${deps.generator.name}' has ${cap}. Re-run with --approve to allow it.`);
+    return 3;
+  }
+  let final: RunState;
+  try {
+    final = await runLoop(args.dir, deps, { dryRun: args.dryRun, approve: args.approve });
+  } catch (e) {
+    if (!(e instanceof ApprovalRequiredError)) throw e;
+    io.err(`${e.message} Run paused; resume with: agentctl resume ${args.dir} --approve`);
+    return 3;
+  }
 
   io.out(`run ${final.runId}: ${final.status} after ${final.iteration} iteration(s)`);
   if (final.status === 'passed') {

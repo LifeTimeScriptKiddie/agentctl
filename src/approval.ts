@@ -55,20 +55,39 @@ const DESTRUCTIVE: Array<{ id: string; re: RegExp }> = [
     id: 'protected-path-write',
     re: re(`${REDIRECT}${PATH_PREFIX}${PROTECTED}|${WRITE_TOOL}${PATH_PREFIX}${PROTECTED}|${WRITE_VERB}${PATH_PREFIX}${PROTECTED}|${PUT_INTO}${PATH_PREFIX}${PROTECTED}`),
   },
+  // Shell indirection hides the real command from every pattern above.
+  {
+    id: 'decode-pipe-shell',
+    re: re(String.raw`\bbase64\b[^\n;&|]*?\s(?:-d|-D|--decode)\b[^\n;&]*?\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:sh|bash|zsh|dash|ksh|python[\d.]*|perl|node)\b|\$\([^)\n]*\bbase64\b[^)\n]*\s(?:-d|-D|--decode)\b`),
+  },
+  { id: 'shell-eval', re: re(String.raw`\beval\s+(?:["'\x60(\\{]|\S*[$\x60])`) },
+  { id: 'variable-push', re: re(String.raw`\$\{?[A-Za-z_]\w*\}?[^\s;&|]*${OPTS}\s+(?:push|publish)\b`) },
+  {
+    id: 'subshell-push',
+    re: re(String.raw`\$\([^)\n]*\b(?:push|publish)\b|\$\([^)\n]*\)[^\s;&|]*${OPTS}\s+(?:push|publish)\b`),
+  },
 ];
 
-export type ApprovalSource = 'prompt' | 'injected-context';
+export type ApprovalSource = 'prompt' | 'injected-context' | 'run-loop';
+
+function approvalMessage(matched: string, source: ApprovalSource): string {
+  switch (source) {
+    case 'injected-context':
+      return `blocked: context added to your prompt (memory, briefing, gateway answer, or session transcript) `
+        + `requests a destructive/outward-facing action ('${matched}'); this text did not come from your prompt. `
+        + `Re-run with --approve to allow it.`;
+    case 'run-loop':
+      return `blocked: a composed run-loop prompt (task.md, rubric.md, prior candidate, or evaluator feedback) `
+        + `requests a destructive/outward-facing action ('${matched}'). Re-run with --approve to allow it.`;
+    default:
+      return `blocked: prompt requests a destructive/outward-facing action ('${matched}'). `
+        + `Re-run with --approve to allow it.`;
+  }
+}
 
 export class ApprovalRequiredError extends Error {
   constructor(public readonly matched: string, public readonly source: ApprovalSource = 'prompt') {
-    super(
-      source === 'injected-context'
-        ? `blocked: context added to your prompt (memory, briefing, gateway answer, or session transcript) `
-          + `requests a destructive/outward-facing action ('${matched}'); this text did not come from your prompt. `
-          + `Re-run with --approve to allow it.`
-        : `blocked: prompt requests a destructive/outward-facing action ('${matched}'). `
-          + `Re-run with --approve to allow it.`,
-    );
+    super(approvalMessage(matched, source));
     this.name = 'ApprovalRequiredError';
   }
 }
@@ -88,7 +107,13 @@ export function assertApproved(text: string, approve: boolean, source: ApprovalS
   if (hit) throw new ApprovalRequiredError(hit, source);
 }
 
-const GATED_CAPABILITIES = ['canPublish', 'canModifyRepo', 'canRunShell'] as const;
+export const GATED_CAPABILITIES = ['canPublish', 'canModifyRepo', 'canRunShell', 'canWriteFiles'] as const;
+export type GatedCapability = (typeof GATED_CAPABILITIES)[number];
+
+/** The first gated capability the adapter has, or null for a read-only lane. */
+export function gatedCapability(caps: Partial<AdapterCapabilities> | null | undefined): GatedCapability | null {
+  return GATED_CAPABILITIES.find((cap) => caps?.[cap]) ?? null;
+}
 
 /**
  * Orchestration step gate. Returns why the step needs --approve, or null:
@@ -106,4 +131,38 @@ export function stepApprovalBlock(
     if (step.needs.includes(cap) || routedAgentCaps?.[cap]) return `capability:${cap}`;
   }
   return null;
+}
+
+export type InjectedContextDecision =
+  | { action: 'include' }
+  | { action: 'drop'; warning: string }
+  | { action: 'block'; error: ApprovalRequiredError };
+
+/**
+ * Gate for context the user didn't type (briefing, gateway answer, session
+ * transcript). A target with a gated capability receives it only with
+ * `approveContext`; `approve` alone does not cover it, and without approval the
+ * context is dropped. Read-only targets keep the pattern scan, which `approve`
+ * (or `approveContext`) overrides.
+ */
+export function gateInjectedContext(opts: {
+  context: string;
+  agent: string;
+  caps: Partial<AdapterCapabilities> | null | undefined;
+  approve: boolean;
+  approveContext: boolean;
+}): InjectedContextDecision {
+  if (!opts.context.trim()) return { action: 'include' };
+  const cap = gatedCapability(opts.caps);
+  if (cap) {
+    if (opts.approveContext) return { action: 'include' };
+    return {
+      action: 'drop',
+      warning: `dropped context not typed by you (memory, briefing, gateway answer, or session transcript): `
+        + `${opts.agent} has ${cap}. Re-run with --approve-context to include it.`,
+    };
+  }
+  if (opts.approve || opts.approveContext) return { action: 'include' };
+  const hit = findDestructive(opts.context);
+  return hit ? { action: 'block', error: new ApprovalRequiredError(hit, 'injected-context') } : { action: 'include' };
 }

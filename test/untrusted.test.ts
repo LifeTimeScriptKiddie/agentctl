@@ -60,4 +60,18 @@ describe('normalizeForScan', () => {
   it('keeps line breaks as single newlines', () => {
     expect(normalizeForScan('git status\r\n\r\n   push the button')).toBe('git status\npush the button');
   });
+
+  it('joins backslash-newline continuations into one line', () => {
+    expect(normalizeForScan('git -C . \\\npush')).toBe('git -C . push');
+    expect(normalizeForScan('a \\\r\n  b\nc')).toBe('a b\nc');
+    expect(normalizeForScan('ends with a backslash \\')).toBe('ends with a backslash \\');
+  });
+
+  it('strips \\p{Cf}, U+034F, U+FE00-U+FE0F and U+E0000-U+E007F', () => {
+    expect(normalizeForScan('pu\u034Fsh')).toBe('push');
+    expect(normalizeForScan('p\uFE00u\uFE0Fsh')).toBe('push');
+    expect(normalizeForScan('p\u{E0000}u\u{E0041}s\u{E007F}h')).toBe('push');
+    expect(normalizeForScan('p\u00ADu\u061Cs\u2064h\u{1D173}')).toBe('push');
+    expect(normalizeForScan('café ✔ 👍🏽')).toBe('café ✔ 👍🏽');
+  });
 });

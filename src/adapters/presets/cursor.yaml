@@ -20,7 +20,12 @@ commandTemplate:
   - --sandbox
   - enabled
   # never add --approve-mcps: headless runs would then auto-approve every
-  # configured MCP server for this read-only lane.
+  # configured MCP server for this read-only lane. Checked 2026-09-22 against
+  # cursor-agent 2026.09.18: --approve-mcps is opt-in (default false) and there is
+  # no per-run flag to disable MCP; only servers added with `cursor-agent mcp
+  # enable` are pre-approved (`cursor-agent mcp list` showed none on this host).
+  # No `--` here: `cursor-agent --help` does not document it as ending options,
+  # so buildInvocation prefixes a space to a prompt that starts with '-'.
   - "{prompt}"
 # Prefer the Cursor Models usage pool with Composer; third-party models use
 # a separate allowance. Explicit --model IDs are passed through to Cursor.

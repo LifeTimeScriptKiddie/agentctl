@@ -12,6 +12,7 @@ import { normalizeEvaluation, failClosedEvaluation, failureFingerprint } from '.
 import { decide } from './policy.js';
 import { appendEvent, hashText } from './trace.js';
 import { redact } from './redact.js';
+import { ApprovalRequiredError, findDestructive } from '../approval.js';
 
 export interface ControllerDeps {
   generator: AgentAdapter;
@@ -24,6 +25,8 @@ export interface ControllerDeps {
 
 export interface RunOptions {
   dryRun?: boolean;
+  /** Allow composed prompts that match a destructive/outward-facing pattern. */
+  approve?: boolean;
 }
 
 function writeEnsured(path: string, content: string): void {
@@ -114,6 +117,15 @@ export async function runLoop(
     writeFailureReport(paths.failureReportMd, state, 'wall-clock budget exhausted or less than one callable second remains');
     return finish('stopped', 'wall_clock_exceeded');
   };
+  /** Pause (resumable with --approve) when a composed prompt trips the approval scan. */
+  const gatePrompt = (stage: 'generate' | 'evaluate', iteration: number, prompt: string): void => {
+    if (opts.approve) return;
+    const hit = findDestructive(prompt);
+    if (!hit) return;
+    appendEvent(paths.trace, { event: 'approval_required', iteration, stage, pattern: hit });
+    finish('paused', 'approval_required');
+    throw new ApprovalRequiredError(hit, 'run-loop');
+  };
 
   try {
     while (true) {
@@ -132,6 +144,7 @@ export async function runLoop(
         ...(lastCandidate !== undefined ? { lastCandidate } : {}),
         ...(lastEvaluation !== undefined ? { lastEvaluation } : {}),
       });
+      gatePrompt('generate', iteration, genPrompt);
       const genTimeout = stageTimeout();
       if (genTimeout === 0) return stopForBudget();
       const genReq: AdapterRequest = {
@@ -185,6 +198,7 @@ export async function runLoop(
           rubric,
           candidate,
         });
+        gatePrompt('evaluate', iteration, evalPrompt);
         const evalTimeout = stageTimeout();
         if (evalTimeout === 0) {
           evaluatorBudgetExhausted = true;
