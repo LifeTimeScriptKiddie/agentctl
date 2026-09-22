@@ -574,7 +574,7 @@ export async function agentHealth(registry: AdapterRegistry): Promise<AgentsHeal
     detail: health[name]?.detail ?? '',
     transport: registry.get(name).transport,
   }));
-  const visibleAgents = visibleAgentNames(registry.names(), health);
+  const visibleAgents = visibleAgentNames(registry, health);
   return { exitCode: 0, agents, visibleAgents };
 }
 

@@ -22,6 +22,22 @@
               "dry_run"
             ]
           },
+          "adapter": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "subprocess",
+                  "agy",
+                  "agy_image"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "transport": {
             "type": "string",
             "enum": [
@@ -44,6 +60,10 @@
             ]
           },
           "optional": {
+            "default": false,
+            "type": "boolean"
+          },
+          "hideWhenUnavailable": {
             "default": false,
             "type": "boolean"
           },

@@ -1,6 +1,8 @@
 name: agy_image
 family: subprocess
+adapter: agy_image
 transport: subprocess
+hideWhenUnavailable: true
 parse: agy_json
 optional: true
 promptDelivery: arg

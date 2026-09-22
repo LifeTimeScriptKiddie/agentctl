@@ -50,7 +50,7 @@ export async function collectStatus(
   opts: { model?: (agent: string) => string | null; nativeAgents?: Set<string> } = {},
 ): Promise<AgentStatus[]> {
   const health = await registry.healthcheck();
-  const names = visibleAgentNames(registry.names(), health);
+  const names = visibleAgentNames(registry, health);
   return names.map((name) => {
     const preset = registry.getPreset(name);
     const chosen = opts.model?.(name) ?? null;

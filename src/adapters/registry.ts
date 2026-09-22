@@ -61,11 +61,16 @@ export class AdapterRegistry {
     }
 
     let adapter: AgentAdapter;
+    const adapterKind = preset.adapter ?? (preset.name === 'agy_image'
+      ? 'agy_image'
+      : preset.name === 'agy'
+        ? 'agy'
+        : 'subprocess');
     switch (preset.family) {
       case 'subprocess':
-        adapter = preset.name === 'agy_image'
+        adapter = adapterKind === 'agy_image'
           ? new AgyImageAdapter(preset)
-          : preset.name === 'agy'
+          : adapterKind === 'agy'
             ? new AgyAdapter(preset)
             : new SubprocessAdapter(preset);
         break;
