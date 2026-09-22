@@ -11,19 +11,21 @@ import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { NULL_USAGE } from './schema/result.js';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { createHash } from 'node:crypto';
-import { agentctlHome } from './core/agentHome.js';
 import {
   askOne,
   askAll,
-  runOrchestrateGoal,
+} from './core/ask.js';
+import {
   resolveSession,
   resolveSessionScope,
   persistSessionExchange,
-  collectStatus,
-  type AskResult,
-} from './commands.js';
+} from './core/sessionFlow.js';
+import {
+  runOrchestrateGoal,
+  orchestrationRunPath,
+} from './core/orchestrateFlow.js';
+import { collectStatus } from './core/loadRegistry.js';
+import type { AskResult } from './core/ask.js';
 import { buildWorkerPrompt } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
@@ -414,11 +416,6 @@ export async function agentDelegate(
     };
   }
   return agentRoute(registry, opts);
-}
-
-function orchestrationRunPath(goal: string): string {
-  const hash = createHash('sha1').update(goal).digest('hex').slice(0, 12);
-  return join(agentctlHome(), 'orchestrations', `${hash}.json`);
 }
 
 function emptyOrchestration(goal: string): OrchestrationResult {
