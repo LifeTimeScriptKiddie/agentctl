@@ -84,9 +84,11 @@ export type SessionConfig = z.infer<typeof SessionSchema>;
 export const PresetSchema = z.object({
   name: z.string(),
   family: FamilySchema,
+  adapter: z.enum(['subprocess', 'agy', 'agy_image']).nullable().default(null),
   transport: TransportSchema,
   parse: ParseModeSchema.default('text'),
   optional: z.boolean().default(false),
+  hideWhenUnavailable: z.boolean().default(false),
   capabilities: AdapterCapabilitiesSchema.default(AdapterCapabilitiesSchema.parse({})),
 
   // subprocess family

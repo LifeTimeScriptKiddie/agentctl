@@ -1,14 +1,13 @@
 import type { OrchestrationResult } from './orchestrator.js';
-
-/** Agents shown in status/agents lists — hides optional lanes that aren't ready. */
-const HIDE_WHEN_UNAVAILABLE = new Set(['agy_image', 'claude']);
+import type { AdapterRegistry } from '../adapters/registry.js';
 
 export function visibleAgentNames(
-  names: string[],
+  registry: AdapterRegistry,
   health: Record<string, { available: boolean }>,
 ): string[] {
-  return names.filter((n) => {
-    if (HIDE_WHEN_UNAVAILABLE.has(n) && !health[n]?.available) return false;
+  return registry.names().filter((name) => {
+    const preset = registry.getPreset(name);
+    if (preset?.hideWhenUnavailable && !health[name]?.available) return false;
     return true;
   });
 }

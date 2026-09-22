@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AdapterRegistry } from '../src/adapters/registry.js';
+import { AgyAdapter, AgyImageAdapter } from '../src/adapters/agy.js';
 import { PresetSchema } from '../src/schema/agents.js';
 import * as exec from '../src/util/exec.js';
 
@@ -24,6 +25,30 @@ describe('AdapterRegistry packaged', () => {
     expect(r.get('agy_image').transport).toBe('subprocess');
     expect(r.get('dry_run').transport).toBe('dry_run');
     expect(r.get('claude')).toBe(r.get('claude')); // cached instance
+  });
+
+  it('selects Agy adapters from the preset adapter field', () => {
+    const base = AdapterRegistry.fromPackaged().getPreset('agy')!;
+    const r = new AdapterRegistry([
+      PresetSchema.parse({ ...base, name: 'custom_agy', adapter: 'agy' }),
+      PresetSchema.parse({ ...base, name: 'custom_agy_image', adapter: 'agy_image' }),
+    ]);
+
+    expect(r.get('custom_agy')).toBeInstanceOf(AgyAdapter);
+    expect(r.get('custom_agy_image')).toBeInstanceOf(AgyImageAdapter);
+  });
+
+  it('keeps the legacy Agy name fallback when adapter is absent', () => {
+    const packaged = AdapterRegistry.fromPackaged();
+    const agy = packaged.getPreset('agy')!;
+    const image = packaged.getPreset('agy_image')!;
+    const r = new AdapterRegistry([
+      PresetSchema.parse({ ...agy, adapter: null }),
+      PresetSchema.parse({ ...image, adapter: null }),
+    ]);
+
+    expect(r.get('agy')).toBeInstanceOf(AgyAdapter);
+    expect(r.get('agy_image')).toBeInstanceOf(AgyImageAdapter);
   });
 
   it('throws on an unknown adapter', () => {

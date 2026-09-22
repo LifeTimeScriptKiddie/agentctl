@@ -2,6 +2,7 @@ name: claude
 family: subprocess
 transport: subprocess
 optional: true
+hideWhenUnavailable: true
 parse: claude_json
 # prompt on stdin avoids ARG_MAX limits on large prompts; -p reads stdin.
 promptDelivery: stdin

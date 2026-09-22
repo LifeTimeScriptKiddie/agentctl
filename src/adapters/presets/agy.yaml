@@ -1,5 +1,6 @@
 name: agy
 family: subprocess
+adapter: agy
 transport: subprocess
 parse: agy_json
 optional: true
