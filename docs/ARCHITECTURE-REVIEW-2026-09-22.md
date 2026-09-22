@@ -33,6 +33,17 @@ Severity: **C** critical, **H** high, **M** medium, **L** low.
 4. **Gate on declared capability as well as regex.** A step that declares `canPublish` needs `--approve`.
 5. **Move backend-specific facts into presets.** Start with adapter-class selection and visibility. The router model catalog is the larger follow-up.
 
+## Status (2026-09-22)
+
+P0–P4 are implemented on branch `arch-review-fixes`, one commit per phase. Each phase was implemented by Cursor (`gpt-5.6-luna-high`) through `agentctl ask` and reviewed by Claude. Final state: `tsc` clean, 482 tests passed / 3 skipped (was 460 with `tsc` failing). Review fixes Claude made on top of the worker output:
+- P1: an empty `AGENTCTL_SERVE_TOKEN` was accepted as a match for `Bearer ` (fixed and tested); the approval text now joins goal and query with a newline.
+- P2b: removed a duplicated JSON branch in `cmdStatus`.
+
+Known limits:
+- `updateLimits` narrows the lost-update window to microseconds, but it is not a cross-process lock.
+- A user `agents.yaml` that overrides `claude`/`agy_image` without `hideWhenUnavailable` now keeps those agents visible.
+- Text-mode `orchestrate --resume` now prints `resuming: …` as a stderr `note:` line.
+
 ## Execution plan
 
 Each phase is one bounded worker task. Every phase must end with `npx tsc --noEmit` clean and `npx vitest run` green. Each phase adds tests for its new behavior and gets its own commit.
@@ -85,4 +96,5 @@ In `src/memory/serve.ts` (+ tests in `test/memoryServe.test.ts` / new `test/memo
 ### Deferred (needs design sign-off, not in this pass)
 - **Router model catalog → presets** (rest of F12): move `suggestModel`/`defaultWorkerModel`/`escalateWorker` tables into per-preset `models.tiers` and `routing.prefer` blocks. This is large, changes `router.test.ts` expectations wholesale, and is the core product behavior, so it needs its own reviewed change.
 - **Memory store interface** (F15): define `MemoryStorePort` and make both stores implement it.
+- **Remaining import cycles** (madge): `memory/store` ⇄ `memoryWriteGraph` / `turnGraph`, and `repl` ⇄ `tui/blessedChat`.
 - **Health probe cost**: every CLI invocation probes all presets. Consider an on-disk TTL cache.
