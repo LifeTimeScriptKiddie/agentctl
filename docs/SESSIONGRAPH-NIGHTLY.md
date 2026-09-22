@@ -1,6 +1,21 @@
 # SessionGraph nightly integration (modular)
 
-agentctl **does not embed** SessionGraph. Nightly analysis runs the SessionGraph CLI from a separate git checkout you update on your own schedule (typically `git pull` on the VM before the timer fires).
+SessionGraph is the **backend observer** for the team memory VM: it watches gatekeeper audit traffic and memory-store exports, analyzes patterns, and emits **suggestions** (architecture, workflow, backlog). It does not write to team databases or accept proposals on your behalf.
+
+agentctl **does not embed** SessionGraph. Analysis runs the SessionGraph CLI from a separate git checkout on the **same Linux host** as `memory serve` (typically updated before each nightly run).
+
+## Architecture placement
+
+| Layer | Responsibility |
+| --- | --- |
+| **agentctl memory serve** | Authoritative gatekeeper + DB writer; audit append |
+| **Team DBs** | Memories, checkpoints, optional `rag_documents` |
+| **SessionGraph** | Read-only observe → analyze → suggest (reports under `$AGENTCTL_HOME/reports/sessiongraph/`) |
+| **Operators** | Review findings and suggestion bundles; apply changes manually |
+
+**Today:** nightly batch export (`sessiongraph.memory_plane.v1`) + `analyze-memory-plane` + `suggest-workflow --target agentctl`.
+
+**Plan:** expand observation on the VM to cover more of **user input** (turn/query metadata) and **database flow** (writes, accepts, workspace growth) with tighter coupling to the gatekeeper, while keeping SessionGraph a separate repo and keeping all mutations human-gated.
 
 ## Setup
 

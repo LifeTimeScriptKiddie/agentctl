@@ -87,13 +87,20 @@ flowchart TB
     Serve["agentctl memory serve"]
     DB1[(Postgres: team core\n decisions · checkpoints)]
     DB2[(Postgres: reports / techniques\n workspaces · kinds · RAG)]
+    Audit["memory-serve-audit.jsonl"]
+    SG[SessionGraph checkout\n observe · analyze · suggest]
     Serve --> DB1
     Serve --> DB2
+    Serve --> Audit
+    Audit --> SG
+    DB1 -.->|export aggregates| SG
+    DB2 -.->|export aggregates| SG
     TLS --> Serve
   end
 
   Pi -->|"AGENTCTL_GATEWAY_URL\nPOST /v1/turn"| TLS
   CLI --> TLS
+  SG -.->|findings · workflow suggestions\n human review| Ops[Operators]
 ```
 
 | Client env | Purpose |
@@ -104,7 +111,7 @@ flowchart TB
 
 See [Storage on the memory VM](#storage-on-the-memory-vm-one-host-multiple-planes) under the team domain section. Deploy: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md), [STACK-SETUP.md](docs/STACK-SETUP.md).
 
-Proposed memories flow **propose → human review → accept** on the server. Details: [Team shared knowledge domain](#team-shared-knowledge-domain) below. Nightly usage analysis can export to [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) — see [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md). HTTP route table: [TURN-GRAPH.md](docs/TURN-GRAPH.md), [INTEGRATIONS.md](docs/INTEGRATIONS.md).
+Proposed memories flow **propose → human review → accept** on the server. Details: [Team shared knowledge domain](#team-shared-knowledge-domain) below. **[SessionGraph](#sessiongraph-on-the-backend-observe--suggest)** co-lives on the memory VM to observe gatekeeper and store flow and emit architecture suggestions (not auto-writes). HTTP routes: [TURN-GRAPH.md](docs/TURN-GRAPH.md), [INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 ## Team shared knowledge domain
 
@@ -152,6 +159,43 @@ One database URL = one store behind a given `memory serve`. To **hard-separate**
 Thin clients remain dumb: they only pass **workspace**, **query**, and **auth headers**; the gatekeeper chooses candidates from the store bound to that serve instance.
 
 Migrations and tables: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md) (`memories`, `revisions`, `task_checkpoints`, optional `rag_documents`).
+
+### SessionGraph on the backend (observe → suggest)
+
+[SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) is a **separate product** that sits **on the memory VM beside** `agentctl memory serve`. It does not replace the gatekeeper and is **not vendored** into agentctl; you install a git checkout and point **`AGENTCTL_SESSIONGRAPH_ROOT`** at it.
+
+**Role:** observe how the team uses shared knowledge, correlate **HTTP gatekeeper traffic** with **database state**, and produce **evidence-backed suggestions** for operators (workflow, graph tuning, review backlog, backend sizing). SessionGraph **never** accepts memories, edits Postgres/SQLite, or answers user chat directly.
+
+| Signal (today) | Source |
+| --- | --- |
+| Turns, context, writes, accepts | `$AGENTCTL_HOME/logs/memory-serve-audit.jsonl` (route, user, workspace, status, counts — not full prompt storage by default) |
+| Workspaces, propose/accept backlog, checkpoints | Memory store snapshot in export (`sessiongraph.memory_plane.v1`) |
+| Findings | SessionGraph analyzers (`high_abstain_rate`, `review_backlog`, `postgres_migration_candidate`, …) |
+| Suggestions | `suggest-workflow --target agentctl` → dated `task.md` / `run.yaml` / `rubric.md` under reports |
+
+**Batch path (shipped):** systemd timer or cron runs:
+
+```bash
+agentctl memory sessiongraph nightly --since 24h
+```
+
+That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/`. Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
+
+**Direction (plan):** tighten backend placement so SessionGraph continuously **observes user input and DB flow** on the VM—richer turn/query metadata, cross-workspace usage, and retrieval outcomes—then surfaces **actionable suggestions** (kinds/workspaces to add, evidence gates to tune, review cadence). Human operators remain the approval path for any memory or config change; suggestions are advisory artifacts only.
+
+```mermaid
+flowchart LR
+  Clients[Pi / CLI thin clients] -->|POST /v1/turn etc.| Serve[memory serve]
+  Serve --> DB[(Team DBs)]
+  Serve --> Audit[audit.jsonl]
+  Serve --> Export[memory-plane export]
+  Audit --> SG[SessionGraph]
+  Export --> SG
+  DB -.->|store counts| Export
+  SG --> Report[report.md · analysis.json]
+  SG --> Suggest[suggest-agentctl/]
+  Suggest --> Human[Human review]
+```
 
 ### What a memory is
 
@@ -233,7 +277,7 @@ Use checkpoints for session handoff; use **accepted** memories for things the wh
 | Local pilot / test | `/agentctl memory-test` | `agentctl memory test` |
 | Resume without model | `/agentctl briefing --workspace …` | `agentctl memory briefing --workspace …` |
 
-Full HTTP and env tables: [INTEGRATIONS.md](docs/INTEGRATIONS.md). Graph audit: [TURN-GRAPH.md](docs/TURN-GRAPH.md). Postgres on the VM: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md).
+Full HTTP and env tables: [INTEGRATIONS.md](docs/INTEGRATIONS.md). Graph audit: [TURN-GRAPH.md](docs/TURN-GRAPH.md). Postgres on the VM: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md). SessionGraph observer: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
 
 ### What agents must not do
 
