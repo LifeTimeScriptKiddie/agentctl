@@ -1,6 +1,6 @@
 # agentctl
 
-**Pi extension and CLI** for delegating work to **your** agent subscriptions — GitHub Copilot, OpenAI Codex, Anthropic, Cursor, or any backend you configure in [`src/adapters/presets`](src/adapters/presets). agentctl routes tasks, bounds multi-step plans, and optionally connects to a **team memory gatekeeper** over HTTP.
+**Pi extension and CLI** for delegating work to **your** agent subscriptions — GitHub Copilot, OpenAI Codex, Anthropic, Cursor, or any backend you configure in [`src/adapters/presets`](src/adapters/presets). agentctl routes tasks, bounds multi-step plans, and optionally connects to a **[team memory gatekeeper](#team-shared-knowledge-domain)** over HTTP (shared knowledge domain — workspaces, human accept, ACL-filtered retrieval).
 
 Full phased deploy (VM, Postgres, SessionGraph): [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md).
 
@@ -99,11 +99,108 @@ flowchart TB
 | **`AGENTCTL_BRIEFING_WORKSPACE`** | Workspace id for team memory. |
 | **`AGENTCTL_USER_ID`** / **`AGENTCTL_GROUPS`** / **`AGENTCTL_CLEARANCE`** | Auth headers for filtered retrieval. |
 
-Proposed memories flow **propose → human review → accept** on the server. Nightly usage analysis can export to [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) — see [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md). HTTP route table: [TURN-GRAPH.md](docs/TURN-GRAPH.md), [INTEGRATIONS.md](docs/INTEGRATIONS.md).
+Proposed memories flow **propose → human review → accept** on the server. Details: [Team shared knowledge domain](#team-shared-knowledge-domain) below. Nightly usage analysis can export to [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) — see [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md). HTTP route table: [TURN-GRAPH.md](docs/TURN-GRAPH.md), [INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
+## Team shared knowledge domain
+
+This is the **durable, team-owned layer** agents may read during work — not chat transcripts, not automatic “remember everything,” and not a replacement for your git repo or wiki. It holds **short claims** your team has chosen to treat as shared context: decisions, runbooks, CVE notes, report conclusions, explicit preferences.
+
+Everything lives in a **workspace** (string id, e.g. `team-atlas`, `team-sec-cve`). Workspaces isolate retrieval: a query and write always name one workspace. The shipped **kind registry** (`$AGENTCTL_HOME/config/memory-kinds.yaml`) can suggest default workspaces per kind (for example CVE → `team-sec-cve`); you define ids to match how your org splits domains.
+
+### What a memory is
+
+Each record is a **versioned text claim** plus metadata:
+
+| Field | Meaning |
+| --- | --- |
+| **text** | The claim agents may see (keep it concise; link out to docs for detail). |
+| **kind** | Category from the registry — default kinds include `decision`, `cve`, `report`, `process`, `preference`. |
+| **state** | `proposed` (not in search/briefing) or `accepted` (durable team knowledge). |
+| **revision** | Increments on edit; accept/correct must target the current revision. |
+| **source** | Provenance label (ticket, meeting, `pi:…`, etc.) — data, not proof of truth. |
+| **providers** | Which worker lanes may use this memory in briefing (e.g. `pi`, `cursor`, `laya`). |
+| **classification** | `public` / `internal` / `confidential` — compared to the caller’s clearance. |
+| **visibility** | `team` (shared) or `private` (only owner user id). |
+| **allowed_groups** | If non-empty, caller must be in at least one group (with clearance). |
+
+**Forgotten** memories remain in history but drop out of search and briefing.
+
+### Governance: nothing becomes team knowledge by accident
+
+Writes use a **separate write graph** from reads (`POST /v1/turn` never commits memory).
+
+```text
+propose  →  human review  →  accept (human_approved: true)
+                ↘ reject / correct / forget
+```
+
+- **Propose:** agent or operator suggests a claim (`agentctl memory write --mode propose`, Pi `/agentctl memory-write`, or `POST /v1/memory/write`).
+- **Review:** queue of `proposed` rows (`memory review`, `GET /v1/memory/review`, Pi `/agentctl memory-review`).
+- **Accept:** explicit human approval only (`memory accept`, `POST /v1/memory/accept`). Until then, FTS and briefing **exclude** the row.
+
+An operator saying “remember this” in chat **does not** bypass accept — only the supplied claim, with approval, becomes `accepted`.
+
+### Who sees what (access control)
+
+On the gatekeeper, set identity on each client:
+
+```bash
+export AGENTCTL_USER_ID=alice@example.com
+export AGENTCTL_GROUPS=atlas-eng,oncall
+export AGENTCTL_CLEARANCE=internal   # public | internal | confidential
+```
+
+HTTP headers: `x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`. Without `AGENTCTL_USER_ID`, auth trim is off (single-user dev only).
+
+**Read path order:** workspace scope → full-text candidates → **ACL filter** → optional evidence gate → byte limits. Clearance is enforced **before** ranking; private memories never leak via “helpful” reranking.
+
+### How agents read (context bundle)
+
+Thin clients do **not** open SQLite/Postgres. They call the gatekeeper:
+
+1. **`POST /v1/turn`** — preferred for Pi/`delegate`/`ask` when `AGENTCTL_GATEWAY_URL` is set. Returns a **context bundle** (and optionally runs a central model on the VM if configured).
+2. **`POST /v1/context`** — legacy briefing-shaped packet; same retrieval graph underneath.
+
+Retrieval runs the **context_retrieval** turn graph: scope → FTS → ACL → optional [Laya](docs/LAYA-MEMORY.md) or [Jev](docs/JEV-MEMORY.md) evidence → limit. Keyword hits without evidence are labeled **not semantically verified** — treat them as hints, not ground truth.
+
+Injected context is **prefix text** for the worker you chose (Copilot via Pi, Codex, etc.); the gatekeeper does not pick your subscription model unless you enable **`AGENTCTL_SERVE_MODEL_AGENT`** on the VM.
+
+### Checkpoints vs memory
+
+| | **Checkpoint** | **Accepted memory** |
+| --- | --- | --- |
+| Purpose | “Where we left off” on a task | Durable team fact or decision |
+| Approval | Provisional; no accept queue | Requires human **accept** |
+| CLI | `memory checkpoint show/set` | `memory save` / write graph |
+| Briefing | Resume state + linked decision refs | FTS + ACL + optional evidence |
+
+Use checkpoints for session handoff; use **accepted** memories for things the whole team should rely on next month.
+
+### Operator commands (Pi and CLI)
+
+| Intent | Pi (examples) | CLI |
+| --- | --- | --- |
+| Q&A with team context | Set `AGENTCTL_GATEWAY_URL`, then `/agentctl delegate …` | `agentctl delegate --briefing-workspace team-atlas "…"` |
+| Review proposals | `/agentctl memory-review` | `agentctl memory gateway review --workspace …` |
+| Propose | `/agentctl memory-write …` | `agentctl memory write --mode propose …` |
+| Accept | `/agentctl memory-accept …` | `agentctl memory gateway accept …` |
+| Local pilot / test | `/agentctl memory-test` | `agentctl memory test` |
+| Resume without model | `/agentctl briefing --workspace …` | `agentctl memory briefing --workspace …` |
+
+Full HTTP and env tables: [INTEGRATIONS.md](docs/INTEGRATIONS.md). Graph audit: [TURN-GRAPH.md](docs/TURN-GRAPH.md). Postgres on the VM: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md).
+
+### What agents must not do
+
+- SSH **`agentctl memory remote`** for every user question — use **`AGENTCTL_GATEWAY_URL`** and **`POST /v1/turn`**.
+- Treat **proposed** or **keyword** hits as approved policy.
+- Let subprocess workers mutate memory (nested delegation is blocked).
+- Promote Laya/Jev “confidence” to authorization — evidence gates **select** among ACL-safe candidates; humans still **accept** writes.
 
 ## Local memory (single user)
 
-**`agentctl memory --help`** — opt-in save, review, accept, search, and handoff under **`~/.agentctl/memory/`** (or **`AGENTCTL_HOME`**). Requires Node with **`node:sqlite`**. In Pi: **`/reload`**, then **`/agentctl memory-test`** for an isolated synthetic lifecycle (uses your configured worker models, up to three calls).
+Same **memory model** (workspaces, kinds, propose/accept) but stored only on your machine under **`~/.agentctl/memory/`** — no team gatekeeper. Use this to learn the CLI and Pi **`memory-test`** before pointing at a shared VM.
+
+Requires Node with **`node:sqlite`**. **`agentctl memory --help`** for save, review, accept, search, handoff, checkpoint, and briefing. In Pi: **`/reload`**, then **`/agentctl memory-test`** (isolated synthetic lifecycle, up to three worker calls).
 
 ## Token usage
 
