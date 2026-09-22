@@ -17,6 +17,9 @@ export function runMemoryRemote(
   remoteHome: string | undefined,
   memoryArgv: string[],
 ): { stdout: string; stderr: string; status: number | null } {
+  if (host.startsWith('-') || /\s/.test(host)) {
+    throw new Error('invalid remote host');
+  }
   const cli = process.env.AGENTCTL_CLI_PATH ?? bundledCliPath();
   const parts = [
     remoteHome ? `AGENTCTL_HOME=${shellQuote(remoteHome)}` : '',
@@ -24,6 +27,6 @@ export function runMemoryRemote(
     'memory',
     ...memoryArgv.map(shellQuote),
   ].filter(Boolean);
-  const result = spawnSync('ssh', [host, parts.join(' ')], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync('ssh', ['--', host, parts.join(' ')], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', status: result.status };
 }

@@ -299,10 +299,24 @@ describe('runOrchestration', () => {
       '{"goal":"g","steps":[{"id":"s1","instruction":"rm -rf /tmp/x","type":"shell","needs":["canRunShell"]}]}';
     const dispatch = vi.fn(async () => ({ ok: true, text: 'x' }));
     const res = await runOrchestration('g', deps({ plan, dispatch }), {
-      approveStep: (instr) => !/rm\s+-rf/.test(instr),
+      approveStep: (plannedStep) => !/rm\s+-rf/.test(plannedStep.instruction),
     });
     expect(res.status).toBe('blocked');
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('passes the full PlanStep to the approval gate', async () => {
+    const planned = step({ id: 's1', instruction: 'publish the release', needs: ['canPublish'] });
+    const plan = async () => JSON.stringify({ goal: 'g', steps: [planned] });
+    const seen: PlanStep[] = [];
+    const res = await runOrchestration('g', deps({ plan }), {
+      approveStep: (plannedStep) => {
+        seen.push(plannedStep);
+        return false;
+      },
+    });
+    expect(res.status).toBe('blocked');
+    expect(seen[0]).toMatchObject({ id: planned.id, instruction: planned.instruction, needs: ['canPublish'] });
   });
 
   it('calls the synthesizer when provided', async () => {
@@ -340,6 +354,24 @@ describe('runOrchestration', () => {
     const res = await runOrchestration('g', deps({ plan, dispatch }), {});
     expect(res.status).toBe('done');
     expect(maxInFlight).toBe(2); // both ran at once (no deps)
+  });
+
+  it('DAG: reports a fast step before its slow sibling settles', async () => {
+    const plan = async () =>
+      '{"goal":"g","steps":[{"id":"fast","instruction":"fast","type":"reason"},{"id":"slow","instruction":"slow","type":"reason"}]}';
+    let slowFinished = false;
+    const dispatch = vi.fn(async (_agent: string, instruction: string) => {
+      if (instruction === 'slow') await new Promise((resolve) => setTimeout(resolve, 25));
+      if (instruction === 'slow') slowFinished = true;
+      return { ok: true, text: instruction };
+    });
+    const settled: string[] = [];
+    const res = await runOrchestration('g', deps({ plan, dispatch }), {
+      onStep: (outcome) => settled.push(`${outcome.id}:${slowFinished}`),
+    });
+    expect(res.status).toBe('done');
+    expect(settled[0]).toBe('fast:false');
+    expect(settled).toEqual(['fast:false', 'slow:true']);
   });
 
   it('DAG: a dependent step receives its dependency output', async () => {

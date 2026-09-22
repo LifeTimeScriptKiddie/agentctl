@@ -1,13 +1,15 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AdapterRegistry } from '../src/adapters/registry.js';
-import { agentAsk, agentRoute, agentDelegate, agentHealth } from '../src/api.js';
+import { agentAsk, agentRoute, agentDelegate, agentHealth, agentOrchestrate } from '../src/api.js';
 import { loadRegistry, cmdAsk, cmdOrchestrate, cmdRoute } from '../src/commands.js';
 import { fanoutTargets } from '../src/core/ask.js';
 import { orchestrationRunPath } from '../src/core/orchestrateFlow.js';
 import { okResult } from '../src/adapters/protocol.js';
+import { loadPreset } from '../src/assets.js';
+import { runOrchestrateGoal } from '../src/core/orchestrateFlow.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -96,6 +98,48 @@ describe('delegation approval boundaries', () => {
     }, { out: vi.fn(), err: vi.fn() })).toBe(1);
   });
 
+  it('requires approval for a canPublish orchestration step', async () => {
+    const base = loadPreset('dry_run');
+    const registry = new AdapterRegistry([{
+      ...base,
+      name: 'publish_dry',
+      capabilities: { ...base.capabilities, canPublish: true },
+    }]);
+    const plan = JSON.stringify({
+      goal: 'publish goal',
+      steps: [{
+        id: 'publish', instruction: 'prepare the release', type: 'reason',
+        needs: ['canPublish'], acceptance: 'done', dependsOn: [],
+        agent: 'publish_dry', model: null,
+      }],
+    });
+    const adapter = registry.get('publish_dry');
+    vi.spyOn(adapter, 'capabilities').mockReturnValue({ ...base.capabilities, canPublish: true });
+    const invoke = vi.spyOn(adapter, 'invoke').mockImplementation(async (request) => {
+      if (request.prompt.includes('You are the ORCHESTRATOR')) {
+        return okResult({ adapter: 'publish_dry', transport: 'dry_run', normalizedText: plan, durationMs: 0 });
+      }
+      if (request.prompt.includes('You are the EVIDENCE VERIFIER')) {
+        return okResult({
+          adapter: 'publish_dry', transport: 'dry_run',
+          normalizedText: '{"passed":true,"feedback":"done"}', durationMs: 0,
+        });
+      }
+      return okResult({ adapter: 'publish_dry', transport: 'dry_run', normalizedText: 'done', durationMs: 0 });
+    });
+
+    const blocked = await runOrchestrateGoal(registry, {
+      goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', noSynth: true, approve: false,
+    });
+    expect(blocked.status).toBe('blocked');
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    const approved = await runOrchestrateGoal(registry, {
+      goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', noSynth: true, approve: true,
+    });
+    expect(approved.status).toBe('done');
+  });
+
   it('writes a JSON orchestration run and resumes passed steps', async () => {
     const home = mkdtempSync(join(tmpdir(), 'agentctl-p2b-orch-'));
     vi.stubEnv('AGENTCTL_HOME', home);
@@ -139,14 +183,14 @@ describe('delegation approval boundaries', () => {
       goal, dryPlan: false, approve: false, noSynth: true, timeoutSeconds: 5,
       orchestrator: 'dry_run', format: 'json',
     }, io)).toBe(1);
-    expect(existsSync(orchestrationRunPath(goal))).toBe(true);
+    expect(existsSync(orchestrationRunPath({ goal, orchestrator: 'dry_run' }))).toBe(true);
 
     expect(await cmdOrchestrate(registry, {
       goal, dryPlan: false, approve: false, noSynth: true, timeoutSeconds: 5,
       orchestrator: 'dry_run', resume: true, format: 'json',
     }, io)).toBe(0);
     expect(workerACalls).toBe(1);
-    expect(existsSync(orchestrationRunPath(goal))).toBe(false);
+    expect(existsSync(orchestrationRunPath({ goal, orchestrator: 'dry_run' }))).toBe(false);
     const second = JSON.parse(io.out.mock.calls.at(-1)?.[0] ?? '{}') as {
       result?: { outcomes?: Array<{ id: string; ok: boolean }> };
     };
@@ -169,5 +213,51 @@ describe('delegation approval boundaries', () => {
       task: 'write unit tests for the router',
       dryRoute: true,
     });
+  });
+
+  it('scopes run paths and ignores a stored run with a mismatched goal', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-p3-orch-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    const goal = 'current goal';
+    expect(orchestrationRunPath({ goal, cwd: '/repo-a', orchestrator: 'dry_run' }))
+      .not.toBe(orchestrationRunPath({ goal, cwd: '/repo-b', orchestrator: 'dry_run' }));
+    expect(orchestrationRunPath({ goal, cwd: '/repo-a', orchestrator: 'dry_run' }))
+      .not.toBe(orchestrationRunPath({ goal, cwd: '/repo-a', orchestrator: 'other' }));
+
+    const runPath = orchestrationRunPath({ goal, orchestrator: 'dry_run' });
+    mkdirSync(join(home, 'orchestrations'), { recursive: true });
+    writeFileSync(runPath, JSON.stringify({
+      goal: 'different goal',
+      outcomes: [{ id: 's1', ok: true }],
+    }));
+
+    const registry = AdapterRegistry.fromPackaged();
+    const plan = JSON.stringify({
+      goal,
+      steps: [{
+        id: 's1', instruction: 'DO', type: 'reason', needs: [], acceptance: 'done',
+        dependsOn: [], agent: 'dry_run', model: null,
+      }],
+    });
+    let workerCalls = 0;
+    vi.spyOn(registry.get('dry_run'), 'invoke').mockImplementation(async (request) => {
+      if (request.prompt.includes('You are the ORCHESTRATOR')) {
+        return okResult({ adapter: 'dry_run', transport: 'dry_run', normalizedText: plan, durationMs: 0 });
+      }
+      if (request.prompt.includes('You are the EVIDENCE VERIFIER')) {
+        return okResult({
+          adapter: 'dry_run', transport: 'dry_run',
+          normalizedText: '{"passed":true,"feedback":"done"}', durationMs: 0,
+        });
+      }
+      workerCalls += 1;
+      return okResult({ adapter: 'dry_run', transport: 'dry_run', normalizedText: 'done', durationMs: 0 });
+    });
+
+    const result = await agentOrchestrate(registry, {
+      goal, orchestrator: 'dry_run', resume: true, noSynth: true, timeoutSeconds: 5, approve: false,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(workerCalls).toBe(1);
   });
 });
