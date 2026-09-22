@@ -15,6 +15,7 @@ import {
 } from './serveTokens.js';
 import { parseKindList } from './kinds.js';
 import { buildContextBundle, policyCheckBundle } from './contextBundle.js';
+import { publicGraphTrace } from './turnGraph.js';
 import type { MemoryProvider } from './layaEvidence.js';
 import { MEMORY_PROVIDERS, layaOperatorEnabled } from './layaEvidence.js';
 import { jevOperatorEnabled } from './jevEvidence.js';
@@ -210,6 +211,11 @@ function serveEvidenceGate(body: { laya_evidence?: boolean; jev_evidence?: boole
     laya: layaOperatorEnabled() ? body.laya_evidence : false,
     jev: jevOperatorEnabled() ? body.jev_evidence : false,
   };
+}
+
+/** Graph traces in responses carry Laya/Jev error codes, never their error text. */
+function withPublicTrace<T extends { trace: Parameters<typeof publicGraphTrace>[0] }>(retrieval: T): T {
+  return { ...retrieval, trace: publicGraphTrace(retrieval.trace) };
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -412,14 +418,14 @@ export async function handleMemoryHttpRequest(
     const input = parsed.data;
     const kinds = input.kinds ? parseKindList(input.kinds) : null;
     const result = await withStore(auth, async store => {
-      const retrieval = await store.searchWithGraph(
+      const retrieval = withPublicTrace(await store.searchWithGraph(
         input.workspace,
         input.query,
         input.provider,
         input.limit,
         kinds,
         serveEvidenceGate(input),
-      );
+      ));
       const checkpoint = input.include_checkpoint
         ? await Promise.resolve(store.getCheckpoint(input.workspace, auth))
         : null;
@@ -474,14 +480,14 @@ export async function handleMemoryHttpRequest(
     }
     const kinds = input.kinds ? parseKindList(input.kinds) : null;
     const result = await withStore(auth, async store => {
-      const retrieval = await store.searchWithGraph(
+      const retrieval = withPublicTrace(await store.searchWithGraph(
         input.workspace,
         input.query,
         input.provider as MemoryProvider,
         input.max_context_items || input.limit,
         kinds,
         serveEvidenceGate(input),
-      );
+      ));
       const checkpoint = await Promise.resolve(store.getCheckpoint(input.workspace, auth));
       if (retrieval.terminal.startsWith('abstain')) {
         auditEvent({

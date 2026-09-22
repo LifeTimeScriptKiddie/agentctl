@@ -491,6 +491,8 @@ export async function agentDelegate(
   return agentRoute(registry, { ...opts, delegate: true });
 }
 
+const RESUMED_NOTE = 'resumed from saved run (output redacted)';
+
 function emptyOrchestration(goal: string): OrchestrationResult {
   return {
     plan: { goal, steps: [] },
@@ -530,7 +532,11 @@ export async function agentOrchestrate(
         outcomes?: StepOutcome[];
       };
       if (prior.goal === opts.goal || prior.goal === redact(opts.goal)) {
-        completed = (prior.outcomes ?? []).filter((o) => o.ok);
+        // Saved outputs were redacted on write; later steps see the redacted text.
+        completed = (prior.outcomes ?? []).filter((o) => o.ok).map((o) => ({
+          ...o,
+          note: o.note?.includes(RESUMED_NOTE) ? o.note : [o.note, RESUMED_NOTE].filter(Boolean).join('; '),
+        }));
         if (completed.length) {
           warnings.push(`resuming: ${completed.length} step(s) already done`);
         }

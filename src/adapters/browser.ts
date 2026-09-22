@@ -63,6 +63,22 @@ export function buildLaunchArgs(appName: string, port: number, userDataDir: stri
 /**
  * argv for the managed instance: Chrome picks a free loopback port and records
  * it in `<userDataDir>/DevToolsActivePort`, so no fixed port can be pre-bound.
+ *
+ * Residual risk (security review M6): CDP on this port is unauthenticated. The
+ * port is random, the listener must be this user's, and /json/version must
+ * match the 0700 profile's port file, but while the managed browser runs any
+ * other local process that finds the port can attach to the logged-in profile.
+ * Playwright `launchPersistentContext` (CDP over `--remote-debugging-pipe`, no
+ * TCP port) would close that, but it breaks the managed-profile flow:
+ * - the browser exits with the process that launched it (the pipe closes), so
+ *   `comet setup` can't leave a window open for the one-time Perplexity login,
+ *   and every call would cold-start the browser;
+ * - a second launch on a profile that is already open fails (ProcessSingleton),
+ *   so it can't reuse a running managed window or serve concurrent calls;
+ * - Playwright's default `--use-mock-keychain --password-store=basic` can't
+ *   decrypt cookies written under the real keychain, so the existing login is lost.
+ * Pipe launch itself works for Chrome and Comet (checked with Playwright 1.60),
+ * so revisit this if the adapter owns the browser lifetime per call.
  */
 export function buildManagedLaunchArgs(appName: string, userDataDir: string, url: string): string[] {
   return [
@@ -549,9 +565,10 @@ export class BrowserAdapter implements AgentAdapter {
           reason: 'answer did not stabilize before timeout', rawPath: dir,
         });
       }
+      // Only the persisted evidence copy is redacted (captureEvidence); callers get the answer as captured.
       return okResult({
         adapter: this.name, transport: this.transport,
-        normalizedText: redact(answer.text), durationMs: Date.now() - start, rawPath: dir,
+        normalizedText: answer.text, durationMs: Date.now() - start, rawPath: dir,
       });
     } catch (e) {
       await browser.close().catch(() => {});

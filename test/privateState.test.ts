@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { runLoop } from '../src/core/controller.js';
+import { appendEvent } from '../src/core/trace.js';
+import { DryRunAdapter } from '../src/adapters/dryRun.js';
 import { appendPrivate, ensurePrivateDir, writePrivateFile } from '../src/core/privateFs.js';
 import { saveSession, newSession, sessionsDir, sessionPath } from '../src/core/session.js';
 import { logRoute, logHallucinationIncidents, writeOrchestrationRun } from '../src/core/orchestrateFlow.js';
@@ -17,6 +21,7 @@ import { createMemoryServerForTest } from '../src/memory/serve.js';
 // Security review M4: state files are 0600 inside 0700 directories.
 
 const mode = (path: string) => statSync(path).mode & 0o777;
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe.skipIf(process.platform === 'win32')('private state files', () => {
   let home = '';
@@ -122,6 +127,40 @@ describe.skipIf(process.platform === 'win32')('private state files', () => {
       saveRunState(dir, { iteration: 0, history: [], best: null } as unknown as RunState);
       expect(mode(dir)).toBe(0o700);
       expect(mode(join(dir, 'run.yaml'))).toBe(0o600);
+    });
+
+    it('run-loop trace.jsonl, candidates and evaluations (M4 residual)', async () => {
+      const dir = join(mkdtempSync(join(tmpdir(), 'agentctl-runloop-')), 'run');
+      cpSync(join(here, '..', 'examples', 'basic-doc'), dir, { recursive: true });
+      chmodSync(dir, 0o755);
+      const passEval = {
+        iteration: 0, passed: true, score: 0.95, needsUserInput: false,
+        checks: [], failures: [], revisionInstructions: '', confidence: 0.9,
+      };
+      const adapter = new DryRunAdapter({
+        generator: ['## Overview\nx\n## Examples\n- `agentctl ask --to cursor "hi"`'],
+        evaluator: [passEval],
+      });
+      const final = await runLoop(dir, {
+        generator: adapter, evaluator: adapter,
+        generatorTemplate: 'TASK {{task}} RUBRIC {{rubric}} {{revision_block}}',
+        evaluatorTemplate: 'EVAL {{task}} {{rubric}} {{candidate}}',
+      }, { dryRun: true });
+      expect(final.status).toBe('passed');
+
+      expect(mode(join(dir, 'trace.jsonl'))).toBe(0o600);
+      for (const sub of ['candidates', 'evaluations']) {
+        expect(mode(join(dir, sub))).toBe(0o700);
+        const files = readdirSync(join(dir, sub));
+        expect(files.length).toBeGreaterThan(0);
+        for (const f of files) expect(mode(join(dir, sub, f))).toBe(0o600);
+      }
+      expect(mode(join(dir, 'final.md'))).toBe(0o600);
+
+      // A trace from an older version is tightened on the next append.
+      chmodSync(join(dir, 'trace.jsonl'), 0o644);
+      appendEvent(join(dir, 'trace.jsonl'), { event: 'probe', iteration: 1 });
+      expect(mode(join(dir, 'trace.jsonl'))).toBe(0o600);
     });
 
     it('browser profile dir', () => {

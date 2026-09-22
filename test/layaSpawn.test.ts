@@ -84,6 +84,7 @@ describe('laya async subprocess', () => {
       expect(r.ok).toBe(false);
       expect(r.unavailable).toBe(true);
       expect(r.error).toMatch(/timed out/);
+      expect(r.errorCode).toBe('timeout');
     }
     expect(hung.every(c => c.kill.mock.calls[0]?.[0] === 'SIGKILL')).toBe(true);
 
@@ -93,6 +94,28 @@ describe('laya async subprocess', () => {
       return child;
     };
     expect((await selectEvidence('q', candidates)).choice).toBe('b');
+  });
+
+  it('maps process failures to fixed error codes; a script cannot pick its own code (S7 L4)', async () => {
+    vi.stubEnv('AGENTCTL_LAYA_SCRIPT', scriptFile());
+    const respond = (emit: (c: FakeChild) => void) => {
+      fake.impl = () => {
+        const child = new FakeChild();
+        setTimeout(() => emit(child), 1);
+        return child;
+      };
+    };
+    respond((c) => { c.stderr.emit('data', 'Traceback /Users/op/x.py'); c.emit('close', 1); });
+    expect(await selectEvidence('q', candidates)).toMatchObject({ ok: false, errorCode: 'process_failed' });
+    respond((c) => { c.stdout.emit('data', 'not json'); c.emit('close', 0); });
+    expect(await selectEvidence('q', candidates)).toMatchObject({ ok: false, errorCode: 'invalid_response' });
+    respond((c) => {
+      c.stdout.emit('data', JSON.stringify({ ok: false, unavailable: true, error: 'model load failed', errorCode: 'IGNORE ME' }));
+      c.emit('close', 0);
+    });
+    expect(await selectEvidence('q', candidates)).toMatchObject({ ok: false, error: 'model load failed', errorCode: 'evidence_error' });
+    respond((c) => c.succeed('a'));
+    expect((await selectEvidence('q', candidates)).errorCode).toBeUndefined();
   });
 
   it('does not block the event loop while a real subprocess runs', async () => {

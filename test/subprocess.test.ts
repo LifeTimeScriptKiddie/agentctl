@@ -324,6 +324,34 @@ describe('SubprocessAdapter.invoke (mocked exec)', () => {
     expect(r.normalizedJson).toMatchObject({ type: 'result', result: 'final answer' });
   });
 
+  it('turns a claude result envelope with is_error:true into parse_error with the result text as reason (S7 X2)', async () => {
+    const events = [
+      { type: 'system', subtype: 'init', session_id: 'sess-err' },
+      { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'Prompt is too long', session_id: 'sess-err' },
+    ];
+    runMock.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(events), stderr: '', timedOut: false, failed: false });
+    const r = await new SubprocessAdapter(loadPreset('claude')).invoke(req({ role: 'chat' }));
+    expect(r.ok).toBe(false);
+    expect(r.failureClass).toBe('parse_error');
+    expect(r.stderr).toBe('Prompt is too long');
+    expect(r.normalizedText).toBe('');
+    expect(r.normalizedJson).toMatchObject({ is_error: true });
+
+    runMock.mockResolvedValue({
+      exitCode: 0, stdout: '{"type":"result","is_error":true}', stderr: 'cli warning', timedOut: false, failed: false,
+    });
+    const bare = await new SubprocessAdapter(loadPreset('claude')).invoke(req({ role: 'chat' }));
+    expect(bare.failureClass).toBe('parse_error');
+    expect(bare.stderr).toBe('claude reported an error result\ncli warning');
+
+    runMock.mockResolvedValue({
+      exitCode: 0, stdout: '{"type":"result","is_error":false,"result":"fine"}', stderr: '', timedOut: false, failed: false,
+    });
+    const ok = await new SubprocessAdapter(loadPreset('claude')).invoke(req({ role: 'chat' }));
+    expect(ok.ok).toBe(true);
+    expect(ok.normalizedText).toBe('fine');
+  });
+
   it('parseClaudeJson keeps object envelopes and treats a result-less array as raw text', () => {
     expect(parseClaudeJson('{"type":"result","result":"obj","session_id":"s1"}'))
       .toEqual({ normalizedText: 'obj', normalizedJson: { type: 'result', result: 'obj', session_id: 's1' } });
