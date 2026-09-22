@@ -276,6 +276,7 @@ export class ReplSession {
       id: this.sessionId ?? 'ephemeral',
       createdAt: this.createdAt,
       updatedAt: this.createdAt,
+      scope: null,
       native: Object.fromEntries(this.native),
       transcript: this.transcript.map((t) =>
         t.role === 'user'

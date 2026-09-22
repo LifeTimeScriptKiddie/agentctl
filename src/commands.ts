@@ -18,12 +18,14 @@ import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { color, agentColor } from './util/colors.js';
 import {
   loadSession, newSession, saveSession, latestSession, addTurn, setNative,
-  listSessions, deleteSession, pruneSessions,
+  listSessions, deleteSession, pruneSessions, SessionWriteConflict, boundTranscript,
 } from './core/session.js';
+import { buildWorkerPrompt } from './memory/briefingPrompt.js';
+import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { SessionRecord, SessionTurn } from './schema/session.js';
 import { formatStatus, type AgentStatus } from './status.js';
 import {
-  route, suggestModel, suggestRouteEffort, classifyCostPerformance, type RouterAgent,
+  route, type RouterAgent,
 } from './core/router.js';
 import {
   runOrchestration, buildPlannerPrompt, buildVerifyPrompt, buildSynthesisPrompt, buildReplanPrompt, parseVerify,
@@ -106,42 +108,88 @@ export interface ResolvedSession {
   persist: (r: SessionRecord) => void;
 }
 
+/** `--session-scope` wins; else inherit `--briefing-workspace`; else unscoped resume rules. */
+export function resolveSessionScope(opts: { sessionScope?: string; briefingWorkspace?: string }): string | null | undefined {
+  if (opts.sessionScope) return opts.sessionScope;
+  const briefing = resolveBriefingWorkspace(opts.briefingWorkspace);
+  if (briefing) return briefing;
+  return undefined;
+}
+
 /**
- * Resolve a durable session from CLI intent: `--resume` → most recent;
+ * Resolve a durable session from CLI intent: `--resume` → most recent in scope;
  * `--session <name>` → load or create by name; neither → null (ephemeral).
- * Returns null (with reason) if `--resume` finds nothing.
  */
 export function resolveSession(
-  opts: { session?: string | undefined; resume?: boolean },
+  opts: { session?: string | undefined; resume?: boolean; scope?: string | null },
   now: () => number = Date.now,
 ): ResolvedSession | null {
   let record: SessionRecord | null = null;
   if (opts.resume) {
-    record = latestSession();
+    record = latestSession(opts.scope);
     if (!record) return null;
   } else if (opts.session) {
     let existing: SessionRecord | null;
     try {
       existing = loadSession(opts.session);
     } catch (e) {
-      // don't silently overwrite a corrupt file (its data may be recoverable);
-      // surface a clean, actionable error instead of a stack trace.
       throw new Error(
         `session '${opts.session}' is unreadable (${e instanceof Error ? e.message : String(e)}). ` +
           `Move or delete the file under ~/.agentctl/sessions/ to start fresh.`,
       );
     }
-    record = existing ?? newSession(now(), opts.session);
+    if (existing && opts.scope != null && existing.scope != null && existing.scope !== opts.scope) {
+      throw new Error(
+        `session '${opts.session}' belongs to scope '${existing.scope}', not '${opts.scope}'.`,
+      );
+    }
+    record = existing ?? newSession(now(), opts.session, opts.scope ?? null);
   } else {
     return null;
   }
   return { record, persist: (r) => saveSession(r, now()) };
 }
 
+/** Shared text/API persistence contract; store the original prompt, never replayed context. */
+function appendSessionExchange(
+  rec: SessionRecord, prompt: string, agent: string, result: AskResult,
+): SessionRecord {
+  const lastUser = [...rec.transcript].reverse().find((t) => t.role === 'user');
+  const last = rec.transcript.at(-1);
+  if (lastUser?.text === prompt && last?.role === 'assistant') return rec;
+  let next = lastUser?.text === prompt && last?.role === 'user'
+    ? rec
+    : addTurn(rec, { role: 'user', agent: null, text: prompt });
+  next = addTurn(next, {
+    role: 'assistant', agent,
+    text: result.ok ? result.text : `(failed: ${result.failureClass})`,
+  });
+  if (result.ok && result.sessionId) next = setNative(next, agent, result.sessionId);
+  return next;
+}
+
+export function persistSessionExchange(
+  sess: ResolvedSession, prompt: string, agent: string, result: AskResult,
+): void {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const base = attempt === 0 ? sess.record : (loadSession(sess.record.id) ?? sess.record);
+    const next = appendSessionExchange(base, prompt, agent, result);
+    try {
+      saveSession(next, Date.now(), { ifUnchangedSince: base.updatedAt });
+      sess.record = next;
+      return;
+    } catch (e) {
+      if (!(e instanceof SessionWriteConflict)) throw e;
+    }
+  }
+  throw new Error('session persistence failed: too many concurrent writers');
+}
+
 /** Render a session transcript as faux multi-turn context for non-native agents. */
-export function renderTranscript(turns: SessionTurn[], msg: string): string {
-  if (turns.length === 0) return msg;
-  const ctx = turns
+export function renderTranscript(turns: SessionTurn[], msg: string, maxChars = 16_000): string {
+  const bounded = boundTranscript(turns, maxChars);
+  if (bounded.length === 0) return msg;
+  const ctx = bounded
     .map((t) => (t.role === 'user' ? `User: ${t.text}` : `${t.agent ?? 'assistant'}: ${t.text}`))
     .join('\n');
   return `${ctx}\nUser: ${msg}\nAssistant:`;
@@ -373,10 +421,14 @@ export async function cmdAsk(
   args: {
     to: string; prompt: string; timeoutSeconds: number; approve: boolean;
     model?: string | null; effort?: string | null; session?: string | undefined; resume?: boolean;
+    briefingWorkspace?: string;
+    sessionScope?: string;
     format?: OutputFormat;
+    gatewayUrl?: string | null;
   },
   io: IO,
 ): Promise<number> {
+  const scope = resolveSessionScope({ sessionScope: args.sessionScope, briefingWorkspace: args.briefingWorkspace });
   if (args.format === 'json') {
     const r = await agentAsk(registry, {
       to: args.to,
@@ -387,6 +439,9 @@ export async function cmdAsk(
       effort: args.effort ?? null,
       session: args.session,
       resume: args.resume,
+      briefingWorkspace: args.briefingWorkspace,
+      sessionScope: args.sessionScope,
+      gatewayUrl: args.gatewayUrl,
     });
     emitJson(io, buildJsonEnvelope('ask', r.exitCode, r.warnings, { results: r.results }, r.error));
     return r.exitCode;
@@ -443,7 +498,7 @@ export async function cmdAsk(
   // durable session memory (opt-in via --session/--resume)
   let sess: ResolvedSession | null;
   try {
-    sess = resolveSession({ session: args.session, resume: args.resume });
+    sess = resolveSession({ session: args.session, resume: args.resume, scope });
   } catch (e) {
     io.err(color.red(e instanceof Error ? e.message : String(e)));
     return 2;
@@ -454,17 +509,25 @@ export async function cmdAsk(
   }
   const nativeAgent = !!registry.getPreset(args.to)?.session?.supportsResume;
   const resumeId = sess && nativeAgent ? sess.record.native[args.to] ?? null : null;
-  // inject transcript unless we have a native thread to resume (first native
-  // turn still gets prior context; later native turns rely on the CLI's memory)
-  const prompt = sess && !resumeId ? renderTranscript(sess.record.transcript, args.prompt) : args.prompt;
+  const prompt = await buildWorkerPrompt({
+    agent: args.to,
+    userPrompt: args.prompt,
+    transcript: sess && !resumeId ? sess.record.transcript : undefined,
+    nativeResumeId: resumeId,
+    briefingWorkspace: resolveBriefingWorkspace(args.briefingWorkspace),
+    gatewayUrl: args.gatewayUrl,
+  });
 
   const result = await askOne(registry.resolveRole('chat', args.to), prompt, args.timeoutSeconds, model, resumeId, effort);
 
   if (sess) {
-    let rec = addTurn(sess.record, { role: 'user', agent: null, text: args.prompt });
-    rec = addTurn(rec, { role: 'assistant', agent: args.to, text: result.ok ? result.text : `(failed: ${result.failureClass})` });
-    if (result.ok && result.sessionId) rec = setNative(rec, args.to, result.sessionId);
-    sess.persist(rec);
+    try {
+      persistSessionExchange(sess, args.prompt, args.to, result);
+    } catch (e) {
+      io.err(color.red(`session persistence failed: ${e instanceof Error ? e.message : String(e)}`));
+      if (result.ok) io.out(result.text);
+      return 1;
+    }
   }
 
   // a silent downgrade would misattribute the answer's quality — always say so
@@ -591,34 +654,7 @@ function logHallucinationIncidents(
 
 /** Optional LLM tiebreak: on an ambiguous route, ask a cheap codex (luna) or claude
  *  (haiku) to pick among available agents. Returns a validated agent name, or null. */
-async function llmTiebreak(
-  registry: AdapterRegistry,
-  task: string,
-  agents: RouterAgent[],
-  timeoutSeconds: number,
-): Promise<string | null> {
-  const names = agents.filter((a) => a.available && a.name !== 'dry_run').map((a) => a.name);
-  if (names.length === 0) return null;
-  const prompt =
-    `Pick the single best agent for this task from [${names.join(', ')}]. ` +
-    `Reply with ONLY the agent name, nothing else.\n\nTask: ${task}`;
 
-  if (registry.has('codex')) {
-    const r = await askOne(registry.resolveRole('chat', 'codex'), prompt, timeoutSeconds, 'gpt-5.6-luna');
-    if (r.ok) {
-      const pick = r.text.trim().toLowerCase().split(/[^a-z_]+/)[0] ?? '';
-      if (names.includes(pick)) return pick;
-    }
-  }
-  if (registry.has('claude')) {
-    const r = await askOne(registry.resolveRole('chat', 'claude'), prompt, timeoutSeconds, 'haiku');
-    if (r.ok) {
-      const pick = r.text.trim().toLowerCase().split(/[^a-z_]+/)[0] ?? '';
-      if (names.includes(pick)) return pick;
-    }
-  }
-  return null;
-}
 
 export async function cmdRoute(
   registry: AdapterRegistry,
@@ -626,7 +662,9 @@ export async function cmdRoute(
     task: string; dryRoute: boolean; explain: boolean; timeoutSeconds: number;
     approve: boolean; model?: string | null; effort?: string | null;
     session?: string | undefined; resume?: boolean; llm?: boolean;
+    briefingWorkspace?: string; sessionScope?: string;
     format?: OutputFormat;
+    gatewayUrl?: string | null;
   },
   io: IO,
 ): Promise<number> {
@@ -642,6 +680,9 @@ export async function cmdRoute(
       effort: args.effort ?? null,
       session: args.session,
       resume: args.resume,
+      briefingWorkspace: args.briefingWorkspace,
+      sessionScope: args.sessionScope,
+      gatewayUrl: args.gatewayUrl,
     });
     emitJson(io, buildJsonEnvelope(
       'route',
@@ -649,7 +690,7 @@ export async function cmdRoute(
       r.warnings,
       {
         route: r.route,
-        executed: !args.dryRoute,
+        executed: r.ask != null,
         ask: r.ask ?? null,
       },
       r.error,
@@ -663,26 +704,10 @@ export async function cmdRoute(
     capabilities: registry.get(name).capabilities(),
     available: health[name]?.available ?? false,
   }));
-  let decision = route(args.task, agents);
+  const decision = route(args.task, agents);
 
-  // opt-in LLM tiebreak when the deterministic signal is ambiguous
-  if (decision.ambiguous && args.llm && !args.dryRoute) {
-    const pick = await llmTiebreak(registry, args.task, agents, args.timeoutSeconds);
-    if (pick) {
-      const reasons = decision.ranked.find((r) => r.agent === pick)?.reasons ?? [];
-      const tier = classifyCostPerformance(args.task, pick, reasons);
-      decision = {
-        ...decision,
-        agent: pick,
-        model: suggestModel(pick, reasons, args.task),
-        effort: suggestRouteEffort(pick, reasons, args.task),
-        tier,
-        method: 'deterministic',
-        rationale: `LLM tiebreak → ${pick}; cost/performance=${tier}`,
-        ambiguous: false,
-      };
-    }
-  }
+  // Ambiguous decisions require a human-selected target.
+
 
   const chosen = decision.agent ? agentColor(decision.agent)(decision.agent) : color.red('none');
   const modelStr = decision.model ? color.dim(`:${decision.model}`) : '';
@@ -690,7 +715,7 @@ export async function cmdRoute(
   io.out(`→ route: ${chosen}${modelStr}${effortStr} ${color.dim(`(${decision.method})`)}`);
   io.out(color.dim(`  ${decision.rationale}`));
   if (decision.ambiguous) {
-    io.out(color.yellow('  ambiguous signal — refine the task, use --to to override, or --llm (opt-in tiebreak)'));
+    io.out(color.yellow('  ambiguous signal — ask the user to refine the task or pin delegate --to'));
   }
   if (args.explain) {
     for (const r of decision.ranked) {
@@ -706,6 +731,10 @@ export async function cmdRoute(
   });
 
   if (args.dryRoute) return 0;
+  if (decision.ambiguous) {
+    io.err('Ambiguous routing requires a human choice; use delegate --to. LLM tiebreak is disabled.');
+    return 3;
+  }
   if (!decision.agent) {
     io.err(color.red('no agent available to run the task.'));
     return 2;
@@ -719,6 +748,9 @@ export async function cmdRoute(
       to: decision.agent, prompt: args.task, timeoutSeconds: args.timeoutSeconds,
       approve: args.approve, model: args.model ?? decision.model ?? null,
       effort: args.effort ?? decision.effort ?? null, session: args.session, resume: args.resume,
+      briefingWorkspace: args.briefingWorkspace,
+      sessionScope: args.sessionScope,
+      gatewayUrl: args.gatewayUrl,
     },
     io,
   );
@@ -735,7 +767,9 @@ export async function cmdDelegate(
     task: string; timeoutSeconds: number; approve: boolean;
     model?: string | null; effort?: string | null; session?: string | undefined; resume?: boolean;
     llm?: boolean; explain?: boolean; verbose?: boolean; dryRoute?: boolean;
-    to?: string; format?: OutputFormat;
+    to?: string; briefingWorkspace?: string; sessionScope?: string;
+    format?: OutputFormat;
+    gatewayUrl?: string | null;
   },
   io: IO,
 ): Promise<number> {
@@ -752,6 +786,9 @@ export async function cmdDelegate(
       effort: args.effort ?? null,
       session: args.session,
       resume: args.resume,
+      briefingWorkspace: args.briefingWorkspace,
+      sessionScope: args.sessionScope,
+      gatewayUrl: args.gatewayUrl,
     });
     emitJson(io, buildJsonEnvelope(
       'delegate',
@@ -759,7 +796,7 @@ export async function cmdDelegate(
       r.warnings,
       {
         route: r.route,
-        executed: !args.dryRoute,
+        executed: r.ask != null,
         ask: r.ask ?? null,
       },
       r.error,
@@ -772,12 +809,17 @@ export async function cmdDelegate(
       io.err(color.red(`unknown agent '${args.to}'.`) + ` Known: ${registry.names().join(', ')}`);
       return 2;
     }
+    if (args.dryRoute) {
+      io.out(`→ delegate: ${args.to}${args.model ? ':' + args.model : ''} (pinned preview)`);
+      return 0;
+    }
     return cmdAsk(
       registry,
       {
         to: args.to, prompt: args.task, timeoutSeconds: args.timeoutSeconds,
         approve: args.approve, model: args.model ?? null, effort: args.effort ?? null,
-        session: args.session, resume: args.resume,
+        session: args.session, resume: args.resume, briefingWorkspace: args.briefingWorkspace,
+        sessionScope: args.sessionScope, gatewayUrl: args.gatewayUrl,
       },
       io,
     );
@@ -794,25 +836,9 @@ export async function cmdDelegate(
     capabilities: registry.get(name).capabilities(),
     available: health[name]?.available ?? false,
   }));
-  let decision = route(args.task, agents);
+  const decision = route(args.task, agents);
 
-  if (decision.ambiguous && args.llm && !args.dryRoute) {
-    const pick = await llmTiebreak(registry, args.task, agents, args.timeoutSeconds);
-    if (pick) {
-      const reasons = decision.ranked.find((r) => r.agent === pick)?.reasons ?? [];
-      const tier = classifyCostPerformance(args.task, pick, reasons);
-      decision = {
-        ...decision,
-        agent: pick,
-        model: suggestModel(pick, reasons, args.task),
-        effort: suggestRouteEffort(pick, reasons, args.task),
-        tier,
-        method: 'deterministic',
-        rationale: `LLM tiebreak → ${pick}; cost/performance=${tier}`,
-        ambiguous: false,
-      };
-    }
-  }
+
 
   const chosen = decision.agent ? agentColor(decision.agent)(decision.agent) : color.red('none');
   const modelStr = decision.model ? color.dim(`:${decision.model}`) : '';
@@ -820,7 +846,7 @@ export async function cmdDelegate(
   meta(`→ delegate: ${chosen}${modelStr}${effortStr} ${color.dim(`(${decision.method})`)}`);
   meta(color.dim(`  ${decision.rationale}`));
   if (decision.ambiguous) {
-    meta(color.yellow('  ambiguous signal — use --to to pin an agent, or --llm for tiebreak'));
+    meta(color.yellow('  ambiguous signal — ask the user to pin an agent with --to'));
   }
   if (args.explain) {
     for (const r of decision.ranked) {
@@ -836,6 +862,10 @@ export async function cmdDelegate(
   });
 
   if (args.dryRoute) return 0;
+  if (decision.ambiguous) {
+    io.err('Ambiguous routing requires a human choice; use delegate --to. LLM tiebreak is disabled.');
+    return 3;
+  }
   if (!decision.agent) {
     io.err(color.red('no agent available to run the task.'));
     return 2;
@@ -847,6 +877,9 @@ export async function cmdDelegate(
       to: decision.agent, prompt: args.task, timeoutSeconds: args.timeoutSeconds,
       approve: args.approve, model: args.model ?? decision.model ?? null,
       effort: args.effort ?? decision.effort ?? null, session: args.session, resume: args.resume,
+      briefingWorkspace: args.briefingWorkspace,
+      sessionScope: args.sessionScope,
+      gatewayUrl: args.gatewayUrl,
     },
     io,
   );
@@ -1020,7 +1053,7 @@ export function cmdSessions(
     const native = Object.keys(s.native);
     const age = Math.round((now() - s.updatedAt) / (24 * 60 * 60 * 1000));
     const nativeStr = native.length ? color.dim(` · native: ${native.join(',')}`) : '';
-    io.out(`  ${color.bold(s.id.padEnd(12))} ${color.dim(`${turns} turns · ${age}d ago`)}${nativeStr}`);
+    io.out(`  ${color.bold(s.id.padEnd(12))} ${color.dim(`${turns} turns · ${age}d ago`)}${nativeStr}${s.scope ? color.dim(` · scope:${s.scope}`) : ''}`);
   }
   return 0;
 }

@@ -14,8 +14,8 @@ export function sessionPath(id: string): string {
 }
 
 /** A fresh, empty session. `now` is injectable so callers/tests stay deterministic. */
-export function newSession(now: number, id: string = randomUUID().slice(0, 8)): SessionRecord {
-  return { id, createdAt: now, updatedAt: now, native: {}, transcript: [] };
+export function newSession(now: number, id: string = randomUUID().slice(0, 8), scope: string | null = null): SessionRecord {
+  return { id, createdAt: now, updatedAt: now, scope, native: {}, transcript: [] };
 }
 
 /** Load a session by id, or null if it doesn't exist. Throws on corrupt files (fail-closed). */
@@ -30,10 +30,24 @@ export function loadSession(id: string): SessionRecord | null {
   return parsed.data;
 }
 
+/** Thrown when another writer updated the session between load and save. */
+export class SessionWriteConflict extends Error {
+  constructor(public readonly currentUpdatedAt: number) {
+    super('session write conflict');
+    this.name = 'SessionWriteConflict';
+  }
+}
+
 /** Atomic write (temp + rename) so a crash can't leave a half-written session. */
-export function saveSession(rec: SessionRecord, now: number): void {
+export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchangedSince?: number }): void {
   const path = sessionPath(rec.id);
   mkdirSync(sessionsDir(), { recursive: true });
+  if (opts?.ifUnchangedSince !== undefined && existsSync(path)) {
+    const onDisk = loadSession(rec.id);
+    if (onDisk && onDisk.updatedAt !== opts.ifUnchangedSince) {
+      throw new SessionWriteConflict(onDisk.updatedAt);
+    }
+  }
   const withStamp = { ...rec, updatedAt: now };
   // unique tmp per writer so two processes persisting the same id can't splice
   // their JSON into a shared temp file before the atomic rename.
@@ -42,8 +56,8 @@ export function saveSession(rec: SessionRecord, now: number): void {
   renameSync(tmp, path);
 }
 
-/** Session ids on disk, most-recently-updated first (for `--resume`). */
-export function listSessions(): SessionRecord[] {
+/** Session ids on disk, most-recently-updated first. Optional scope filters to one workspace label. */
+export function listSessions(scope?: string | null): SessionRecord[] {
   const dir = sessionsDir();
   if (!existsSync(dir)) return [];
   const recs: SessionRecord[] = [];
@@ -56,17 +70,39 @@ export function listSessions(): SessionRecord[] {
       /* skip corrupt */
     }
   }
-  return recs.sort((a, b) => b.updatedAt - a.updatedAt);
+  const filtered = scope === undefined
+    ? recs
+    : recs.filter((s) => (s.scope ?? null) === scope);
+  return filtered.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** The most recently updated session, or null. */
-export function latestSession(): SessionRecord | null {
-  return listSessions()[0] ?? null;
+/** Most recent session in a scope. `undefined` scope → latest among unscoped sessions only. */
+export function latestSession(scope?: string | null): SessionRecord | null {
+  if (scope === undefined) {
+    return listSessions().filter((s) => s.scope == null)[0] ?? null;
+  }
+  return listSessions(scope)[0] ?? null;
 }
 
 /** Append a turn to a session's shared transcript (pure; returns a new record). */
 export function addTurn(rec: SessionRecord, turn: SessionTurn): SessionRecord {
   return { ...rec, transcript: [...rec.transcript, turn] };
+}
+
+/** Keep the newest turns when replay exceeds a character budget. */
+export function boundTranscript(turns: SessionTurn[], maxChars = 16_000): SessionTurn[] {
+  if (maxChars <= 0 || turns.length === 0) return turns;
+  const kept: SessionTurn[] = [];
+  let total = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i]!;
+    const line = t.role === 'user' ? `User: ${t.text}` : `${t.agent ?? 'assistant'}: ${t.text}`;
+    const size = line.length + 1;
+    if (total + size > maxChars && kept.length > 0) break;
+    total += size;
+    kept.unshift(t);
+  }
+  return kept;
 }
 
 /** Record an agent's native session id (pure; returns a new record). */

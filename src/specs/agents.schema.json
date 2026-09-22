@@ -38,6 +38,7 @@
               "claude_json",
               "codex_lastmsg",
               "agy_json",
+              "cursor_json",
               "text",
               "json_extract"
             ]

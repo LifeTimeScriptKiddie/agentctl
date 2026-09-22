@@ -111,9 +111,9 @@ describe('routeStepAgent', () => {
     const r = routeStepAgent(step({ id: 's1', instruction: 'run the tests', type: 'shell', needs: ['canRunShell'] }), fleet());
     expect(r.agent).toBeNull();
   });
-  it('a code step goes to codex', () => {
+  it('a mutation step fails closed without a write-capable lane', () => {
     const r = routeStepAgent(step({ id: 's1', instruction: 'refactor the parser', type: 'code' }), fleet());
-    expect(r.agent).toBe('codex');
+    expect(r.agent).toBeNull();
   });
 
   it('routes a parsed accessNetwork alias to a network-capable agent', () => {

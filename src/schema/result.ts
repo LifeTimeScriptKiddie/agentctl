@@ -18,6 +18,8 @@ export const UsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().nullable().default(null),
   outputTokens: z.number().int().nonnegative().nullable().default(null),
   costUsd: z.number().nonnegative().nullable().default(null),
+  cachedInputTokens: z.number().int().nonnegative().nullable().optional(),
+  cacheWriteInputTokens: z.number().int().nonnegative().nullable().optional(),
 });
 export type Usage = z.infer<typeof UsageSchema>;
 

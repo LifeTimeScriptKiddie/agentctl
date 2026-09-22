@@ -1,14 +1,14 @@
 name: cursor
 family: subprocess
 transport: subprocess
-# cursor-agent --output-format text prints the final answer as plain text.
-parse: text
+# Structured envelope preserves any usage the CLI reports; absent usage stays unknown.
+parse: cursor_json
 promptDelivery: arg
 commandTemplate:
   - cursor-agent
   - -p
   - --output-format
-  - text
+  - json
   # ask = read-only Q&A mode (no edits). `-p` alone would grant write+shell,
   # so --mode ask is the control here, mirroring codex's `-s read-only`.
   - --mode
@@ -20,8 +20,8 @@ commandTemplate:
   - --sandbox
   - enabled
   - "{prompt}"
-# Cursor bills per-request against the subscription, so default to Cursor's own
-# fast in-house model; escalate per-invocation with --model.
+# Prefer the Cursor Models usage pool with Composer; third-party models use
+# a separate allowance. Explicit --model IDs are passed through to Cursor.
 model: composer-2.5
 modelFlag: --model
 models:
@@ -40,13 +40,11 @@ models:
     - gpt-5.6-luna-high
     - gpt-5.6-terra-high
     - gpt-5.6-sol-high
-    - claude-sonnet-5-high
+    - claude-sonnet-5-thinking-high
     - claude-opus-5-thinking-high
     - gpt-5.3-codex
     - cursor-grok-4.6-high-fast
-# `--resume [chatId]` exists, but the chat id is not emitted on the text path;
-# capturing it would need --output-format json + a new idFrom parser. Deferred:
-# agentctl falls back to its persisted transcript.
+# Native resume remains disabled; existing transcript fallback is unchanged.
 session: null
 healthProbe: [which, cursor-agent]
 capabilities:

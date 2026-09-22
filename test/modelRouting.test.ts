@@ -5,15 +5,15 @@ import { buildPlannerPrompt } from '../src/core/orchestrator.js';
 describe('MODEL-ROUTING.md', () => {
   it('loads the routing guide from docs/', () => {
     const guide = readModelRoutingGuide();
-    expect(guide).toContain('local subscriptions');
-    expect(guide).toContain('gemini-3.8-flash-low');
+    expect(guide).toContain('Cursor Models allowance');
+    expect(guide).toContain('gpt-daybreak-blue-latest');
     expect(guide).toContain('PLANNER_RULES_START');
   });
 
   it('extracts planner rules for orchestrator injection', () => {
     const rules = readPlannerRoutingRules();
-    expect(rules).toContain('ACTIVE PROFILE: Use the live roster');
-    expect(rules).toContain('cursor-grok-4.6-high-fast');
+    expect(rules).toContain('Use only available lanes');
+    expect(rules).toContain('claude / opus');
     expect(rules).not.toContain('PLANNER_RULES_START');
   });
 

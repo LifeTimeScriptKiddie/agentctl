@@ -6,9 +6,6 @@ import type { AdapterRegistry } from './adapters/registry.js';
 import type { RouteDecision, RouterAgent } from './core/router.js';
 import {
   route,
-  suggestModel,
-  suggestRouteEffort,
-  classifyCostPerformance,
 } from './core/router.js';
 import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
@@ -22,10 +19,13 @@ import {
   askAll,
   runOrchestrateGoal,
   resolveSession,
-  renderTranscript,
+  resolveSessionScope,
+  persistSessionExchange,
   collectStatus,
   type AskResult,
 } from './commands.js';
+import { buildWorkerPrompt } from './memory/briefingPrompt.js';
+import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
 
 export type { AskResult, RouteDecision, OrchestrationResult, StepOutcome, AgentStatus };
@@ -39,6 +39,12 @@ export interface AskOptions {
   effort?: string | null;
   session?: string;
   resume?: boolean;
+  /** Prepend local resume briefing for this workspace (no model call). */
+  briefingWorkspace?: string;
+  /** Scope label for `--resume` / new sessions; defaults from briefingWorkspace when set. */
+  sessionScope?: string;
+  /** Memory gatekeeper base URL; defaults from `AGENTCTL_GATEWAY_URL`. */
+  gatewayUrl?: string | null;
 }
 
 export interface AskCommandResult {
@@ -59,6 +65,9 @@ export interface RouteOptions {
   effort?: string | null;
   session?: string;
   resume?: boolean;
+  briefingWorkspace?: string;
+  sessionScope?: string;
+  gatewayUrl?: string | null;
 }
 
 export interface RouteCommandResult {
@@ -112,59 +121,16 @@ async function routerAgents(registry: AdapterRegistry): Promise<RouterAgent[]> {
   }));
 }
 
-async function llmTiebreak(
-  registry: AdapterRegistry,
-  task: string,
-  agents: RouterAgent[],
-  timeoutSeconds: number,
-): Promise<string | null> {
-  const names = agents.filter((a) => a.available && a.name !== 'dry_run').map((a) => a.name);
-  if (names.length === 0) return null;
-  const prompt =
-    `Pick the single best agent for this task from [${names.join(', ')}]. ` +
-    `Reply with ONLY the agent name, nothing else.\n\nTask: ${task}`;
 
-  if (registry.has('codex')) {
-    const r = await askOne(registry.resolveRole('chat', 'codex'), prompt, timeoutSeconds, 'gpt-5.6-luna');
-    if (r.ok) {
-      const pick = r.text.trim().toLowerCase().split(/[^a-z_]+/)[0] ?? '';
-      if (names.includes(pick)) return pick;
-    }
-  }
-  if (registry.has('claude')) {
-    const r = await askOne(registry.resolveRole('chat', 'claude'), prompt, timeoutSeconds, 'haiku');
-    if (r.ok) {
-      const pick = r.text.trim().toLowerCase().split(/[^a-z_]+/)[0] ?? '';
-      if (names.includes(pick)) return pick;
-    }
-  }
-  return null;
-}
 
 async function resolveRouting(
   registry: AdapterRegistry,
   task: string,
-  opts: { llm?: boolean; dryRoute?: boolean; timeoutSeconds: number },
+  _opts: { llm?: boolean; dryRoute?: boolean; timeoutSeconds: number },
 ): Promise<RouteDecision> {
   const agents = await routerAgents(registry);
-  let decision = route(task, agents);
-  if (decision.ambiguous && opts.llm && !opts.dryRoute) {
-    const pick = await llmTiebreak(registry, task, agents, opts.timeoutSeconds);
-    if (pick) {
-      const reasons = decision.ranked.find((r) => r.agent === pick)?.reasons ?? [];
-      const tier = classifyCostPerformance(task, pick, reasons);
-      decision = {
-        ...decision,
-        agent: pick,
-        model: suggestModel(pick, reasons, task),
-        effort: suggestRouteEffort(pick, reasons, task),
-        tier,
-        method: 'deterministic',
-        rationale: `LLM tiebreak → ${pick}; cost/performance=${tier}`,
-        ambiguous: false,
-      };
-    }
-  }
+  const decision = route(task, agents);
+
   return decision;
 }
 
@@ -178,6 +144,9 @@ async function executeSingleAsk(
     effort: string | null;
     session?: string;
     resume?: boolean;
+    briefingWorkspace?: string;
+    sessionScope?: string;
+    gatewayUrl?: string | null;
   },
   warnings: string[],
 ): Promise<{ exitCode: number; result: AskResult; error?: string }> {
@@ -210,7 +179,11 @@ async function executeSingleAsk(
 
   let sess;
   try {
-    sess = resolveSession({ session: args.session, resume: args.resume });
+    sess = resolveSession({
+      session: args.session,
+      resume: args.resume,
+      scope: resolveSessionScope({ sessionScope: args.sessionScope, briefingWorkspace: args.briefingWorkspace }),
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -239,7 +212,15 @@ async function executeSingleAsk(
 
   const nativeAgent = !!registry.getPreset(args.to)?.session?.supportsResume;
   const resumeId = sess && nativeAgent ? sess.record.native[args.to] ?? null : null;
-  const prompt = sess && !resumeId ? renderTranscript(sess.record.transcript, args.prompt) : args.prompt;
+  const briefingWorkspace = resolveBriefingWorkspace(args.briefingWorkspace);
+  const prompt = await buildWorkerPrompt({
+    agent: args.to,
+    userPrompt: args.prompt,
+    transcript: sess && !resumeId ? sess.record.transcript : undefined,
+    nativeResumeId: resumeId,
+    briefingWorkspace,
+    gatewayUrl: args.gatewayUrl,
+  });
 
   const result = await askOne(
     registry.resolveRole('chat', args.to),
@@ -249,6 +230,15 @@ async function executeSingleAsk(
     resumeId,
     args.effort,
   );
+
+  if (sess) {
+    try {
+      persistSessionExchange(sess, args.prompt, args.to, result);
+    } catch (e) {
+      return { exitCode: 1, result,
+        error: `Agent call completed but session persistence failed: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
 
   if (result.steppedDown > 0) {
     warnings.push(
@@ -304,6 +294,9 @@ export async function agentAsk(
       effort,
       session: opts.session,
       resume: opts.resume,
+      briefingWorkspace: opts.briefingWorkspace,
+      sessionScope: opts.sessionScope,
+      gatewayUrl: opts.gatewayUrl,
     },
     warnings,
   );
@@ -342,6 +335,10 @@ export async function agentRoute(
   if (opts.dryRoute) {
     return { exitCode: 0, warnings, route: decision };
   }
+  if (decision.ambiguous) {
+    return { exitCode: 3, warnings, route: decision,
+      error: 'Ambiguous routing requires a human choice; use delegate --to. LLM tiebreak is disabled.' };
+  }
   if (!decision.agent) {
     return {
       exitCode: 2,
@@ -361,6 +358,9 @@ export async function agentRoute(
       effort: opts.effort ?? decision.effort ?? null,
       session: opts.session,
       resume: opts.resume,
+      briefingWorkspace: opts.briefingWorkspace,
+      sessionScope: opts.sessionScope,
+      gatewayUrl: opts.gatewayUrl,
     },
     warnings,
   );
@@ -379,6 +379,13 @@ export async function agentDelegate(
   registry: AdapterRegistry,
   opts: DelegateOptions,
 ): Promise<RouteCommandResult> {
+  if (opts.to && opts.dryRoute) {
+    const known = registry.has(opts.to);
+    return { exitCode: known ? 0 : 2, warnings: [],
+      route: { agent: known ? opts.to : null, model: opts.model ?? null, effort: opts.effort ?? null,
+        tier: null, rationale: 'pinned via to (preview only)', method: 'default', ranked: [], ambiguous: false },
+      ...(!known ? { error: `unknown agent '${opts.to}'` } : {}) };
+  }
   if (opts.to) {
     const askResult = await agentAsk(registry, {
       to: opts.to,
@@ -389,6 +396,9 @@ export async function agentDelegate(
       effort: opts.effort,
       session: opts.session,
       resume: opts.resume,
+      briefingWorkspace: opts.briefingWorkspace,
+      sessionScope: opts.sessionScope,
+      gatewayUrl: opts.gatewayUrl,
     });
     const ask = askResult.results[0];
     return {

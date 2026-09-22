@@ -30,9 +30,9 @@ describe('route (deterministic)', () => {
     expect(d.method).toBe('deterministic');
   });
 
-  it('coding task → codex', () => {
+  it('coding analysis → cursor', () => {
     const d = route('debug this failing unit test in the repo', fleet());
-    expect(d.agent).toBe('codex');
+    expect(d.agent).toBe('cursor');
   });
 
   it('repository mutation → codex_write instead of the read-only codex lane', () => {
@@ -72,7 +72,7 @@ describe('route (deterministic)', () => {
   it('bulk task → cheap Cursor Gemini rather than the web-research lane', () => {
     const d = route('summarize this and translate it, quick', fleet());
     expect(d.agent).toBe('cursor');
-    expect(d.model).toBe('gemini-3.8-flash-low');
+    expect(d.model).toBe('composer-2.5');
   });
 
   it('shell/ops task → codex_write', () => {
@@ -109,7 +109,7 @@ describe('route (deterministic)', () => {
   it('a plain "summarize and translate, quick" stays on the cheap bulk lane', () => {
     const d = route('summarize this and translate it, quick', fleet());
     expect(d.agent).toBe('cursor');
-    expect(d.model).toBe('gemini-3.8-flash-low');
+    expect(d.model).toBe('composer-2.5');
   });
 
   it('no signal → subscription-backed Cursor default, flagged ambiguous', () => {
@@ -141,7 +141,7 @@ describe('route (deterministic)', () => {
   it('trivial mechanical work uses the smallest available Cursor model', () => {
     const d = route('identify spelling typos', fleet());
     expect(d.agent).toBe('cursor');
-    expect(d.model).toBe('muse-spark-1.3-minimal');
+    expect(d.model).toBe('composer-2.5');
   });
 
   it('trivial edits still use the write-capable lane', () => {
@@ -171,18 +171,47 @@ describe('route (deterministic)', () => {
 
   it('--explain data: ranked list is scored and ordered', () => {
     const d = route('debug the failing test', fleet());
-    expect(d.ranked[0]!.agent).toBe('codex');
+    expect(d.ranked[0]!.agent).toBe('cursor');
     expect(d.ranked[0]!.score).toBeGreaterThan(0);
   });
 
   it('model-aware: reasoning, bulk, and fallback defaults use the local roster', () => {
     expect(route('explain and analyze the trade-offs', fleet()).model).toBe('composer-2.5');
-    expect(route('summarize this quickly', fleet()).model).toBe('gemini-3.8-flash-low');
+    expect(route('summarize this quickly', fleet()).model).toBe('composer-2.5');
     expect(suggestModel('claude', ['bulk signal'])).toBe('haiku');
     expect(suggestModel('codex', ['reason signal'])).toBe('gpt-5.6-terra');
     expect(suggestModel('codex', ['reason signal'], 'deep architectural analysis')).toBe('gpt-6-astra');
     expect(defaultWorkerModel('codex')).toBe('gpt-5.6-luna');
     expect(defaultWorkerModel('cursor')).toBe('composer-2.5');
     expect(defaultWorkerModel('pi')).toBe('openai-codex/gpt-5.6-luna');
+  });
+});
+
+
+describe('Cursor-first role policy', () => {
+  it.each([
+    ['plan repository changes', 'codex', 'gpt-6-astra'],
+    ['plan a cybersecurity review', 'codex', 'gpt-6-astra'],
+    ['deep code review', 'claude', 'opus'],
+    ['deep security review', 'claude', 'opus'],
+    ['draft a report', 'claude', 'sonnet'],
+    ['analyze cybersecurity findings', 'cursor', 'composer-2.5'],
+    ['patch the security bug in this file', 'codex_write', 'gpt-daybreak-blue-latest'],
+    ['run tests and explain their output', 'codex_write', 'gpt-5.6-luna'],
+  ])('%s → %s / %s', (task, agent, model) => {
+    const d = route(task, fleet());
+    expect(d.agent).toBe(agent);
+    expect(d.model).toBe(model);
+  });
+  it('cyber fallback uses Daybreak when Cursor is unavailable', () => {
+    expect(route('analyze security findings', fleet({ cursor: false })).model).toBe('gpt-daybreak-blue-latest');
+  });
+  it('deep review falls back to Claude through Cursor', () => {
+    const d = route('deep code review', fleet({ claude: false }));
+    expect(d.agent).toBe('cursor');
+    expect(d.model).toBe('claude-opus-5-thinking-high');
+  });
+  it('never falls back to a read-only lane for a write', () => {
+    expect(route('edit the security code file', fleet({ codex_write: false })).agent).toBeNull();
   });
 });

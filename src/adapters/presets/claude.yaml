@@ -10,6 +10,8 @@ commandTemplate:
   - -p
   - --output-format
   - json
+  - --tools
+  - Read,Grep,Glob
 # evaluator/critic roles append this flag with read-only tools.
 disallowedToolsFlag: --disallowedTools
 # per-invocation model switching (claude accepts an alias or a full name).

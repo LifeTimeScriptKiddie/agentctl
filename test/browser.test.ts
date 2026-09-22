@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BrowserAdapter, buildLaunchArgs, parsePort, defaultProfileDir } from '../src/adapters/browser.js';
 import { loadPreset } from '../src/assets.js';
 import { PresetSchema } from '../src/schema/agents.js';
@@ -56,6 +56,13 @@ describe('BrowserAdapter (guard)', () => {
 });
 
 describe('managed-launch helpers', () => {
+  const priorHome = process.env.AGENTCTL_HOME;
+  beforeEach(() => { delete process.env.AGENTCTL_HOME; });
+  afterEach(() => {
+    if (priorHome === undefined) delete process.env.AGENTCTL_HOME;
+    else process.env.AGENTCTL_HOME = priorHome;
+  });
+
   it('parses the port from a CDP endpoint', () => {
     expect(parsePort('http://127.0.0.1:9222')).toBe(9222);
     expect(parsePort('http://127.0.0.1:9333')).toBe(9333);
