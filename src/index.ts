@@ -11,6 +11,7 @@ export {
   agentDelegate,
   agentOrchestrate,
   agentHealth,
+  agentAgents,
   agentStatus,
 } from './api.js';
 
@@ -23,6 +24,7 @@ export type {
   OrchestrateOptions,
   OrchestrateCommandResult,
   AgentsHealthResult,
+  AgentsResult,
   StatusResult,
   AskResult,
   RouteDecision,
