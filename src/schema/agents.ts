@@ -126,6 +126,7 @@ export const PresetSchema = z.object({
   toolsets: z.string().nullable().default(null),
 
   // browser family
+  /** fixed CDP endpoint to attach to; null → managed instance on a Chrome-chosen, verified port. */
   cdpEndpoint: z.string().nullable().default(null),
   /** auto-launch a dedicated debuggable browser instance if none is reachable. */
   autoLaunch: z.boolean().default(false),

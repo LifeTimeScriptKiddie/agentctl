@@ -43,6 +43,7 @@ Memories must allow the provider: `--providers laya` on save (`jev` is a separat
 | `AGENTCTL_LAYA_EVIDENCE` | `1` enables gate when config absent |
 | `AGENTCTL_LAYA_PYTHON` | Python with `laya` installed |
 | `AGENTCTL_LAYA_SCRIPT` | Override path to `laya_evidence.py` |
+| `AGENTCTL_LAYA_TIMEOUT_MS` | Kill the Laya subprocess after this long (default 120000); at most 2 run at once |
 | `LAYA_PRELOAD` | `1` keep router hot in subprocess (default) |
 | `LAYA_DEVICE` | e.g. `cuda`, `mps`, `cpu` |
 

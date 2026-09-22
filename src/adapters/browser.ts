@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { agentctlHome } from '../core/agentHome.js';
+import { ensurePrivateDir, writePrivateFile } from '../core/privateFs.js';
 import type { AdapterRequest, AdapterResult, AdapterCapabilities } from '../schema/index.js';
 import type { Preset } from '../schema/agents.js';
 import type { AgentAdapter, HealthStatus, InvokeOptions } from './protocol.js';
@@ -11,8 +12,6 @@ import { run } from '../util/exec.js';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Playwright is an optional, user-installed extra reached via an indirect
 // specifier so the compiler never requires it. Its objects are typed `any`.
-
-const DEFAULT_CDP = 'http://127.0.0.1:9222';
 
 const INPUT_SELECTORS = [
   'textarea[placeholder]',
@@ -47,7 +46,7 @@ export function defaultProfileDir(): string {
   return join(agentctlHome(), 'chrome-profile');
 }
 
-/** argv for `open` to launch a dedicated debuggable browser instance. */
+/** argv for `open` to launch a debuggable instance on an explicitly configured port. */
 export function buildLaunchArgs(appName: string, port: number, userDataDir: string, url: string): string[] {
   return [
     '-na',
@@ -59,6 +58,107 @@ export function buildLaunchArgs(appName: string, port: number, userDataDir: stri
     '--no-default-browser-check',
     url,
   ];
+}
+
+/**
+ * argv for the managed instance: Chrome picks a free loopback port and records
+ * it in `<userDataDir>/DevToolsActivePort`, so no fixed port can be pre-bound.
+ */
+export function buildManagedLaunchArgs(appName: string, userDataDir: string, url: string): string[] {
+  return [
+    '-na',
+    appName,
+    '--args',
+    '--remote-debugging-port=0',
+    '--remote-debugging-address=127.0.0.1',
+    `--user-data-dir=${userDataDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    url,
+  ];
+}
+
+export interface DevToolsActivePort {
+  port: number;
+  /** browser WebSocket path, e.g. /devtools/browser/<uuid>; null if the file has no second line. */
+  browserPath: string | null;
+}
+
+/** Parse Chrome's DevToolsActivePort file: line 1 is the port, line 2 the browser WebSocket path. */
+export function parseDevToolsActivePort(content: string): DevToolsActivePort | null {
+  const [portLine, pathLine] = content.split(/\r?\n/);
+  const text = portLine?.trim() ?? '';
+  if (!/^\d{1,5}$/.test(text)) return null;
+  const port = Number(text);
+  if (port < 1 || port > 65535) return null;
+  const path = pathLine?.trim() ?? '';
+  return { port, browserPath: path.startsWith('/') ? path : null };
+}
+
+export function readDevToolsActivePort(profileDir: string): DevToolsActivePort | null {
+  try {
+    return parseDevToolsActivePort(readFileSync(join(profileDir, 'DevToolsActivePort'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export type VerifiedEndpoint = { ok: true; wsEndpoint: string } | { ok: false; reason: string };
+
+/**
+ * Check a `/json/version` body against the port file. The advertised WebSocket
+ * URL must be loopback on the recorded port (and the recorded browser path, when
+ * present); anything else is a different listener and is refused.
+ */
+export function matchDevToolsVersion(version: unknown, active: DevToolsActivePort): VerifiedEndpoint {
+  const ws = (version as { webSocketDebuggerUrl?: unknown } | null)?.webSocketDebuggerUrl;
+  if (typeof ws !== 'string') return { ok: false, reason: '/json/version has no webSocketDebuggerUrl' };
+  let url: URL;
+  try {
+    url = new URL(ws);
+  } catch {
+    return { ok: false, reason: '/json/version has an invalid webSocketDebuggerUrl' };
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    return { ok: false, reason: `refusing non-loopback DevTools endpoint ${url.host}` };
+  }
+  if (Number(url.port) !== active.port) {
+    return {
+      ok: false,
+      reason: `DevTools port mismatch: DevToolsActivePort says ${active.port}, /json/version advertises ${url.port || '(none)'}`,
+    };
+  }
+  if (active.browserPath && url.pathname !== active.browserPath) {
+    return { ok: false, reason: 'DevTools browser id does not match DevToolsActivePort' };
+  }
+  return { ok: true, wsEndpoint: `ws://127.0.0.1:${active.port}${url.pathname}` };
+}
+
+/** The managed browser's WebSocket endpoint, verified against its private profile's port file. */
+export async function verifiedManagedEndpoint(profileDir: string): Promise<VerifiedEndpoint> {
+  const active = readDevToolsActivePort(profileDir);
+  if (!active) return { ok: false, reason: `no DevToolsActivePort in ${profileDir}` };
+  let version: unknown;
+  try {
+    const r = await fetch(`http://127.0.0.1:${active.port}/json/version`, { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return { ok: false, reason: `/json/version on port ${active.port} returned HTTP ${r.status}` };
+    version = await r.json();
+  } catch {
+    return { ok: false, reason: `nothing answering on 127.0.0.1:${active.port}` };
+  }
+  return matchDevToolsVersion(version, active);
+}
+
+async function waitForManagedEndpoint(profileDir: string, timeoutMs: number): Promise<VerifiedEndpoint> {
+  const deadline = Date.now() + timeoutMs;
+  let last: VerifiedEndpoint = { ok: false, reason: 'not started' };
+  while (Date.now() < deadline) {
+    last = await verifiedManagedEndpoint(profileDir);
+    if (last.ok) return last;
+    await new Promise((res) => setTimeout(res, 600));
+  }
+  return last;
 }
 
 /** Poll the CDP endpoint's /json/version until it responds or times out. */
@@ -76,31 +176,60 @@ async function waitForCdp(endpoint: string, timeoutMs: number): Promise<boolean>
   return false;
 }
 
+/** Profile dir for the managed instance, created/tightened to 0700 (it holds login cookies). */
+export function prepareProfileDir(preset: Preset): string {
+  const profileDir = profileDirFor(preset);
+  ensurePrivateDir(profileDir);
+  return profileDir;
+}
+
+function profileDirFor(preset: Preset): string {
+  return preset.userDataDir ?? defaultProfileDir();
+}
+
 /**
  * Launch a dedicated, debuggable browser instance (separate profile) and wait
  * for its CDP endpoint. Used so the user never has to restart their main Comet.
- * Returns whether the endpoint is reachable afterward.
+ * Returns whether the endpoint is reachable afterward. An explicit preset
+ * `cdpEndpoint` uses that fixed port; otherwise Chrome picks the port and the
+ * endpoint is verified against the profile's DevToolsActivePort file.
  */
 export async function launchManagedBrowser(
   preset: Preset,
 ): Promise<{ ok: boolean; endpoint: string; detail: string; profileDir: string }> {
-  const endpoint = preset.cdpEndpoint ?? DEFAULT_CDP;
-  const profileDir = preset.userDataDir ?? defaultProfileDir();
-  if (await waitForCdp(endpoint, 1500)) {
-    return { ok: true, endpoint, profileDir, detail: 'a debuggable browser is already reachable' };
+  const profileDir = prepareProfileDir(preset);
+  const startUrl = 'https://www.perplexity.ai/';
+  if (preset.cdpEndpoint) {
+    const endpoint = preset.cdpEndpoint;
+    if (await waitForCdp(endpoint, 1500)) {
+      return { ok: true, endpoint, profileDir, detail: 'a debuggable browser is already reachable' };
+    }
+    const args = buildLaunchArgs(preset.appName, parsePort(endpoint), profileDir, startUrl);
+    await run('open', args, { timeoutMs: 10000 }).catch(() => {});
+    const ok = await waitForCdp(endpoint, 25000);
+    return {
+      ok,
+      endpoint,
+      profileDir,
+      detail: ok
+        ? `launched ${preset.appName} (profile ${profileDir})`
+        : `launched ${preset.appName} but CDP did not come up at ${endpoint}`,
+    };
   }
-  mkdirSync(profileDir, { recursive: true });
-  const args = buildLaunchArgs(preset.appName, parsePort(endpoint), profileDir, 'https://www.perplexity.ai/');
-  await run('open', args, { timeoutMs: 10000 }).catch(() => {});
-  const ok = await waitForCdp(endpoint, 25000);
-  return {
-    ok,
-    endpoint,
-    profileDir,
-    detail: ok
-      ? `launched ${preset.appName} (profile ${profileDir})`
-      : `launched ${preset.appName} but CDP did not come up at ${endpoint}`,
-  };
+  const existing = await verifiedManagedEndpoint(profileDir);
+  if (existing.ok) {
+    return { ok: true, endpoint: existing.wsEndpoint, profileDir, detail: 'the managed browser is already running' };
+  }
+  await run('open', buildManagedLaunchArgs(preset.appName, profileDir, startUrl), { timeoutMs: 10000 }).catch(() => {});
+  const ready = await waitForManagedEndpoint(profileDir, 25000);
+  return ready.ok
+    ? { ok: true, endpoint: ready.wsEndpoint, profileDir, detail: `launched ${preset.appName} (profile ${profileDir})` }
+    : {
+        ok: false,
+        endpoint: '',
+        profileDir,
+        detail: `launched ${preset.appName} but no verified DevTools endpoint came up (${ready.reason})`,
+      };
 }
 
 export async function firstVisible(page: any, selectors: string[], timeoutMs: number): Promise<any | null> {
@@ -209,7 +338,7 @@ export async function waitForAnswer(
 function evidenceDir(workdir: string | null): string {
   const base = process.env.AGENTCTL_EVIDENCE_DIR ?? join(workdir ?? process.cwd(), '.agentctl', 'comet');
   const dir = join(base, String(Date.now()));
-  mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
   return dir;
 }
 
@@ -227,32 +356,47 @@ export class BrowserAdapter implements AgentAdapter {
     this.name = preset.name;
   }
 
-  private endpoint(): string {
-    return this.preset.cdpEndpoint ?? DEFAULT_CDP;
-  }
-
   private notConfigured(durationMs: number, reason: string): AdapterResult {
     return failResult({ adapter: this.name, transport: this.transport, failureClass: 'not_configured', durationMs, reason });
   }
 
+  /**
+   * Where to attach: an explicitly configured `cdpEndpoint` as-is, otherwise the
+   * managed instance, but only once its /json/version matches DevToolsActivePort.
+   */
+  private async attachTarget(): Promise<{ endpoint: string | null; reason: string }> {
+    if (this.preset.cdpEndpoint) return { endpoint: this.preset.cdpEndpoint, reason: '' };
+    const profileDir = profileDirFor(this.preset);
+    if (existsSync(profileDir)) ensurePrivateDir(profileDir);
+    const verified = await verifiedManagedEndpoint(profileDir);
+    return verified.ok ? { endpoint: verified.wsEndpoint, reason: '' } : { endpoint: null, reason: verified.reason };
+  }
+
+  private unreachableHint(reason: string): string {
+    if (this.preset.cdpEndpoint) {
+      const endpoint = this.preset.cdpEndpoint;
+      return `no browser at ${endpoint}; launch Comet/Chrome with --remote-debugging-port=${parsePort(endpoint)} (or enable autoLaunch)`;
+    }
+    return `no managed browser (${reason}); run \`agentctl comet setup\` (or enable autoLaunch)`;
+  }
+
   /** Connect to a reachable debuggable browser, or auto-launch a managed one. */
   private async ensureConnected(pw: any): Promise<{ browser: any | null; reason: string }> {
-    const endpoint = this.endpoint();
-    try {
-      return { browser: await pw.chromium.connectOverCDP(endpoint, { timeout: 3000 }), reason: '' };
-    } catch {
-      /* not reachable — maybe launch one */
+    const target = await this.attachTarget();
+    if (target.endpoint) {
+      try {
+        return { browser: await pw.chromium.connectOverCDP(target.endpoint, { timeout: 3000 }), reason: '' };
+      } catch {
+        /* not reachable — maybe launch one */
+      }
     }
     if (!this.preset.autoLaunch) {
-      return {
-        browser: null,
-        reason: `no browser at ${endpoint}; launch Comet/Chrome with --remote-debugging-port=${parsePort(endpoint)} (or enable autoLaunch)`,
-      };
+      return { browser: null, reason: this.unreachableHint(target.reason) };
     }
     const launch = await launchManagedBrowser(this.preset);
     if (!launch.ok) return { browser: null, reason: launch.detail };
     try {
-      return { browser: await pw.chromium.connectOverCDP(endpoint, { timeout: 5000 }), reason: '' };
+      return { browser: await pw.chromium.connectOverCDP(launch.endpoint, { timeout: 5000 }), reason: '' };
     } catch (e) {
       return { browser: null, reason: `attached browser launched but connect failed: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -325,14 +469,14 @@ export class BrowserAdapter implements AgentAdapter {
       safeUrl.search = "";
       safeUrl.hash = "";
       const url = safeUrl.toString();
-      writeFileSync(join(dir, 'answer.txt'), redact(answer.text), 'utf8');
-      writeFileSync(join(dir, 'url.txt'), url, 'utf8');
-      writeFileSync(
+      writePrivateFile(join(dir, 'answer.txt'), redact(answer.text));
+      writePrivateFile(join(dir, 'url.txt'), url);
+      writePrivateFile(
         join(dir, 'meta.json'),
         JSON.stringify({ prompt: redact(request.prompt), url, partial: answer.partial, ts: new Date().toISOString() }, null, 2),
       );
       try {
-        writeFileSync(join(dir, 'page.html'), redact(await page.content()), 'utf8');
+        writePrivateFile(join(dir, 'page.html'), redact(await page.content()));
       } catch {
         /* best effort */
       }
@@ -378,17 +522,20 @@ export class BrowserAdapter implements AgentAdapter {
     if (!pw) {
       return { available: false, detail: 'playwright not installed (optional [browser] extra)', checkedVia: 'import probe' };
     }
-    const probe = async (): Promise<boolean> => {
+    const probe = async (): Promise<{ endpoint: string | null; reason: string }> => {
+      const target = await this.attachTarget();
+      if (!target.endpoint) return target;
       try {
-        const browser = await pw.chromium.connectOverCDP(this.endpoint(), { timeout: 3000 });
+        const browser = await pw.chromium.connectOverCDP(target.endpoint, { timeout: 3000 });
         await browser.close().catch(() => {});
-        return true;
+        return target;
       } catch {
-        return false;
+        return { endpoint: null, reason: `connect to ${target.endpoint} failed` };
       }
     };
-    if (await probe()) {
-      return { available: true, detail: `CDP reachable at ${this.endpoint()}`, checkedVia: 'connectOverCDP' };
+    const first = await probe();
+    if (first.endpoint) {
+      return { available: true, detail: `CDP reachable at ${first.endpoint}`, checkedVia: 'connectOverCDP' };
     }
     // Nothing reachable. With autoLaunch on, bring up a dedicated managed Comet
     // right here so `/agents` warms it up — the user never runs a flag by hand
@@ -396,7 +543,9 @@ export class BrowserAdapter implements AgentAdapter {
     if (!this.preset.autoLaunch) {
       return {
         available: false,
-        detail: `no browser on ${this.endpoint()} — launch ${this.preset.appName} with --remote-debugging-port=${parsePort(this.endpoint())} (or set autoLaunch)`,
+        detail: this.preset.cdpEndpoint
+          ? `no browser on ${this.preset.cdpEndpoint} — launch ${this.preset.appName} with --remote-debugging-port=${parsePort(this.preset.cdpEndpoint)} (or set autoLaunch)`
+          : this.unreachableHint(first.reason),
         checkedVia: 'connectOverCDP',
       };
     }
@@ -404,7 +553,7 @@ export class BrowserAdapter implements AgentAdapter {
     if (!launch.ok) {
       return { available: false, detail: launch.detail, checkedVia: 'autoLaunch' };
     }
-    const ready = await probe();
+    const ready = (await probe()).endpoint !== null;
     return {
       available: ready,
       detail: ready

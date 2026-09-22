@@ -5,6 +5,7 @@ import {
 import { resolveBriefingWorkspace } from '../memory/briefingEnv.js';
 import type { SessionRecord, SessionTurn } from '../schema/session.js';
 import type { AskResult } from './ask.js';
+import { redact } from './redact.js';
 
 export interface ResolvedSession {
   record: SessionRecord;
@@ -53,19 +54,23 @@ export function resolveSession(
   return { record, persist: (r) => saveSession(r, now()) };
 }
 
-/** Shared text/API persistence contract; store the original prompt, never replayed context. */
+/**
+ * Shared text/API persistence contract; store the original prompt, never replayed
+ * context. Both sides are redacted before they reach the transcript.
+ */
 export function appendSessionExchange(
   rec: SessionRecord, prompt: string, agent: string, result: AskResult,
 ): SessionRecord {
+  const safePrompt = redact(prompt);
   const lastUser = [...rec.transcript].reverse().find((t) => t.role === 'user');
   const last = rec.transcript.at(-1);
-  if (lastUser?.text === prompt && last?.role === 'assistant') return rec;
-  let next = lastUser?.text === prompt && last?.role === 'user'
+  if (lastUser?.text === safePrompt && last?.role === 'assistant') return rec;
+  let next = lastUser?.text === safePrompt && last?.role === 'user'
     ? rec
-    : addTurn(rec, { role: 'user', agent: null, text: prompt });
+    : addTurn(rec, { role: 'user', agent: null, text: safePrompt });
   next = addTurn(next, {
     role: 'assistant', agent,
-    text: result.ok ? result.text : `(failed: ${result.failureClass})`,
+    text: result.ok ? redact(result.text) : `(failed: ${result.failureClass})`,
   });
   if (result.ok && result.sessionId) next = setNative(next, agent, result.sessionId);
   return next;

@@ -1,10 +1,10 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { stepApprovalBlock } from '../approval.js';
-import { redact } from './redact.js';
+import { redact, redactDeep } from './redact.js';
 import { agentctlHome } from './agentHome.js';
+import { appendPrivate, ensurePrivateDir, writePrivateFile } from './privateFs.js';
 import { askOne, type AskResult } from './ask.js';
 import type { RouterAgent } from './router.js';
 import {
@@ -160,15 +160,28 @@ export function orchestrationRunPath({
   return join(base, 'orchestrations', `${hash}.json`);
 }
 
-/** Best-effort provenance log: one JSON line per routing decision. */
+/** Best-effort provenance log: one JSON line per routing decision (task/goal text redacted). */
 export function logRoute(entry: Record<string, unknown>): void {
   try {
     const base = agentctlHome();
     const path = join(base, 'route-log.jsonl');
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, JSON.stringify({ ts: Date.now(), ...entry }) + '\n', 'utf8');
+    ensurePrivateDir(dirname(path));
+    appendPrivate(path, JSON.stringify({ ts: Date.now(), ...redactDeep(entry) }) + '\n');
   } catch {
     /* logging is never fatal */
+  }
+}
+
+/** Persist completed step outcomes (redacted, 0600) so `--resume` can skip them. Best-effort. */
+export function writeOrchestrationRun(
+  path: string,
+  value: { goal: string; outcomes: StepOutcome[] },
+): void {
+  try {
+    ensurePrivateDir(dirname(path));
+    writePrivateFile(path, JSON.stringify(redactDeep(value), null, 2));
+  } catch {
+    /* persistence is best-effort */
   }
 }
 
@@ -180,7 +193,7 @@ export function logHallucinationIncidents(
 ): void {
   try {
     const path = join(agentctlHome(), 'hallucination-log.jsonl');
-    mkdirSync(dirname(path), { recursive: true });
+    ensurePrivateDir(dirname(path));
     for (const outcome of outcomes) {
       const history = outcome.verificationHistory ?? (outcome.verification ? [outcome.verification] : []);
       history.forEach((verification, index) => {
@@ -194,17 +207,17 @@ export function logHallucinationIncidents(
           correctedByRetry: outcome.ok && index < history.length - 1,
           feedback: verification.feedback, claims,
         };
-        appendFileSync(path, `${redact(JSON.stringify(record))}\n`, 'utf8');
+        appendPrivate(path, `${redact(JSON.stringify(record))}\n`);
       });
     }
     const synthesisClaims = (synthesisVerification?.claims ?? []).filter(
       (c) => c.status === 'unsupported' || c.status === 'contradicted',
     );
     if (synthesisClaims.length > 0) {
-      appendFileSync(path, `${redact(JSON.stringify({
+      appendPrivate(path, `${redact(JSON.stringify({
         ts: new Date().toISOString(), goal, step: 'synthesis', agent: 'orchestrator',
         feedback: synthesisVerification?.feedback, claims: synthesisClaims,
-      }))}\n`, 'utf8');
+      }))}\n`);
     }
   } catch {
     /* diagnostics are best-effort and never change the run result */

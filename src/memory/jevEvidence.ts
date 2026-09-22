@@ -31,6 +31,11 @@ export function jevEvidenceEnabled(explicit?: boolean, provider?: MemoryProvider
   return false;
 }
 
+/** The operator's own setting (server env), independent of any request flag. */
+export function jevOperatorEnabled(): boolean {
+  return process.env.AGENTCTL_JEV_EVIDENCE === '1' || process.env.AGENTCTL_JEV_EVIDENCE === 'true';
+}
+
 function validateChoice(
   answer: unknown,
   valid: Set<string>,

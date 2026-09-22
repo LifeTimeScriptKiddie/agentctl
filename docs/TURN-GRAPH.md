@@ -55,6 +55,8 @@ curl -s -X POST http://127.0.0.1:8741/v1/context -H 'content-type: application/j
 
 Headers (trusted only with a valid bearer token): `x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`. Audit append: `$AGENTCTL_HOME/logs/memory-serve-audit.jsonl`.
 
+`laya_evidence` / `jev_evidence` in the body are requests: they take effect only when the serve host enabled that gate (`AGENTCTL_LAYA_EVIDENCE=1` or `laya.yaml`, `AGENTCTL_JEV_EVIDENCE=1`). Checkpoints (always on `/v1/turn`, `include_checkpoint` on `/v1/context`) are returned to an identified caller only with at least `internal` clearance and read access to every referenced decision; otherwise `checkpoint` is `null`.
+
 Bind **`127.0.0.1`** by default; put TLS/reverse proxy in front on the team VM.
 
 ## Write graph

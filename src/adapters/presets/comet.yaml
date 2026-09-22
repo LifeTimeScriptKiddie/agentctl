@@ -7,8 +7,11 @@ optional: true
 # disables the browser-context CDP methods Playwright needs, so connectOverCDP
 # can't attach to it — we drive Google Chrome instead (same Perplexity result;
 # the adapter uses no Comet-specific features). Read-only / evidence role.
-# Dedicated debug port (9333) so it never collides with your real Comet/Chrome.
-cdpEndpoint: "http://127.0.0.1:9333"
+# null → managed instance: Chrome picks a free loopback port, recorded in the
+# (0700) profile's DevToolsActivePort file and verified before attaching. Set an
+# explicit endpoint (e.g. "http://127.0.0.1:9333") in your own agents.yaml only
+# to attach to a browser you started on that fixed port yourself.
+cdpEndpoint: null
 # Auto-launch a dedicated Chrome instance (separate profile + debug port) if none
 # is reachable — so you never touch your main browser. Log into Perplexity once
 # in the managed window; the profile persists.

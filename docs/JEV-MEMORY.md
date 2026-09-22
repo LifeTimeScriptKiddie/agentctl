@@ -21,7 +21,9 @@ Memories must allow the provider: `--providers jev` on save (separate from `--pr
 
 ## HTTP gatekeeper
 
-`POST /v1/turn` and `/v1/context` accept `"jev_evidence": true` in the JSON body (alongside `laya_evidence`).
+`POST /v1/turn` and `/v1/context` accept `"jev_evidence"` in the JSON body (alongside `laya_evidence`) as a request only: the gate runs over HTTP only when the serve host sets `AGENTCTL_JEV_EVIDENCE=1`. Without it, neither `jev_evidence: true` nor `"provider": "jev"` sends anything to TypeSafe. `false` opts out of an enabled gate.
+
+Memories classified `confidential` are never sent to Jev. They are dropped from the candidate list before the call; if every candidate is confidential, the gate is skipped and keyword hits are returned unverified.
 
 ## Environment
 
