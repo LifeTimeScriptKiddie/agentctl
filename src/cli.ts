@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { registerUsageCommand } from './usage/command.js';
 import { registerMemoryCommands } from './memory/command.js';
+import { registerConfigCommands } from './config/command.js';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
 import { registerMonitorCommands } from './monitor/command.js';
@@ -27,6 +28,7 @@ export function buildProgram(): Command {
   const program = new Command();
   registerMemoryCommands(program);
   registerUsageCommand(program);
+  registerConfigCommands(program);
   program
     .name('agentctl')
     .description(

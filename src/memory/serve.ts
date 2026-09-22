@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { OpenMemoryStore } from './openMemoryStore.js';
 import { openMemoryStore } from './openMemoryStore.js';
 import type { AuthContext, Classification } from './authContext.js';
+import { loadAuthContext } from './authContext.js';
 import { parseKindList } from './kinds.js';
 import { buildContextBundle, policyCheckBundle } from './contextBundle.js';
 import type { MemoryProvider } from './layaEvidence.js';
@@ -16,9 +17,12 @@ import { ApprovalRequiredError, assertApproved } from '../approval.js';
 
 /**
  * Memory serve trusts identity headers only after a configured bearer token
- * authenticates the caller as a trusted gateway. For local single-user use,
- * AGENTCTL_SERVE_ALLOW_ANON=1 preserves anonymous access; do not use it on a
- * shared or non-loopback listener.
+ * authenticates the caller as a trusted gateway. Without AGENTCTL_SERVE_TOKEN,
+ * requests carrying identity headers are refused and the identity is the
+ * server's own (AGENTCTL_USER_ID / AGENTCTL_GROUPS / AGENTCTL_CLEARANCE). For
+ * local single-user use, AGENTCTL_SERVE_ALLOW_ANON=1 permits anonymous access
+ * when the server has no identity; do not use it on a shared or non-loopback
+ * listener.
  */
 const contextBodySchema = z.object({
   request_id: z.string().uuid().optional(),
@@ -107,6 +111,12 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', onEnd);
     req.on('error', onError);
   });
+}
+
+const IDENTITY_HEADERS = ['x-agentctl-user-id', 'x-agent-user-id', 'x-agentctl-groups', 'x-agentctl-clearance'];
+
+function hasIdentityHeaders(req: IncomingMessage): boolean {
+  return IDENTITY_HEADERS.some(name => req.headers[name] !== undefined);
 }
 
 function authFromHeaders(req: IncomingMessage): AuthContext | null {
@@ -219,14 +229,22 @@ export async function handleMemoryHttpRequest(
   }
 
   let auth: AuthContext | null;
-  try {
-    auth = authFromHeaders(req);
-  } catch (error) {
-    if (error instanceof Error && error.message === 'invalid_clearance') {
-      json(res, 400, { error: 'invalid_clearance' });
+  if (configuredToken === undefined) {
+    if (hasIdentityHeaders(req)) {
+      json(res, 401, { error: 'token_required_for_identity_headers' });
       return;
     }
-    throw error;
+    auth = loadAuthContext();
+  } else {
+    try {
+      auth = authFromHeaders(req);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'invalid_clearance') {
+        json(res, 400, { error: 'invalid_clearance' });
+        return;
+      }
+      throw error;
+    }
   }
   if (!auth && process.env.AGENTCTL_SERVE_ALLOW_ANON !== '1') {
     json(res, 401, { error: 'identity_required' });
@@ -548,6 +566,23 @@ export async function handleMemoryHttpRequest(
     if (!parsed.success) {
       json(res, 400, { error: 'validation_failed', details: parsed.error.flatten() });
       return;
+    }
+    // Commit writes an accepted memory directly, so the body's human_approved
+    // alone is not enough: the caller must be a configured reviewer.
+    if (parsed.data.mode === 'commit') {
+      const requiredGroups = reviewerGroups();
+      if (!auth || requiredGroups.length === 0 || !requiredGroups.some(group => auth.groups.includes(group))) {
+        auditEvent({
+          route: '/v1/memory/write',
+          request_id: requestId,
+          user_id: auth?.userId ?? null,
+          workspace: parsed.data.workspace,
+          mode: parsed.data.mode,
+          status: 'reviewer_required',
+        });
+        json(res, 403, { error: 'reviewer_required', request_id: requestId });
+        return;
+      }
     }
     try {
       const outcome = await withStore(auth, store => store.writeWithGraph(parsed.data, { gatekeeper: true }));

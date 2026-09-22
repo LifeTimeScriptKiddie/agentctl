@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildInvocation, SubprocessAdapter, resolveModel, expandHome } from '../src/adapters/subprocess.js';
-import { loadPreset } from '../src/assets.js';
+import { parseClaudeJson } from '../src/adapters/parsers.js';
+import { loadPreset, presetsDir } from '../src/assets.js';
 import type { AdapterRequest } from '../src/schema/index.js';
 import * as exec from '../src/util/exec.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('../src/util/exec.js', () => ({ run: vi.fn() }));
 const runMock = vi.mocked(exec.run);
+
+const EMPTY_MCP = join(presetsDir(), 'empty-mcp.json');
+const CLAUDE_ARGS = [
+  '-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob',
+  '--strict-mcp-config', '--mcp-config', EMPTY_MCP,
+];
 
 function req(p: Partial<AdapterRequest> & { role: AdapterRequest['role'] }): AdapterRequest {
   return {
@@ -20,13 +29,30 @@ describe('buildInvocation argv (against real presets)', () => {
   it('claude: stdin delivery, json output, no --max-turns', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'generator' }));
     expect(inv.file).toBe('claude');
-    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob']);
+    expect(inv.args).toEqual(CLAUDE_ARGS);
     expect(inv.input).toBe('PROMPT');
   });
 
   it('claude evaluator role appends --disallowedTools', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'evaluator' }));
-    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Write Edit Bash NotebookEdit WebFetch']);
+    expect(inv.args).toEqual([...CLAUDE_ARGS, '--disallowedTools', 'Write Edit Bash NotebookEdit WebFetch']);
+  });
+
+  it('claude: every role loads only the packaged empty MCP config (no user connectors)', () => {
+    for (const role of ['generator', 'evaluator', 'chat'] as const) {
+      const inv = buildInvocation(loadPreset('claude'), req({ role }));
+      expect(inv.args).toContain('--strict-mcp-config');
+      const i = inv.args.indexOf('--mcp-config');
+      expect(inv.args[i + 1]).toBe(EMPTY_MCP);
+    }
+    expect(JSON.parse(readFileSync(EMPTY_MCP, 'utf8'))).toEqual({ mcpServers: {} });
+  });
+
+  it('rejects {asset:} tokens that are not bare packaged filenames', () => {
+    const base = loadPreset('dry_run');
+    for (const bad of ['{asset:../claude.yaml}', '{asset:missing.json}', '{asset:}']) {
+      expect(() => buildInvocation({ ...base, commandTemplate: ['x', bad] }, req({ role: 'chat' }))).toThrow(/asset/);
+    }
   });
 
   it('cursor: arg delivery stays in read-only ask mode', () => {
@@ -36,6 +62,7 @@ describe('buildInvocation argv (against real presets)', () => {
     expect(inv.args).toContain('PROMPT');
     expect(inv.args).toContain('ask');
     expect(inv.args).not.toContain('--yolo');
+    expect(inv.args).not.toContain('--approve-mcps');
   });
 
   it('pi: generic text lane uses read-only tools and its authenticated OpenAI-Codex model', () => {
@@ -113,7 +140,7 @@ describe('buildInvocation argv (against real presets)', () => {
 describe('per-agent model switching', () => {
   it('claude: --model <name> when a model is requested', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'chat', model: 'opus' }));
-    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob', '--model', 'opus']);
+    expect(inv.args).toEqual([...CLAUDE_ARGS, '--model', 'opus']);
   });
 
   it('cursor: wires --model for the requested model', () => {
@@ -174,7 +201,32 @@ describe('SubprocessAdapter.invoke (mocked exec)', () => {
     expect(r.ok).toBe(true);
     expect(r.normalizedText).toBe('hello world');
     // ran with argv array + stdin, never shell
-    expect(runMock).toHaveBeenCalledWith('claude', ['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob'], expect.objectContaining({ input: 'PROMPT', timeoutMs: 300000 }));
+    expect(runMock).toHaveBeenCalledWith('claude', CLAUDE_ARGS, expect.objectContaining({ input: 'PROMPT', timeoutMs: 300000 }));
+  });
+
+  it('parses claude json array output via the last result event', async () => {
+    const events = [
+      { type: 'system', subtype: 'init', session_id: 'sess-array', tools: ['Read'] },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'draft' }] }, session_id: 'sess-array' },
+      { type: 'result', subtype: 'success', result: 'early', session_id: 'stale' },
+      {
+        type: 'result', subtype: 'success', result: 'final answer', session_id: 'sess-array',
+        total_cost_usd: 0.25, usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 2 },
+      },
+    ];
+    runMock.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify(events), stderr: '', timedOut: false, failed: false });
+    const r = await new SubprocessAdapter(loadPreset('claude')).invoke(req({ role: 'chat' }));
+    expect(r.ok).toBe(true);
+    expect(r.normalizedText).toBe('final answer');
+    expect(r.sessionId).toBe('sess-array');
+    expect(r.usage).toMatchObject({ inputTokens: 12, outputTokens: 4, costUsd: 0.25, cachedInputTokens: 2 });
+    expect(r.normalizedJson).toMatchObject({ type: 'result', result: 'final answer' });
+  });
+
+  it('parseClaudeJson keeps object envelopes and treats a result-less array as raw text', () => {
+    expect(parseClaudeJson('{"type":"result","result":"obj","session_id":"s1"}'))
+      .toEqual({ normalizedText: 'obj', normalizedJson: { type: 'result', result: 'obj', session_id: 's1' } });
+    expect(parseClaudeJson('[{"type":"system"}]')).toEqual({ normalizedText: '[{"type":"system"}]', normalizedJson: null });
   });
 
   it('parses agy JSON, captures conversation id, and usage', async () => {

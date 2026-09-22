@@ -191,6 +191,7 @@ On **each client** (not on the VM writer):
 ```bash
 export AGENTCTL_GATEWAY_URL=https://memory.example.com   # or http://VM:8741 on lab LAN
 export AGENTCTL_BRIEFING_WORKSPACE=team-your-workspace
+export AGENTCTL_GATEWAY_TOKEN=…               # same value as AGENTCTL_SERVE_TOKEN on the VM
 export AGENTCTL_USER_ID=alice
 export AGENTCTL_GROUPS=eng,security          # optional
 export AGENTCTL_CLEARANCE=internal           # optional
@@ -240,13 +241,36 @@ Details: **`dev/docs/SESSIONGRAPH-NIGHTLY.md`**.
 
 ### Security
 
-Memory serve requires authenticated identity headers by default. Configure
-`AGENTCTL_SERVE_TOKEN` for bearer-token authentication, and use
-`AGENTCTL_SERVE_ALLOW_ANON=1` only for trusted single-user local development.
-`AGENTCTL_SERVE_ALLOWED_ORIGINS` is a comma-separated origin allowlist,
-`AGENTCTL_SERVE_MAX_BODY` sets the request-body limit in bytes (default 1 MiB),
-and `AGENTCTL_MEMORY_REVIEWER_GROUPS` restricts memory acceptance to callers in
-the listed groups. Non-loopback binds require `AGENTCTL_SERVE_TOKEN`.
+Memory serve trusts identity headers (`x-agentctl-user-id`, `x-agentctl-groups`,
+`x-agentctl-clearance`) only behind a bearer token:
+
+- **With `AGENTCTL_SERVE_TOKEN`:** every route except `GET /health` requires
+  `Authorization: Bearer <token>`, and the caller's identity comes from the
+  headers. Clients send the token by setting `AGENTCTL_GATEWAY_TOKEN` to the
+  same value.
+- **Without a token:** any request carrying an identity header gets 401
+  `token_required_for_identity_headers`. The identity is the server's own
+  `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE`. If none is
+  set, requests get 401 `identity_required` unless `AGENTCTL_SERVE_ALLOW_ANON=1`
+  (trusted single-user local development only). Unset `AGENTCTL_USER_ID` on
+  clients that talk to a token-less local server, or they will be refused.
+
+`AGENTCTL_MEMORY_REVIEWER_GROUPS` restricts memory acceptance to callers in the
+listed groups. `POST /v1/memory/write` with `mode: "commit"` additionally
+requires that variable to be set and the caller to be in one of the groups
+(else 403 `reviewer_required`); `human_approved: true` in the body is not
+enough on its own. `AGENTCTL_SERVE_ALLOWED_ORIGINS` is a comma-separated origin
+allowlist, and `AGENTCTL_SERVE_MAX_BODY` sets the request-body limit in bytes
+(default 1 MiB). Non-loopback binds require `AGENTCTL_SERVE_TOKEN`. Clients
+warn once on stderr when `AGENTCTL_GATEWAY_URL` is plain `http:` to a
+non-loopback host; put TLS in front (Phase 3) so the token isn't sent in clear.
+
+Agent config (`agents.yaml`) can replace any lane's command, health probe and
+environment, so agentctl loads it only from `AGENTCTL_CONFIG` or
+`$AGENTCTL_HOME/agents.yaml`. A repo-local `./agents.yaml` is skipped with a
+warning until you review it and run `agentctl config trust`; editing the file
+revokes trust. The read-only `claude` lane starts with `--strict-mcp-config`
+and an empty MCP config, so user MCP connectors (mail, docs) are not loaded.
 
 ---
 
@@ -273,7 +297,9 @@ the listed groups. Non-loopback binds require `AGENTCTL_SERVE_TOKEN`.
 | `AGENTCTL_HOME` | Memory VM | State root (DB, logs, exports) |
 | `AGENTCTL_GATEWAY_URL` | Thin clients | Base URL for `/v1/turn` |
 | `AGENTCTL_BRIEFING_WORKSPACE` | Clients | Workspace id for turns |
-| `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` | Clients | Auth headers |
+| `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` | Clients | Auth headers (honored only when the VM sets `AGENTCTL_SERVE_TOKEN`) |
+| `AGENTCTL_GATEWAY_TOKEN` | Clients | Bearer token sent to the VM; must match `AGENTCTL_SERVE_TOKEN` |
+| `AGENTCTL_SERVE_TOKEN` | VM | Bearer token required on every non-health route |
 | `AGENTCTL_MEMORY_BACKEND` | VM | `sqlite` (default) or `postgres` |
 | `AGENTCTL_MEMORY_DATABASE_URL` | VM | Postgres DSN |
 | `AGENTCTL_SESSIONGRAPH_ROOT` | VM (nightly) | Path to sessiongraph git checkout |

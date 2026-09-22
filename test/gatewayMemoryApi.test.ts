@@ -4,6 +4,7 @@ import {
   postGatewayAccept,
   postGatewayWrite,
   gatewayAuthHeaders,
+  resetGatewayWarningForTest,
 } from '../src/memory/gatewayClient.js';
 
 describe('gateway memory HTTP client', () => {
@@ -20,6 +21,28 @@ describe('gateway memory HTTP client', () => {
     expect(h['x-agentctl-user-id']).toBe('alice@co');
     expect(h['x-agentctl-groups']).toBe('sec,eng');
     expect(h['x-agentctl-clearance']).toBe('internal');
+  });
+
+  it('gatewayAuthHeaders sends the gateway bearer token only when set', () => {
+    vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', '');
+    expect(gatewayAuthHeaders().authorization).toBeUndefined();
+    vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', 'gw-secret');
+    expect(gatewayAuthHeaders().authorization).toBe('Bearer gw-secret');
+  });
+
+  it('warns once on stderr for plain http to a non-loopback gateway', async () => {
+    resetGatewayWarningForTest();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ proposed: [] }) }));
+    await getGatewayReview('http://127.0.0.1:8741', 'w');
+    await getGatewayReview('http://localhost:8741', 'w');
+    await getGatewayReview('http://[::1]:8741', 'w');
+    await getGatewayReview('https://memory.example.com', 'w');
+    expect(stderr).not.toHaveBeenCalled();
+    await getGatewayReview('http://memory.example.com', 'w');
+    await postGatewayWrite('http://10.0.0.5:8741', { mode: 'propose' });
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(String(stderr.mock.calls[0]?.[0])).toContain('http://memory.example.com');
   });
 
   it('getGatewayReview fetches proposed list', async () => {

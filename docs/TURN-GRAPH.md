@@ -44,14 +44,16 @@ agentctl memory handoff 'query' --workspace team-atlas --provider cursor --goal 
 **`model_generate`** is optional on the serve host: set **`AGENTCTL_SERVE_MODEL_AGENT`** and pass **`"run_model": true`** on `/v1/turn` (or **`AGENTCTL_SERVE_DEFAULT_RUN_MODEL=1`**). Without that, Pi/clients use **`context_bundle`** with a local worker via **`AGENTCTL_GATEWAY_URL`**.
 
 ```bash
+export AGENTCTL_SERVE_TOKEN="$(openssl rand -hex 24)"   # identity headers require a token
 agentctl memory serve --host 127.0.0.1 --port 8741
 curl -s http://127.0.0.1:8741/health
 curl -s -X POST http://127.0.0.1:8741/v1/context -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENTCTL_SERVE_TOKEN" \
   -H 'x-agentctl-user-id: alice@co' -H 'x-agentctl-groups: atlas-eng' \
   -d '{"workspace":"team-atlas","query":"rollback owner","provider":"laya","laya_evidence":true}'
 ```
 
-Headers: `x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`. Audit append: `$AGENTCTL_HOME/logs/memory-serve-audit.jsonl`.
+Headers (trusted only with a valid bearer token): `x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`. Audit append: `$AGENTCTL_HOME/logs/memory-serve-audit.jsonl`.
 
 Bind **`127.0.0.1`** by default; put TLS/reverse proxy in front on the team VM.
 

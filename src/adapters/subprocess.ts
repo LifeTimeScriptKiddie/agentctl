@@ -9,7 +9,10 @@ import {
 } from '../core/modelLadder.js';
 import { loadLimits, updateLimits, exhaustedUntil, markExhausted, clearExhausted } from '../core/limitStore.js';
 import { recordUsage } from '../usage/ledger.js';
+import { presetsDir } from '../assets.js';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Expand a leading `~` so preset workdirs stay machine-portable. */
 export function expandHome(p: string): string {
@@ -27,8 +30,20 @@ export interface Invocation {
   input?: string;
 }
 
+/** `{asset:<file>}` → absolute path of a packaged preset asset (bare filename only). */
+const ASSET_TOKEN = /\{asset:([^}]*)\}/g;
+const ASSET_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+function assetPath(name: string): string {
+  if (!ASSET_NAME.test(name)) throw new Error(`invalid preset asset name '${name}'`);
+  const path = join(presetsDir(), name);
+  if (!existsSync(path)) throw new Error(`packaged preset asset '${name}' not found`);
+  return path;
+}
+
 function substitute(token: string, req: AdapterRequest, deliverViaArg: boolean, promptPrefix: string): string {
   return token
+    .replace(ASSET_TOKEN, (_m, name: string) => assetPath(name))
     .replaceAll('{prompt}', deliverViaArg ? `${promptPrefix}${req.prompt}` : '')
     .replaceAll('{max_turns}', String(req.maxTurns));
 }

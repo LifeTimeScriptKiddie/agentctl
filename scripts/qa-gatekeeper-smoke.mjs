@@ -58,6 +58,10 @@ async function main() {
     const port = server.address().port;
     const base = `http://127.0.0.1:${port}`;
     process.env.AGENTCTL_HOME = home;
+    // Identity headers are trusted only behind a bearer token (security review H3).
+    process.env.AGENTCTL_SERVE_TOKEN = 'qa-token';
+    process.env.AGENTCTL_GATEWAY_TOKEN = 'qa-token';
+    process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS = 'qa-reviewers';
 
     const health = await fetch(`${base}/health`);
     if (!health.ok) throw new Error(`health ${health.status}`);
@@ -65,7 +69,7 @@ async function main() {
 
     const turn = await fetch(`${base}/v1/turn`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentctl-user-id': 'qa@local' },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer qa-token', 'x-agentctl-user-id': 'qa@local', 'x-agentctl-groups': 'qa-reviewers' },
       body: JSON.stringify({
         workspace: 'team-qa',
         query: 'rollback owner platform',
@@ -81,7 +85,7 @@ async function main() {
 
     const write = await fetch(`${base}/v1/memory/write`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer qa-token', 'x-agentctl-user-id': 'qa@local', 'x-agentctl-groups': 'qa-reviewers' },
       body: JSON.stringify({
         mode: 'propose',
         workspace: 'team-qa',
@@ -96,7 +100,9 @@ async function main() {
     }
     pass('POST /v1/memory/write (propose)');
 
-    const review = await fetch(`${base}/v1/memory/review?workspace=team-qa`);
+    const review = await fetch(`${base}/v1/memory/review?workspace=team-qa`, {
+      headers: { authorization: 'Bearer qa-token', 'x-agentctl-user-id': 'qa@local', 'x-agentctl-groups': 'qa-reviewers' },
+    });
     const reviewJson = await review.json();
     if (review.status !== 200 || !reviewJson.proposed?.length) {
       throw new Error('review empty');
@@ -106,7 +112,7 @@ async function main() {
     const mem = writeJson.memory;
     const accept = await fetch(`${base}/v1/memory/accept`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer qa-token', 'x-agentctl-user-id': 'qa@local', 'x-agentctl-groups': 'qa-reviewers' },
       body: JSON.stringify({
         workspace: 'team-qa',
         memory_id: mem.id,
@@ -143,6 +149,7 @@ async function main() {
       server2.on('error', reject);
     });
     const gwPort = server2.address().port;
+    process.env.AGENTCTL_USER_ID = 'qa@local'; // thin client sends identity + AGENTCTL_GATEWAY_TOKEN
     const prefix = await buildWorkerPrompt({
       agent: 'cursor',
       userPrompt: 'Who owns rollback?',

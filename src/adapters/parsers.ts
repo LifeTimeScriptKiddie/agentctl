@@ -12,10 +12,22 @@ export function parseText(stdout: string): ParseResult {
   return { normalizedText: stdout.trim(), normalizedJson: null };
 }
 
-/** `claude -p --output-format json` → { type, result, ... }; we surface `.result`. */
+/**
+ * `claude -p --output-format json` → { type, result, ... }; we surface `.result`.
+ * Newer CLIs emit an array of events instead; the last `type: "result"` event
+ * is then the envelope (text, usage, session_id).
+ */
 export function parseClaudeJson(stdout: string): ParseResult {
   try {
     const o = JSON.parse(stdout) as unknown;
+    if (Array.isArray(o)) {
+      const envelope = o.findLast((e: unknown) =>
+        e !== null && typeof e === 'object' && !Array.isArray(e)
+        && (e as Record<string, unknown>).type === 'result') as Record<string, unknown> | undefined;
+      if (!envelope) return { normalizedText: stdout.trim(), normalizedJson: null };
+      const result = typeof envelope.result === 'string' ? envelope.result : JSON.stringify(envelope);
+      return { normalizedText: result, normalizedJson: envelope };
+    }
     if (o && typeof o === 'object') {
       const rec = o as Record<string, unknown>;
       const result = typeof rec.result === 'string' ? rec.result : JSON.stringify(o);
