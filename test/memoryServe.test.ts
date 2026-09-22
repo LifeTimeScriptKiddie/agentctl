@@ -18,11 +18,17 @@ describe('memory serve HTTP', () => {
     server = undefined;
     delete process.env.AGENTCTL_HOME;
     delete process.env.AGENTCTL_SERVE_MODEL_AGENT;
+    delete process.env.AGENTCTL_SERVE_ALLOW_ANON;
+    delete process.env.AGENTCTL_SERVE_TOKEN;
+    delete process.env.AGENTCTL_SERVE_ALLOWED_ORIGINS;
+    delete process.env.AGENTCTL_SERVE_MAX_BODY;
+    delete process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS;
   });
 
   async function start(): Promise<void> {
     home = mkdtempSync(join(tmpdir(), 'agentctl-serve-'));
     process.env.AGENTCTL_HOME = home;
+    process.env.AGENTCTL_SERVE_ALLOW_ANON = '1';
     const store = await MemoryStore.open(undefined, { auth: null });
     store.save({
       workspace: 'team-atlas',
@@ -166,7 +172,7 @@ describe('memory serve HTTP', () => {
     const proposed = await w.json() as { memory: { id: string; revision: number } };
     const r = await fetch(`${base}/v1/memory/accept`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-agentctl-user-id': 'alice@co' },
       body: JSON.stringify({
         workspace: 'team-atlas',
         memory_id: proposed.memory.id,

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { OpenMemoryStore } from './openMemoryStore.js';
 import { openMemoryStore } from './openMemoryStore.js';
@@ -12,7 +12,14 @@ import type { MemoryProvider } from './layaEvidence.js';
 import { MEMORY_PROVIDERS } from './layaEvidence.js';
 import { agentctlHome } from '../core/agentHome.js';
 import { writeBodySchema } from './memoryWriteGraph.js';
+import { ApprovalRequiredError, assertApproved } from '../approval.js';
 
+/**
+ * Memory serve trusts identity headers only after a configured bearer token
+ * authenticates the caller as a trusted gateway. For local single-user use,
+ * AGENTCTL_SERVE_ALLOW_ANON=1 preserves anonymous access; do not use it on a
+ * shared or non-loopback listener.
+ */
 const contextBodySchema = z.object({
   request_id: z.string().uuid().optional(),
   workspace: z.string().min(1).max(200),
@@ -33,23 +40,121 @@ const turnBodySchema = contextBodySchema.extend({
   model_timeout_seconds: z.number().int().min(5).max(600).optional(),
 });
 
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const classificationSchema = z.enum(['public', 'internal', 'confidential']);
+
+class BodyTooLargeError extends Error {
+  constructor() {
+    super('request body too large');
+    this.name = 'BodyTooLargeError';
+  }
+}
+
+function maxBodyBytes(): number {
+  const configured = Number(process.env.AGENTCTL_SERVE_MAX_BODY);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_MAX_BODY_BYTES;
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
+  const limit = maxBodyBytes();
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', c => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    let total = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+    };
+    const rejectTooLarge = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      req.pause();
+      reject(new BodyTooLargeError());
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.length;
+      if (total > limit) {
+        rejectTooLarge();
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    };
+    const onError = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const contentLength = Number(req.headers['content-length']);
+    if (Number.isFinite(contentLength) && contentLength > limit) {
+      rejectTooLarge();
+      return;
+    }
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
   });
 }
 
 function authFromHeaders(req: IncomingMessage): AuthContext | null {
+  const clearance = classificationSchema.safeParse(
+    req.headers['x-agentctl-clearance']?.toString() ?? 'internal',
+  );
+  if (!clearance.success) throw new Error('invalid_clearance');
   const userId = req.headers['x-agentctl-user-id']?.toString().trim()
     ?? req.headers['x-agent-user-id']?.toString().trim();
   if (!userId) return null;
   const groupsRaw = req.headers['x-agentctl-groups']?.toString() ?? '';
   const groups = [...new Set(groupsRaw.split(',').map(g => g.trim()).filter(Boolean))].sort();
-  const clearance = (req.headers['x-agentctl-clearance']?.toString() ?? 'internal') as Classification;
-  return { userId, groups, clearance };
+  return { userId, groups, clearance: clearance.data as Classification };
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === '127.0.0.1' || normalized === '::1' || normalized === 'localhost';
+}
+
+function hostName(hostHeader: string): string | null {
+  try {
+    return new URL(`http://${hostHeader}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function configuredOrigins(): string[] {
+  return (process.env.AGENTCTL_SERVE_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+}
+
+function hasValidBearerToken(req: IncomingMessage, expected: string): boolean {
+  const authorization = req.headers.authorization?.toString() ?? '';
+  if (!authorization.startsWith('Bearer ')) return false;
+  const actual = Buffer.from(authorization.slice('Bearer '.length));
+  const wanted = Buffer.from(expected);
+  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+}
+
+function reviewerGroups(): string[] {
+  return (process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS ?? '')
+    .split(',')
+    .map(group => group.trim())
+    .filter(Boolean);
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -90,16 +195,49 @@ async function withStore<T>(
 export async function handleMemoryHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
+  boundHost = '127.0.0.1',
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const method = req.method ?? 'GET';
+  const isHealth = method === 'GET' && url.pathname === '/health';
 
-  if (method === 'GET' && url.pathname === '/health') {
+  if (isLoopbackHost(boundHost) && req.headers.host && !isLoopbackHost(hostName(req.headers.host) ?? '')) {
+    json(res, 403, { error: 'host_not_allowed' });
+    return;
+  }
+
+  if (isHealth) {
     json(res, 200, { ok: true, service: 'agentctl-memory-serve', version: 1 });
     return;
   }
 
-  const auth = authFromHeaders(req);
+  // An empty token is treated as unset so `Bearer ` can never match it.
+  const configuredToken = process.env.AGENTCTL_SERVE_TOKEN || undefined;
+  if (configuredToken !== undefined && !hasValidBearerToken(req, configuredToken)) {
+    json(res, 401, { error: 'unauthorized' });
+    return;
+  }
+
+  let auth: AuthContext | null;
+  try {
+    auth = authFromHeaders(req);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'invalid_clearance') {
+      json(res, 400, { error: 'invalid_clearance' });
+      return;
+    }
+    throw error;
+  }
+  if (!auth && process.env.AGENTCTL_SERVE_ALLOW_ANON !== '1') {
+    json(res, 401, { error: 'identity_required' });
+    return;
+  }
+
+  const origin = req.headers.origin?.toString();
+  if (origin && !configuredOrigins().includes(origin)) {
+    json(res, 403, { error: 'origin_not_allowed' });
+    return;
+  }
 
   if (method === 'GET' && url.pathname === '/v1/memory/review') {
     const workspace = url.searchParams.get('workspace')?.trim();
@@ -137,10 +275,20 @@ export async function handleMemoryHttpRequest(
     return;
   }
 
+  const contentType = req.headers['content-type']?.toString().toLowerCase() ?? '';
+  if (!contentType.startsWith('application/json')) {
+    json(res, 415, { error: 'json_content_type_required' });
+    return;
+  }
+
   let raw: string;
   try {
     raw = await readBody(req);
-  } catch {
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      json(res, 413, { error: 'body_too_large' });
+      return;
+    }
     json(res, 400, { error: 'body_read_failed' });
     return;
   }
@@ -208,6 +356,20 @@ export async function handleMemoryHttpRequest(
       return;
     }
     const input = parsed.data;
+    const goal = input.goal ?? input.query;
+    const { shouldRunModelOnTurn } = await import('./turnModelGenerate.js');
+    const runModel = shouldRunModelOnTurn(input.run_model);
+    if (runModel) {
+      try {
+        assertApproved(`${goal}\n${input.query}`, false);
+      } catch (error) {
+        if (error instanceof ApprovalRequiredError) {
+          json(res, 403, { error: 'approval_required', request_id: requestId });
+          return;
+        }
+        throw error;
+      }
+    }
     const kinds = input.kinds ? parseKindList(input.kinds) : null;
     const result = await withStore(auth, async store => {
       const retrieval = await store.searchWithGraph(
@@ -262,11 +424,9 @@ export async function handleMemoryHttpRequest(
         item_count: bundle.items.length,
         goal: input.goal ?? null,
       });
-      const goal = input.goal ?? input.query;
-      const { generateTurnAnswer, resolveServeModelAgent, shouldRunModelOnTurn } = await import(
+      const { generateTurnAnswer, resolveServeModelAgent } = await import(
         './turnModelGenerate.js'
       );
-      const runModel = shouldRunModelOnTurn(input.run_model);
       const modelAgent = resolveServeModelAgent();
       let answer: string | null = null;
       let turnStatus: 'context_ready' | 'complete' = 'context_ready';
@@ -353,6 +513,11 @@ export async function handleMemoryHttpRequest(
       json(res, 403, { error: 'human_approved_required', request_id: requestId });
       return;
     }
+    const requiredGroups = reviewerGroups();
+    if (!auth || (requiredGroups.length > 0 && !requiredGroups.some(group => auth.groups.includes(group)))) {
+      json(res, 403, { error: 'reviewer_required', request_id: requestId });
+      return;
+    }
     try {
       const memory = await withStore(auth, store =>
         store.gatekeeperAccept({
@@ -424,6 +589,9 @@ export async function handleMemoryHttpRequest(
 }
 
 export async function startMemoryServer(opts: { host: string; port: number }): Promise<void> {
+  if (!isLoopbackHost(opts.host) && !process.env.AGENTCTL_SERVE_TOKEN) {
+    throw new Error('AGENTCTL_SERVE_TOKEN is required when binding memory serve off loopback');
+  }
   const { warmLayaIfConfigured } = await import('./layaWarm.js');
   const warm = await warmLayaIfConfigured();
   if (warm.warmed) {
@@ -432,7 +600,7 @@ export async function startMemoryServer(opts: { host: string; port: number }): P
     process.stderr.write(`agentctl memory serve: Laya warmup skipped (${warm.detail})\n`);
   }
   const server = createServer((req, res) => {
-    handleMemoryHttpRequest(req, res).catch(err => {
+    handleMemoryHttpRequest(req, res, opts.host).catch(err => {
       json(res, 500, { error: err instanceof Error ? err.message : String(err) });
     });
   });
@@ -442,9 +610,9 @@ export async function startMemoryServer(opts: { host: string; port: number }): P
   });
 }
 
-export function createMemoryServerForTest() {
+export function createMemoryServerForTest(opts: { boundHost?: string } = {}) {
   return createServer((req, res) => {
-    handleMemoryHttpRequest(req, res).catch(err => {
+    handleMemoryHttpRequest(req, res, opts.boundHost ?? '127.0.0.1').catch(err => {
       json(res, 500, { error: err instanceof Error ? err.message : String(err) });
     });
   });
