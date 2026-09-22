@@ -10,12 +10,12 @@ agentctl **does not embed** SessionGraph. Analysis runs the SessionGraph CLI fro
 | --- | --- |
 | **agentctl memory serve** | Authoritative gatekeeper + DB writer; audit append |
 | **Team DBs** | Memories, checkpoints, optional `rag_documents` |
-| **SessionGraph** | Read-only observe → analyze → suggest (reports under `$AGENTCTL_HOME/reports/sessiongraph/`) |
+| **SessionGraph** | Read-only observe → analyze → suggest (**graph engineering**, workflow, storage findings; reports under `$AGENTCTL_HOME/reports/sessiongraph/`) |
 | **Operators** | Review findings and suggestion bundles; apply changes manually |
 
 **Today:** nightly batch export (`sessiongraph.memory_plane.v1`) + `analyze-memory-plane` + `suggest-workflow --target agentctl`.
 
-**Plan:** expand observation on the VM to cover more of **user input** (turn/query metadata) and **database flow** (writes, accepts, workspace growth) with tighter coupling to the gatekeeper, while keeping SessionGraph a separate repo and keeping all mutations human-gated.
+**Plan:** expand observation on the VM to cover more of **user input** (turn/query metadata) and **database flow** (writes, accepts, workspace growth) with tighter coupling to the gatekeeper. SessionGraph will emphasize **graph engineering recommendations** (retrieval/write pipelines, evidence gates, abstain/fallback) alongside workflow and storage findings. All mutations stay human-gated.
 
 ## Setup
 
