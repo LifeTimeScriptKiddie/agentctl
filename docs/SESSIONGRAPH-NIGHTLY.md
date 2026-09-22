@@ -7,14 +7,14 @@ agentctl **does not embed** SessionGraph. Nightly analysis runs the SessionGraph
 1. Clone SessionGraph on the memory VM (same host as `agentctl memory serve`):
 
    ```bash
-   git clone https://github.com/LifeTimeScriptKiddie/sessiongraph.git ~/sessiongraph
-   cd ~/sessiongraph/packages/sessiongraph && uv sync
+   git clone https://github.com/LifeTimeScriptKiddie/sessiongraph.git ~/code/agentctl/sessiongraph
+   cd ~/code/agentctl/sessiongraph/packages/sessiongraph && uv sync
    ```
 
 2. Point agentctl at the checkout:
 
    ```bash
-   export AGENTCTL_SESSIONGRAPH_ROOT=~/sessiongraph
+   export AGENTCTL_SESSIONGRAPH_ROOT=~/code/agentctl/sessiongraph
    # optional: export AGENTCTL_SESSIONGRAPH_UV=/usr/local/bin/uv
    # optional: AGENTCTL_SESSIONGRAPH_UV_FROZEN=0  # allow lock refresh during dev
    ```
