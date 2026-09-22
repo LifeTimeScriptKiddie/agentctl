@@ -131,7 +131,10 @@ export async function runOrchestrateGoal(
   );
   return runOrchestration(opts.goal, deps, {
     dryPlan: opts.dryPlan ?? false,
-    approveStep: (instruction) => (opts.approve ?? false) || findDestructive(instruction) === null,
+    approveStep: (step) => (
+      (opts.approve ?? false)
+      || (findDestructive(step.instruction) === null && !step.needs.includes('canPublish'))
+    ),
     completed: opts.completed,
     onStep: opts.onStep,
     shouldAbort: opts.shouldAbort,
@@ -140,10 +143,21 @@ export async function runOrchestrateGoal(
   });
 }
 
-/** Where a resumable orchestration run is persisted, keyed by goal hash. */
-export function orchestrationRunPath(goal: string): string {
+/** Where a resumable orchestration run is persisted, scoped to its invocation. */
+export function orchestrationRunPath({
+  goal,
+  cwd = process.cwd(),
+  orchestrator,
+}: {
+  goal: string;
+  cwd?: string;
+  orchestrator: string;
+}): string {
   const base = agentctlHome();
-  const hash = createHash('sha1').update(goal).digest('hex').slice(0, 12);
+  const hash = createHash('sha1')
+    .update(JSON.stringify({ goal, cwd, orchestrator }))
+    .digest('hex')
+    .slice(0, 12);
   return join(base, 'orchestrations', `${hash}.json`);
 }
 

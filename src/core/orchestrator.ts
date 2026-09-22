@@ -199,8 +199,8 @@ export interface OrchestrateDeps {
 export interface OrchestrateOptions {
   dryPlan?: boolean;
   maxRetriesPerStep?: number;
-  /** approval gate for a step's instruction; return true to allow, false to block. */
-  approveStep?: (instruction: string) => boolean;
+  /** approval gate for a step; return true to allow, false to block. */
+  approveStep?: (step: PlanStep) => boolean;
   /** hard cost ceiling in USD; orchestration stops (status 'budget') once exceeded. */
   budgetUsd?: number;
   /** max times the plan may be revised on a step failure (replan edge). Default 0. */
@@ -289,11 +289,11 @@ async function runStep(
   deps: OrchestrateDeps,
   maxRetries: number,
   depOutcomes: StepOutcome[],
-  approveStep?: (i: string) => boolean,
+  approveStep?: (step: PlanStep) => boolean,
   shouldAbort?: () => boolean,
 ): Promise<StepOutcome> {
   const fingerprint = stepFingerprint(step);
-  if (approveStep && !approveStep(step.instruction)) {
+  if (approveStep && !approveStep(step)) {
     return {
       id: step.id, agent: null, model: null, effort: null, ok: false, attempts: 0,
       output: '', note: 'blocked by approval gate', costUsd: null, fingerprint,
@@ -428,31 +428,23 @@ export async function runOrchestration(
           const depOut = s.dependsOn.map((d) => done.get(d)).filter(Boolean) as StepOutcome[];
           return runStep(s, deps, maxRetries, depOut, opts.approveStep, opts.shouldAbort);
       };
-      const results: StepOutcome[] = [];
       if (Number.isFinite(budget)) {
         for (const s of ready) {
           if (opts.shouldAbort?.() || totalCost >= budget) break;
           const o = await runReady(s);
-          results.push(o);
           done.set(o.id, o);
           if (o.costUsd != null) totalCost += o.costUsd;
           opts.onStep?.(o, orderedOutcomes());
           if (!o.ok) { blocked = o; break; }
         }
       } else {
-        results.push(...await Promise.all(ready.map(runReady)));
-      }
-      if (Number.isFinite(budget)) {
-        if (opts.shouldAbort?.()) return finish('cancelled', null);
-        if (totalCost >= budget) return finish('budget', null);
-        if (blocked) break;
-        continue;
-      }
-      for (const o of results) {
-        done.set(o.id, o);
-        if (o.costUsd != null) totalCost += o.costUsd;
-        opts.onStep?.(o, orderedOutcomes());
-        if (!o.ok && !blocked) blocked = o;
+        await Promise.all(ready.map((s) => runReady(s).then((o) => {
+          done.set(o.id, o);
+          if (o.costUsd != null) totalCost += o.costUsd;
+          opts.onStep?.(o, orderedOutcomes());
+          if (!o.ok && !blocked) blocked = o;
+          return o;
+        })));
       }
       if (opts.shouldAbort?.()) return finish('cancelled', null);
       if (blocked) break;

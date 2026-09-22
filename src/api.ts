@@ -10,7 +10,8 @@ import {
 import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { NULL_USAGE } from './schema/result.js';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import {
   askOne,
@@ -456,6 +457,21 @@ function emptyOrchestration(goal: string): OrchestrationResult {
   };
 }
 
+function writeOrchestrationRun(
+  path: string,
+  value: { goal: string; outcomes: StepOutcome[] },
+): void {
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+    renameSync(tmp, path);
+  } catch {
+    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    /* persistence is best-effort */
+  }
+}
+
 /** Plan, execute, verify, and synthesize a multi-step goal. */
 export async function agentOrchestrate(
   registry: AdapterRegistry,
@@ -475,13 +491,18 @@ export async function agentOrchestrate(
   }
 
   let completed: StepOutcome[] = [];
-  const runPath = orchestrationRunPath(opts.goal);
+  const runPath = orchestrationRunPath({ goal: opts.goal, orchestrator: orchName });
   if (opts.resume && existsSync(runPath)) {
     try {
-      const prior = JSON.parse(readFileSync(runPath, 'utf8')) as { outcomes?: StepOutcome[] };
-      completed = (prior.outcomes ?? []).filter((o) => o.ok);
-      if (completed.length) {
-        warnings.push(`resuming: ${completed.length} step(s) already done`);
+      const prior = JSON.parse(readFileSync(runPath, 'utf8')) as {
+        goal?: unknown;
+        outcomes?: StepOutcome[];
+      };
+      if (prior.goal === opts.goal) {
+        completed = (prior.outcomes ?? []).filter((o) => o.ok);
+        if (completed.length) {
+          warnings.push(`resuming: ${completed.length} step(s) already done`);
+        }
       }
     } catch {
       /* start fresh on corrupt run file */
@@ -501,12 +522,7 @@ export async function agentOrchestrate(
       approve: opts.approve ?? false,
       completed,
       onStep: (_outcome, all) => {
-        try {
-          mkdirSync(dirname(runPath), { recursive: true });
-          writeFileSync(runPath, JSON.stringify({ goal: opts.goal, outcomes: all }, null, 2), 'utf8');
-        } catch {
-          /* persistence is best-effort */
-        }
+        writeOrchestrationRun(runPath, { goal: opts.goal, outcomes: all });
       },
       ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
       ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),

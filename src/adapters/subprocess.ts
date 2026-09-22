@@ -7,7 +7,7 @@ import { run, type RunOptions } from '../util/exec.js';
 import {
   detectUsageLimit, nextModel, onLadder, addUsage, ZERO_USAGE, DEFAULT_COOLDOWN_MS,
 } from '../core/modelLadder.js';
-import { loadLimits, saveLimits, exhaustedUntil, markExhausted, clearExhausted } from '../core/limitStore.js';
+import { loadLimits, updateLimits, exhaustedUntil, markExhausted, clearExhausted } from '../core/limitStore.js';
 import { recordUsage } from '../usage/ledger.js';
 import { homedir } from 'node:os';
 
@@ -189,8 +189,9 @@ export class SubprocessAdapter implements AgentAdapter {
       if (!limit.hit) {
         if (laddered) {
           // This tier just answered, so it demonstrably isn't capped.
-          const cleared = clearExhausted(limits, this.name, model);
-          if (cleared !== limits) saveLimits((limits = cleared));
+          limits = updateLimits(
+            (current) => clearExhausted(current, this.name, model),
+          );
         }
         // Rungs skipped from the cache are still rungs the caller dropped —
         // count them, or a cached skip would downgrade the model in silence.
@@ -198,15 +199,14 @@ export class SubprocessAdapter implements AgentAdapter {
       }
 
       if (laddered && onLadder(ladder, model)) {
-        limits = markExhausted(
-          limits,
+        limits = updateLimits((current) => markExhausted(
+          current,
           this.name,
           model,
           limit.resetAt ?? new Date(now.getTime() + DEFAULT_COOLDOWN_MS),
           limit.via ?? 'unknown',
           now,
-        );
-        saveLimits(limits);
+        ));
       }
 
       const next = nextModel(ladder, model);

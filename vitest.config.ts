@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    setupFiles: ['./test/setup.ts'],
     // No global execa mock: the choke-point in src/util/exec.ts refuses real
     // subprocess execution under vitest unless AGENTCTL_ALLOW_REAL_EXEC=1.
   },
