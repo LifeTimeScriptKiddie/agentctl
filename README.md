@@ -138,3 +138,28 @@ Library users can import `collectMonitorOutput`, `MonitorOutput`, `runFeed`, and
 `writeFeedAtomic` from the package root. The standalone AgentWatch control plane,
 registration store, dispatch adapters, and conversation UI were not imported;
 agentctl's existing control and chat implementations remain authoritative.
+
+
+## Cursor-first local policy
+
+All callers (Codex, Claude Code, Cursor, Pi and standalone CLI) share the policy in [MODEL-ROUTING.md](docs/MODEL-ROUTING.md). Codex/Astra plans; Cursor/Composer handles routine work and cyber triage; Codex/Daybreak Blue validates cyber findings; native Claude handles writing and deep review. See [INTEGRATIONS.md](docs/INTEGRATIONS.md) for invocation and explicit model overrides. Ambiguous routes stop for human selection, and subprocess workers cannot recursively delegate. Pinned `--dry-route` calls never execute a backend.
+
+### Local memory pilot
+
+`agentctl memory --help` exposes opt-in save/review/accept/search/inspect/history/correct/forget/handoff commands. Requires a Node runtime with `node:sqlite` (tested on Node 26.7); no new dependency is needed. Data lives under `$AGENTCTL_HOME/memory/` or `~/.agentctl/memory/`. Saves default to proposed and local-only; `--accept` explicitly approves the supplied claim. Handoff output has a UTF-8 byte ceiling, not a measured model-token count. Forget suppresses retrieval but does not physically purge stored history. Automatic capture, dispatch injection and nightly processing are not enabled.
+
+To try the full synthetic lifecycle with a live agent, run `agentctl memory test` (up to three Cursor/Composer calls). In Pi: `/reload`, then `/agentctl memory-test`. The test handles IDs and revisions automatically, prints stage results and retains its isolated evidence directory.
+
+
+## Token usage by model
+
+`agentctl usage` shows persistent provider-reported usage by agent and model. Use
+`agentctl usage --model composer-2.5 --since 2026-09-22 --format json` for a filtered report.
+Every subprocess attempt is recorded, including failed calls and each model fallback.
+Cursor now uses JSON output; its final answer remains plain text to callers.
+
+The ledger lives at `~/.agentctl/usage/calls.jsonl` (or `$AGENTCTL_HOME/usage/`;
+`AGENTCTL_USAGE_FILE` overrides the file). It contains counters and model attribution,
+not prompts or answers. Unknown counters stay unknown; `*` marks a partial reported
+subtotal. Requested model labels are distinguished from provider-reported identities.
+See [usage accounting](docs/USAGE.md) for coverage, cache semantics and limitations.

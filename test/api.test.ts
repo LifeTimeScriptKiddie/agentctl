@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 import { agentAsk, agentRoute, agentDelegate, agentHealth } from '../src/api.js';
 import { loadRegistry } from '../src/commands.js';
@@ -47,5 +47,24 @@ describe('api', () => {
   it('loadRegistry honors RegistryOptions object', () => {
     const registry = loadRegistry({ searchDirs: [process.cwd()] });
     expect(registry.has('dry_run')).toBe(true);
+  });
+});
+
+
+describe('delegation approval boundaries', () => {
+  it('does not invoke a pinned backend during a preview', async () => {
+    const registry = AdapterRegistry.fromPackaged();
+    const invoke = vi.spyOn(registry.get('cursor'), 'invoke');
+    const result = await agentDelegate(registry, { task: 'hello', to: 'cursor', dryRoute: true });
+    expect(result.exitCode).toBe(0);
+    expect(result.ask).toBeUndefined();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+  it('rejects ambiguity even with an LLM tiebreak requested', async () => {
+    const registry = AdapterRegistry.fromPackaged();
+    const result = await agentRoute(registry, { task: 'hello', llm: true });
+    expect(result.exitCode).toBe(3);
+    expect(result.ask).toBeUndefined();
+    expect(result.error).toContain('human choice');
   });
 });

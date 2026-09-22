@@ -19,6 +19,8 @@ export const SessionRecordSchema = z.object({
   id: z.string(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
+  /** Optional project/workspace label; `--resume` only matches within the same scope. */
+  scope: z.string().max(200).nullable().optional().default(null),
   native: z.record(z.string(), z.string()).default({}),
   transcript: z.array(SessionTurnSchema).default([]),
 });

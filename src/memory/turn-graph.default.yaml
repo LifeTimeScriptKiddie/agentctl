@@ -1,0 +1,126 @@
+version: 1
+# Declarative control-flow for agentctl backend paths.
+# Enforced by turnGraph.ts / memoryWriteGraph.ts — executable steps live under `pipelines:`.
+
+graphs:
+  context_retrieval:
+    description: ACL-trimmed memory fetch for search/handoff (no LLM).
+    entry: resolve_scope
+    terminal_outcomes:
+      - results
+      - abstain_empty_query
+      - abstain_no_evidence
+      - abstain_laya
+    nodes:
+      resolve_scope:
+        action: validate_workspace_provider_kinds
+      retrieve_candidates:
+        action: fts_hybrid_fetch
+        requires: [scope_valid]
+      filter_acl:
+        action: auth_and_provider_filter
+        requires: [candidates_fetched]
+      optional_laya:
+        action: laya_evidence_gate
+        requires: [acl_filtered]
+        skip_when: laya_disabled
+        on_unavailable: edge_to filter_acl_unverified
+      limit_results:
+        action: apply_limit
+        requires: [acl_filtered]
+    edges:
+      - from: resolve_scope
+        to: retrieve_candidates
+        when: scope_valid
+      - from: resolve_scope
+        to: abstain_empty_query
+        when: query_empty
+      - from: retrieve_candidates
+        to: filter_acl
+      - from: filter_acl
+        to: optional_laya
+        when: laya_enabled_and_nonempty
+      - from: filter_acl
+        to: limit_results
+        when: laya_disabled_or_empty
+      - from: optional_laya
+        to: abstain_laya
+        when: laya_abstain
+      - from: optional_laya
+        to: limit_results
+        when: laya_selected
+      - from: optional_laya
+        to: filter_acl_unverified
+        when: laya_unavailable
+      - from: filter_acl_unverified
+        to: limit_results
+      - from: limit_results
+        to: results
+
+  v1_turn:
+    description: POST /v1/turn — context bundle + optional model_generate on serve host.
+    entry: authenticate
+    nodes:
+      authenticate: { action: resolve_identity }
+      resolve_scope: { action: validate_workspace_provider_kinds }
+      context_retrieval: { action: subgraph context_retrieval }
+      build_context_bundle: { action: assemble_citations_precedence }
+      policy_check: { action: pep_prompt_guard }
+      model_generate: { action: central_model_gateway, status: optional_on_serve_host }
+      tool_gate: { action: scoped_tools, status: not_implemented }
+      audit_emit: { action: append_audit_event }
+    edges:
+      - from: authenticate
+        to: resolve_scope
+      - from: resolve_scope
+        to: context_retrieval
+      - from: context_retrieval
+        to: build_context_bundle
+        when: has_results
+      - from: context_retrieval
+        to: audit_emit
+        when: abstain
+      - from: build_context_bundle
+        to: policy_check
+      - from: policy_check
+        to: model_generate
+      - from: model_generate
+        to: tool_gate
+      - from: tool_gate
+        to: audit_emit
+
+  memory_write:
+    description: Durable memory commits — never run from turn graph directly.
+    entry: propose_only
+    nodes:
+      propose_only: { action: memory_propose }
+      pii_scan: { action: redact_scan }
+      human_review: { action: queue_review }
+      commit: { action: transactional_accept }
+
+pipelines:
+  context_retrieval:
+    - id: resolve_scope
+      action: validate_workspace_provider_kinds
+    - id: retrieve_candidates
+      action: fts_hybrid_fetch
+    - id: filter_acl
+      action: auth_and_provider_filter
+    - id: optional_jev
+      action: jev_evidence_gate
+      skip_when: jev_disabled
+    - id: optional_laya
+      action: laya_evidence_gate
+      skip_when: laya_disabled
+    - id: limit_results
+      action: apply_limit
+  memory_write:
+    - id: validate_proposal
+      action: validate_proposal
+    - id: pii_scan
+      action: redact_scan
+    - id: human_review
+      action: queue_review
+      skip_when: propose_only_mode
+    - id: commit
+      action: transactional_accept

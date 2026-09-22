@@ -62,3 +62,6 @@ export * from './schema/index.js';
 export { collectOutput as collectMonitorOutput } from './monitor/collect.js';
 export { writeFeedAtomic, runFeed } from './monitor/feed.js';
 export type { AgentwatchOutput as MonitorOutput, AgentReport as MonitorAgentReport } from './monitor/types.js';
+
+export { MemoryStore } from './memory/store.js';
+export type { Memory, MemoryInput } from './memory/store.js';

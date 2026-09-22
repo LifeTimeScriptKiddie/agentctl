@@ -95,7 +95,7 @@ describe('cmdDelegate', () => {
     );
     expect(code).toBe(0);
     expect(io.lines.join('\n')).toBe('codex says hi');
-    expect(io.errs.join('\n')).toMatch(/delegate:.*codex/);
+    expect(io.errs.join('\n')).toMatch(/delegate:.*cursor/);
   });
 
   it('--to skips routing', async () => {

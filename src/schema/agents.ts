@@ -5,7 +5,7 @@ import { AdapterCapabilitiesSchema } from './capabilities.js';
 export const FamilySchema = z.enum(['subprocess', 'docker_exec', 'browser', 'dry_run']);
 export type Family = z.infer<typeof FamilySchema>;
 
-export const ParseModeSchema = z.enum(['claude_json', 'codex_lastmsg', 'agy_json', 'text', 'json_extract']);
+export const ParseModeSchema = z.enum(['claude_json', 'codex_lastmsg', 'agy_json', 'cursor_json', 'text', 'json_extract']);
 export type ParseMode = z.infer<typeof ParseModeSchema>;
 
 /** How a subprocess CLI receives the prompt. */

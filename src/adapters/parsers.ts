@@ -132,45 +132,84 @@ export function extractSessionId(
   return null;
 }
 
-/**
- * Extract token/cost usage from a CLI's output where available.
- *   claude_json — `total_cost_usd` + `usage.{input,output}_tokens`
- *   codex_lastmsg — `turn.completed` event's `usage.{input,output}_tokens` (no cost)
- *   agy_json      — top-level `usage.{input,output}_tokens` (no cost)
- * Returns NULL_USAGE when nothing is reported.
- */
+/** Invalid, absent and negative counters are unknown, never fabricated zeroes. */
+function count(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+function cost(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+function object(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+}
+
+/** Claude reports uncached input separately; normalize input to include reported cache reads/writes. */
+function claudeUsage(u: Record<string, unknown>, camel = false, dollars?: unknown): Usage {
+  const input = count(u[camel ? 'inputTokens' : 'input_tokens']);
+  const read = count(u[camel ? 'cacheReadInputTokens' : 'cache_read_input_tokens']);
+  const write = count(u[camel ? 'cacheCreationInputTokens' : 'cache_creation_input_tokens']);
+  return {
+    inputTokens: input === null ? null : input + (read ?? 0) + (write ?? 0),
+    outputTokens: count(u[camel ? 'outputTokens' : 'output_tokens']),
+    costUsd: cost(dollars), cachedInputTokens: read, cacheWriteInputTokens: write,
+  };
+}
+
 export function extractUsage(mode: ParseMode, stdout: string, json: Record<string, unknown> | null): Usage {
-  const num = (v: unknown): number | null => (typeof v === 'number' && isFinite(v) ? v : null);
-  if (mode === 'claude_json' && json) {
-    const u = (json.usage ?? {}) as Record<string, unknown>;
-    return {
-      inputTokens: num(u.input_tokens),
-      outputTokens: num(u.output_tokens),
-      costUsd: num(json.total_cost_usd),
-    };
-  }
+  if (mode === 'claude_json' && json) return claudeUsage(object(json.usage), false, json.total_cost_usd);
   if (mode === 'codex_lastmsg') {
+    const turns: Usage[] = [];
     for (const line of stdout.split('\n')) {
-      const t = line.trim();
-      if (!t.includes('turn.completed')) continue;
       try {
-        const o = JSON.parse(t) as Record<string, unknown>;
-        const u = (o.usage ?? {}) as Record<string, unknown>;
-        return { inputTokens: num(u.input_tokens), outputTokens: num(u.output_tokens), costUsd: null };
-      } catch {
-        /* skip */
-      }
+        const o = object(JSON.parse(line));
+        if (o.type !== 'turn.completed') continue;
+        const u = object(o.usage);
+        turns.push({ inputTokens: count(u.input_tokens), outputTokens: count(u.output_tokens),
+          costUsd: null, cachedInputTokens: count(u.cached_input_tokens) });
+      } catch { /* non-event output */ }
+    }
+    if (turns.length) {
+      const sum = (key: keyof Usage) => {
+        const values = turns.map(t => t[key]);
+        return values.some(v => v == null) ? null : values.reduce<number>((a,b) => a + (b ?? 0), 0);
+      };
+      return {inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), costUsd: null,
+        cachedInputTokens: sum('cachedInputTokens')};
     }
   }
-  if (mode === 'agy_json' && json) {
-    const u = (json.usage ?? {}) as Record<string, unknown>;
-    return { inputTokens: num(u.input_tokens), outputTokens: num(u.output_tokens), costUsd: null };
+  if ((mode === 'agy_json' || mode === 'cursor_json') && json) {
+    const u = object(json.usage);
+    return { inputTokens: count(u.input_tokens ?? u.inputTokens),
+      outputTokens: count(u.output_tokens ?? u.outputTokens), costUsd: cost(json.total_cost_usd),
+      cachedInputTokens: count(u.cached_input_tokens ?? u.cacheReadTokens),
+      cacheWriteInputTokens: count(u.cache_creation_input_tokens ?? u.cacheWriteTokens) };
   }
   return NULL_USAGE;
 }
 
+export interface ModelUsage {
+  model: string | null;
+  attribution: 'reported' | 'requested' | 'unknown';
+  usage: Usage;
+}
+
+/** Use provider model breakdowns instead of charging all work to the final fallback model. */
+export function extractModelUsage(mode: ParseMode, json: Record<string, unknown> | null,
+  requestedModel: string | null, usage: Usage): ModelUsage[] {
+  if (mode === 'claude_json') {
+    const entries = Object.entries(object(json?.modelUsage));
+    if (entries.length) return entries.map(([model, raw]) => ({ model, attribution: 'reported',
+      usage: claudeUsage(object(raw), true, object(raw).costUSD ?? object(raw).costUsd) }));
+  }
+  const reported = typeof json?.model === 'string' && json.model.trim() ? json.model : null;
+  return [{model: reported ?? requestedModel,
+    attribution: reported ? 'reported' : requestedModel ? 'requested' : 'unknown', usage}];
+}
+
 export function parseByMode(mode: ParseMode, stdout: string): ParseResult {
   switch (mode) {
+    case 'cursor_json':
     case 'claude_json':
       return parseClaudeJson(stdout);
     case 'codex_lastmsg':

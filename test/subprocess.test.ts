@@ -20,13 +20,13 @@ describe('buildInvocation argv (against real presets)', () => {
   it('claude: stdin delivery, json output, no --max-turns', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'generator' }));
     expect(inv.file).toBe('claude');
-    expect(inv.args).toEqual(['-p', '--output-format', 'json']);
+    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob']);
     expect(inv.input).toBe('PROMPT');
   });
 
   it('claude evaluator role appends --disallowedTools', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'evaluator' }));
-    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--disallowedTools', 'Write Edit Bash NotebookEdit WebFetch']);
+    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob', '--disallowedTools', 'Write Edit Bash NotebookEdit WebFetch']);
   });
 
   it('cursor: arg delivery stays in read-only ask mode', () => {
@@ -113,7 +113,7 @@ describe('buildInvocation argv (against real presets)', () => {
 describe('per-agent model switching', () => {
   it('claude: --model <name> when a model is requested', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'chat', model: 'opus' }));
-    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--model', 'opus']);
+    expect(inv.args).toEqual(['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob', '--model', 'opus']);
   });
 
   it('cursor: wires --model for the requested model', () => {
@@ -174,7 +174,7 @@ describe('SubprocessAdapter.invoke (mocked exec)', () => {
     expect(r.ok).toBe(true);
     expect(r.normalizedText).toBe('hello world');
     // ran with argv array + stdin, never shell
-    expect(runMock).toHaveBeenCalledWith('claude', ['-p', '--output-format', 'json'], expect.objectContaining({ input: 'PROMPT', timeoutMs: 300000 }));
+    expect(runMock).toHaveBeenCalledWith('claude', ['-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob'], expect.objectContaining({ input: 'PROMPT', timeoutMs: 300000 }));
   });
 
   it('parses agy JSON, captures conversation id, and usage', async () => {
@@ -199,7 +199,7 @@ describe('SubprocessAdapter.invoke (mocked exec)', () => {
     runMock.mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', timedOut: false, failed: false });
     const preset = { ...loadPreset('agy_image'), environment: { NANOBANANA_MODEL: 'gemini-2.5-flash-image' } };
     await new SubprocessAdapter(preset).invoke(req({ role: 'chat' }));
-    expect(runMock.mock.calls[0]![2]!.env).toEqual({ NANOBANANA_MODEL: 'gemini-2.5-flash-image' });
+    expect(runMock.mock.calls[0]![2]!.env).toEqual({ AGENTCTL_WORKER_DEPTH: '1', NANOBANANA_MODEL: 'gemini-2.5-flash-image' });
   });
 
   it('maps non-zero exit to nonzero_exit', async () => {
@@ -230,5 +230,18 @@ describe('SubprocessAdapter.invoke (mocked exec)', () => {
     const a = new SubprocessAdapter(loadPreset('claude'));
     expect((await a.healthcheck()).available).toBe(true);
     expect(runMock).toHaveBeenCalledWith('which', ['claude'], expect.objectContaining({ timeoutMs: 5000 }));
+  });
+});
+
+
+describe('worker recursion brake', () => {
+  it('rejects nested workers before spawning any process', async () => {
+    vi.stubEnv('AGENTCTL_WORKER_DEPTH', '1');
+    try {
+      const result = await new SubprocessAdapter(loadPreset('cursor')).invoke(req({ role: 'chat' }));
+      expect(result.ok).toBe(false);
+      expect(result.stderr).toContain('Nested agentctl');
+      expect(runMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 });

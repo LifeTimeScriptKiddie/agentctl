@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { registerUsageCommand } from './usage/command.js';
+import { registerMemoryCommands } from './memory/command.js';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
 import { registerMonitorCommands } from './monitor/command.js';
@@ -20,6 +22,8 @@ async function readStdin(): Promise<string> {
 
 export function buildProgram(): Command {
   const program = new Command();
+  registerMemoryCommands(program);
+  registerUsageCommand(program);
   program
     .name('agentctl')
     .description(
@@ -37,10 +41,13 @@ export function buildProgram(): Command {
     .option('--effort <level>', 'reasoning effort for CLIs that expose one (codex: minimal|low|medium|high|max)')
     .option('--session <name>', 'persist/continue a named session (durable memory across calls)')
     .option('--resume', 'continue the most recent session', false)
+    .option('--briefing-workspace <id>', 'JIT team context (defaults from AGENTCTL_BRIEFING_WORKSPACE when set)')
+    .option('--session-scope <id>', 'scope for --resume and new sessions (defaults from --briefing-workspace)')
+    .option('--gateway-url <url>', 'memory gatekeeper base URL (overrides AGENTCTL_GATEWAY_URL; uses POST /v1/turn)')
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
-    .action(async (promptArg: string | undefined, opts: { to: string; model?: string; effort?: string; session?: string; resume: boolean; timeout: string; approve: boolean; format: string }) => {
+    .action(async (promptArg: string | undefined, opts: { to: string; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; format: string }) => {
       const prompt = (promptArg ?? (await readStdin())).trim();
       if (!prompt) {
         stdio.err('no prompt given (pass as an argument or via stdin)');
@@ -53,6 +60,9 @@ export function buildProgram(): Command {
         {
           to: opts.to, prompt, timeoutSeconds: Number(opts.timeout), approve: opts.approve,
           model: opts.model ?? null, effort: opts.effort ?? null, session: opts.session, resume: opts.resume,
+          briefingWorkspace: opts.briefingWorkspace,
+          sessionScope: opts.sessionScope,
+          gatewayUrl: opts.gatewayUrl ?? null,
           format: parseFormat(opts.format),
         },
         stdio,
@@ -104,15 +114,18 @@ export function buildProgram(): Command {
     .argument('[task]', 'the task text (or piped via stdin)')
     .option('--dry-route', 'show the routing decision without running anything', false)
     .option('--explain', 'show the per-agent scoring', false)
-    .option('--llm', 'on an ambiguous route, ask a cheap LLM to break the tie', false)
+    .option('--llm', 'deprecated; ambiguous routes require human selection', false)
     .option('--model <name>', 'model override for the chosen agent')
     .option('--effort <level>', 'reasoning-effort override for the chosen agent')
     .option('--session <name>', 'persist/continue a named session')
     .option('--resume', 'continue the most recent session', false)
+    .option('--briefing-workspace <id>', 'JIT team context (defaults from AGENTCTL_BRIEFING_WORKSPACE when set)')
+    .option('--session-scope <id>', 'scope for --resume and new sessions')
+    .option('--gateway-url <url>', 'memory gatekeeper base URL (overrides AGENTCTL_GATEWAY_URL)')
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
-    .action(async (taskArg: string | undefined, opts: { dryRoute: boolean; explain: boolean; llm: boolean; model?: string; effort?: string; session?: string; resume: boolean; timeout: string; approve: boolean; format: string }) => {
+    .action(async (taskArg: string | undefined, opts: { dryRoute: boolean; explain: boolean; llm: boolean; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; format: string }) => {
       const task = (taskArg ?? (await readStdin())).trim();
       if (!task) {
         stdio.err('no task given (pass as an argument or via stdin)');
@@ -124,7 +137,8 @@ export function buildProgram(): Command {
         {
           task, dryRoute: opts.dryRoute, explain: opts.explain, llm: opts.llm, timeoutSeconds: Number(opts.timeout),
           approve: opts.approve, model: opts.model ?? null, effort: opts.effort ?? null,
-          session: opts.session, resume: opts.resume,
+          session: opts.session, resume: opts.resume, briefingWorkspace: opts.briefingWorkspace,
+          sessionScope: opts.sessionScope, gatewayUrl: opts.gatewayUrl ?? null,
           format: parseFormat(opts.format),
         },
         stdio,
@@ -139,17 +153,22 @@ export function buildProgram(): Command {
     .option('--dry-route', 'show the routing decision without running', false)
     .option('--verbose', 'print routing lines on stdout (default: stderr only)', false)
     .option('--explain', 'include per-agent routing scores', false)
-    .option('--llm', 'on an ambiguous route, ask a cheap LLM to break the tie', false)
+    .option('--llm', 'deprecated; ambiguous routes require human selection', false)
     .option('--model <name>', 'model override for the chosen agent')
     .option('--effort <level>', 'reasoning-effort override for the chosen agent')
     .option('--session <name>', 'persist/continue a named session')
     .option('--resume', 'continue the most recent session', false)
+    .option('--briefing-workspace <id>', 'JIT team context (defaults from AGENTCTL_BRIEFING_WORKSPACE when set)')
+    .option('--session-scope <id>', 'scope for --resume and new sessions')
+    .option('--gateway-url <url>', 'memory gatekeeper base URL (overrides AGENTCTL_GATEWAY_URL)')
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (taskArg: string | undefined, opts: {
       to?: string; dryRoute: boolean; verbose: boolean; explain: boolean; llm: boolean;
-      model?: string; effort?: string; session?: string; resume: boolean; timeout: string; approve: boolean; format: string;
+      model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string;
+      sessionScope?: string; gatewayUrl?: string;
+      timeout: string; approve: boolean; format: string;
     }) => {
       const task = (taskArg ?? (await readStdin())).trim();
       if (!task) {
@@ -163,7 +182,8 @@ export function buildProgram(): Command {
           task, dryRoute: opts.dryRoute, verbose: opts.verbose, explain: opts.explain, llm: opts.llm,
           timeoutSeconds: Number(opts.timeout), approve: opts.approve,
           model: opts.model ?? null, effort: opts.effort ?? null,
-          session: opts.session, resume: opts.resume,
+          session: opts.session, resume: opts.resume, briefingWorkspace: opts.briefingWorkspace,
+          sessionScope: opts.sessionScope, gatewayUrl: opts.gatewayUrl ?? null,
           to: opts.to,
           format: parseFormat(opts.format),
         },
@@ -176,9 +196,10 @@ export function buildProgram(): Command {
     .description('interactive multi-agent REPL (switch agents, fan out, keep context)')
     .option('--agent <name>', 'agent to start with')
     .option('--session <name>', 'persist/resume a named session (durable memory)')
+    .option('--session-scope <id>', 'project scope for resume (pairs with memory workspace)')
     .option('--resume', 'resume the most recent session', false)
     .option('--plain', 'classic scroll-only chat (no header dashboard)', false)
-    .action(async (opts: { agent?: string; session?: string; resume: boolean; plain: boolean }) => {
+    .action(async (opts: { agent?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean }) => {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
         stdio.err(
           'agentctl chat requires an interactive terminal (stdin and stdout must be TTYs).\n' +
@@ -192,7 +213,11 @@ export function buildProgram(): Command {
       }
       let sess;
       try {
-        sess = resolveSession({ session: opts.session, resume: opts.resume });
+        sess = resolveSession({
+          session: opts.session,
+          resume: opts.resume,
+          scope: opts.sessionScope ?? undefined,
+        });
       } catch (e) {
         stdio.err(e instanceof Error ? e.message : String(e));
         process.exitCode = 2;

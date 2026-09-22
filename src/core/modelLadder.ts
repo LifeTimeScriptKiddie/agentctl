@@ -192,6 +192,10 @@ export function addUsage(total: Usage, next: Usage): Usage {
     inputTokens: sum(total.inputTokens, next.inputTokens),
     outputTokens: sum(total.outputTokens, next.outputTokens),
     costUsd: sum(total.costUsd, next.costUsd),
+    ...((total.cachedInputTokens !== undefined || next.cachedInputTokens !== undefined)
+      ? { cachedInputTokens: sum(total.cachedInputTokens ?? null, next.cachedInputTokens ?? null) } : {}),
+    ...((total.cacheWriteInputTokens !== undefined || next.cacheWriteInputTokens !== undefined)
+      ? { cacheWriteInputTokens: sum(total.cacheWriteInputTokens ?? null, next.cacheWriteInputTokens ?? null) } : {}),
   };
 }
 

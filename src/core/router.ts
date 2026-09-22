@@ -32,7 +32,7 @@ export interface RouteDecision {
   method: 'deterministic' | 'fallback' | 'default';
   /** all eligible agents, best first (for --explain and fallbacks). */
   ranked: RankedAgent[];
-  /** true when the signal was weak/tied — a good trigger for an optional --llm tiebreak. */
+  /** true when the signal was weak/tied — requires human selection before execution. */
   ambiguous: boolean;
 }
 
@@ -55,6 +55,9 @@ export function classifyCostPerformance(
 ): CostPerformanceTier | null {
   if (!agent) return null;
   const has = (id: string) => hasReason(reasons, id);
+  if (has('cyber')) return 'specialized';
+  if (has('deep-review')) return 'frontier';
+  if (has('planning')) return 'frontier';
   if (['agy', 'agy_image', 'comet'].includes(agent) || has('second-opinion') || has('creative')) {
     return 'specialized';
   }
@@ -77,21 +80,30 @@ export function classifyCostPerformance(
 export function suggestModel(agent: string | null, reasons: string[], task = ''): string | null {
   if (!agent) return null;
   const has = (s: string) => reasons.some((r) => r.startsWith(s));
+  if (has('planning') && agent === 'codex') return 'gpt-6-astra';
+  if (has('deep-review')) {
+    if (agent === 'claude') return 'opus';
+    if (agent === 'cursor') return 'claude-opus-5-thinking-high';
+  }
+  if (has('cyber') || /\b(?:cyber(?:security)?|security|vulnerabilit(?:y|ies)|threat model|malware|incident response)\b/i.test(task)) {
+    if (agent === 'cursor') return 'composer-2.5';
+    if (agent === 'codex' || agent === 'codex_write') return 'gpt-daybreak-blue-latest';
+  }
   if (has('second-opinion') && agent === 'cursor') return 'cursor-grok-4.6-high-fast';
   if (has('creative')) {
     if (agent === 'claude') return 'sonnet';
-    if (agent === 'cursor') return 'claude-sonnet-5-high';
+    if (agent === 'cursor') return 'claude-sonnet-5-thinking-high';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-terra';
   }
   if (has('bulk')) {
     if (agent === 'claude') return 'haiku';
-    if (agent === 'cursor') return 'gemini-3.8-flash-low';
+    if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (has('trivial')) {
     if (agent === 'claude') return 'haiku';
-    if (agent === 'cursor') return 'muse-spark-1.3-minimal';
+    if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.3-codex-spark';
   }
@@ -185,6 +197,13 @@ const WRITE_INTENT_RE =
   /^(?![\s\S]*\b(?:how (?:do|can|should|would) (?:i|we)|how to|explain how|show me how|what(?:'s| is) the best way to)\b)[\s\S]*(?:\b(?:implement|fix|refactor|edit|modify|patch|change|update|add|remove|rename|format|write|create)\b[\s\S]{0,100}\b(?:code|file|files|repo|repository|function|class|module|tests?|docs?|readme|config|configuration|router|routing|agentctl|typescript|javascript|python|rust|golang|typo|spelling|link|markdown)\b|\b(?:code|file|files|repo|repository|function|class|module|tests?|docs?|readme|config|configuration|router|routing|agentctl|typescript|javascript|python|rust|golang|typo|spelling|link|markdown)\b[\s\S]{0,100}\b(?:implement|fix|refactor|edit|modify|patch|change|update|add|remove|rename|format|write|create)\b)/i;
 
 const SIGNALS: Signal[] = [
+  { id: 'planning', re: /\b(?:plan|planning|orchestrat(?:e|ion))\b/i,
+    prefer: ['codex', 'cursor', 'claude'], weight: 12 },
+  { id: 'cyber', re: /\b(?:cyber(?:security)?|security|vulnerabilit(?:y|ies)|threat model|pentest|CVE(?:-\d+)?|malware|incident response)\b/i,
+    prefer: ['cursor', 'codex'], weight: 10 },
+  { id: 'deep-review', re: /\b(?:(?:deep|thorough|critical|rigorous|comprehensive)\s+(?:(?:code|security)\s+)?review|review[\s\S]{0,40}in depth)\b/i,
+    prefer: ['claude', 'cursor', 'codex'], weight: 12 },
+
   {
     id: 'image',
     // Require an image action/context so infrastructure phrases such as
@@ -232,7 +251,7 @@ const SIGNALS: Signal[] = [
   {
     id: 'code',
     re: /\b(code|coding|bug|debug|refactor|compile|build|tests?|stack\s?trace|repo|repository|function|implement|typescript|javascript|python|rust|golang|lint|api|firmware|arduino|esp32|esp8266|embedded|platformio|microcontroller|agentctl|router|routing)\b/i,
-    prefer: ['codex', 'cursor', 'claude', 'pi'],
+    prefer: ['cursor', 'codex', 'claude', 'pi'],
     weight: 4,
   },
   {
@@ -249,7 +268,7 @@ const SIGNALS: Signal[] = [
   },
   {
     id: 'creative',
-    re: /\b(story|poem|creative writing|copywriting|tagline|slogan|narrative|dialogue|brainstorm)\b/i,
+    re: /\b(story|poem|creative writing|copywriting|tagline|slogan|narrative|dialogue|brainstorm|draft|prose|essay|report|article)\b/i,
     prefer: ['claude', 'cursor', 'pi'],
     weight: 4,
   },
@@ -307,6 +326,12 @@ export function route(task: string, agents: RouterAgent[]): RouteDecision {
     });
   }
 
+  // Explicit job roles outrank incidental words such as "code" or "report".
+  // Capabilities below still constrain which lanes may actually execute.
+  const role = ['planning', 'deep-review', 'cyber', 'creative'].find((id) => matched.includes(id));
+  const primary = SIGNALS.find((sig) => sig.id === role)?.prefer[0];
+  if (primary) bump(primary, 30, `${role} priority`);
+
   // eligible = scored ∪ general agents; comet/dry_run only if explicitly scored
   const eligible = agents.filter(
     (a) => scores.has(a.name) || (!NON_GENERAL.has(a.name) && FALLBACK_ORDER.includes(a.name)),
@@ -319,7 +344,11 @@ export function route(task: string, agents: RouterAgent[]): RouteDecision {
     return FALLBACK_ORDER.indexOf(x.agent) - FALLBACK_ORDER.indexOf(y.agent);
   });
 
-  const rankedAvailable = ranked.filter((r) => byName.get(r.agent)?.available);
+  const required = SIGNALS.filter((s) => matched.includes(s.id) && s.requires).map((s) => s.requires!);
+  const rankedAvailable = ranked.filter((r) => {
+    const a = byName.get(r.agent);
+    return a?.available && required.every((cap) => hasCap(a, cap));
+  });
   const topAll = ranked[0];
   const topAvail = rankedAvailable[0];
 

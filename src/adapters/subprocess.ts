@@ -8,6 +8,7 @@ import {
   detectUsageLimit, nextModel, onLadder, addUsage, ZERO_USAGE, DEFAULT_COOLDOWN_MS,
 } from '../core/modelLadder.js';
 import { loadLimits, saveLimits, exhaustedUntil, markExhausted, clearExhausted } from '../core/limitStore.js';
+import { recordUsage } from '../usage/ledger.js';
 import { homedir } from 'node:os';
 
 /** Expand a leading `~` so preset workdirs stay machine-portable. */
@@ -149,6 +150,10 @@ export class SubprocessAdapter implements AgentAdapter {
    * returned result so a multi-rung walk can't under-report its cost.
    */
   async invoke(request: AdapterRequest, opts: InvokeOptions = {}): Promise<AdapterResult> {
+    if (process.env.AGENTCTL_WORKER_DEPTH) {
+      return failResult({ adapter: this.name, transport: this.transport,
+        failureClass: 'not_configured', reason: 'Nested agentctl workers are disabled; return work to the caller.', durationMs: 0 });
+    }
     const ladder = this.preset.models?.stepDown ?? [];
     const laddered = ladder.length > 0;
     let model = resolveModel(this.preset, request.model).model;
@@ -172,6 +177,11 @@ export class SubprocessAdapter implements AgentAdapter {
 
       const stepsSoFar = tried.length;
       const result = await this.invokeOnce({ ...request, model }, model, stepsSoFar, opts);
+      try { recordUsage(result, this.preset.parse, model); }
+      catch (error) {
+        // Observability failure must be visible, but must not discard a completed answer.
+        process.stderr.write(`agentctl: usage ledger write failed (${(error as NodeJS.ErrnoException).code ?? 'invalid record'}); usage may be incomplete.\n`);
+      }
       tried.push(model ?? '(cli default)');
       usage = addUsage(usage, result.usage);
 
@@ -234,7 +244,7 @@ export class SubprocessAdapter implements AgentAdapter {
   ): Promise<AdapterResult> {
     const inv = buildInvocation(this.preset, request);
     const runOpts: RunOptions = { timeoutMs: request.timeoutSeconds * 1000 };
-    if (Object.keys(this.preset.environment).length > 0) runOpts.env = this.preset.environment;
+    runOpts.env = { ...this.preset.environment, AGENTCTL_WORKER_DEPTH: '1' };
     if (inv.input !== undefined) runOpts.input = inv.input;
     const cwd = request.workdir ?? this.preset.workdir;
     if (cwd) runOpts.cwd = expandHome(cwd);
@@ -244,25 +254,27 @@ export class SubprocessAdapter implements AgentAdapter {
     const outcome = await run(inv.file, inv.args, runOpts);
     const durationMs = Date.now() - start;
 
+    const parsed = parseByMode(this.preset.parse, outcome.stdout);
+    const usage = extractUsage(this.preset.parse, outcome.stdout, parsed.normalizedJson);
     if (outcome.timedOut) {
-      return failResult({
+      return { ...failResult({
         adapter: this.name,
         transport: this.transport,
         failureClass: 'timeout',
         durationMs,
         reason: `timed out after ${request.timeoutSeconds}s`,
+        stdout: outcome.stdout,
         stderr: outcome.stderr,
         exitCode: outcome.exitCode,
         model,
         steppedDown,
-      });
+      }), normalizedJson: parsed.normalizedJson, usage };
     }
     if (outcome.exitCode !== 0) {
       // A failed call can still have burned tokens (and told us so). Parse what
       // it reported: the ladder sums attempts, so dropping this under-bills the
       // walk. Also keep the JSON envelope — it carries the structured error
       // type the limit detector prefers over sniffing prose.
-      const failed = parseByMode(this.preset.parse, outcome.stdout);
       return {
         ...failResult({
           adapter: this.name,
@@ -276,12 +288,16 @@ export class SubprocessAdapter implements AgentAdapter {
           model,
           steppedDown,
         }),
-        normalizedJson: failed.normalizedJson,
-        usage: extractUsage(this.preset.parse, outcome.stdout, failed.normalizedJson),
+        normalizedJson: parsed.normalizedJson,
+        usage,
       };
     }
 
-    const parsed = parseByMode(this.preset.parse, outcome.stdout);
+    if (this.preset.parse === 'cursor_json' && parsed.normalizedJson?.is_error === true) {
+      return { ...failResult({adapter: this.name, transport: this.transport, failureClass: 'parse_error',
+        reason: 'Cursor reported an error result', durationMs, stdout: outcome.stdout, stderr: outcome.stderr,
+        model, steppedDown}), normalizedJson: parsed.normalizedJson, usage };
+    }
     if (this.preset.parse === 'agy_json') {
       const status = parsed.normalizedJson?.status;
       if (typeof status === 'string' && status.toUpperCase() !== 'SUCCESS') {
@@ -289,7 +305,7 @@ export class SubprocessAdapter implements AgentAdapter {
         const reason = typeof response === 'string' && response.trim()
           ? response.trim()
           : `agy returned status ${status}`;
-        return failResult({
+        return { ...failResult({
           adapter: this.name,
           transport: this.transport,
           failureClass: 'parse_error',
@@ -300,11 +316,11 @@ export class SubprocessAdapter implements AgentAdapter {
           exitCode: outcome.exitCode,
           model,
           steppedDown,
-        });
+        }), normalizedJson: parsed.normalizedJson, usage };
       }
       if (!parsed.normalizedText) {
         const reason = 'agy returned no response text (the provider may be at capacity or a headless tool fallback was denied; inspect the Antigravity log)';
-        return failResult({
+        return { ...failResult({
           adapter: this.name,
           transport: this.transport,
           failureClass: 'parse_error',
@@ -315,11 +331,10 @@ export class SubprocessAdapter implements AgentAdapter {
           exitCode: outcome.exitCode,
           model,
           steppedDown,
-        });
+        }), normalizedJson: parsed.normalizedJson, usage };
       }
     }
     const sessionId = extractSessionId(this.preset.session?.idFrom, outcome.stdout, parsed.normalizedJson);
-    const usage = extractUsage(this.preset.parse, outcome.stdout, parsed.normalizedJson);
     return okResult({
       adapter: this.name,
       transport: this.transport,

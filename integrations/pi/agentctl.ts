@@ -21,7 +21,7 @@ interface JsonEnvelope {
 async function runAgentctl(args: string[], cwd: string, timeoutMs = 600_000): Promise<JsonEnvelope> {
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(process.execPath, [fileURLToPath(new URL("../cli.js", import.meta.url)), ...args, "--format", "json"], {
+    ({ stdout } = await execFileAsync(process.execPath, [fileURLToPath(new URL("../cli.js", import.meta.url)), args[0]!, "--format", "json", ...args.slice(1)], {
     cwd,
     maxBuffer: 16 * 1024 * 1024,
     timeout: timeoutMs,
@@ -37,6 +37,53 @@ async function runAgentctl(args: string[], cwd: string, timeoutMs = 600_000): Pr
 
 function formatWarnings(warnings: string[]): string {
   return warnings.length ? `\n\nWarnings:\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
+}
+
+function resolveBriefingWorkspace(explicit?: string): string | undefined {
+  const trimmed = explicit?.trim();
+  if (trimmed) return trimmed;
+  const env = process.env.AGENTCTL_BRIEFING_WORKSPACE?.trim();
+  return env || undefined;
+}
+
+function applyWorkerBriefingArgv(argv: string[]): string[] {
+  if (argv.some((a, i) => a === "--briefing-workspace" && argv[i + 1])) return argv;
+  const ws = resolveBriefingWorkspace();
+  if (!ws) return argv;
+  return ["--briefing-workspace", ws, ...argv];
+}
+
+function defaultMemoryWorkspace(explicit?: string): string {
+  return resolveBriefingWorkspace(explicit) ?? "agentctl-pilot";
+}
+
+/** Parse leading worker flags without ever interpolating a shell command. */
+export function parseWorkerArgs(raw: string): string[] {
+  const values = new Set([
+    '--to', '--model', '--effort', '--timeout', '--session',
+    '--briefing-workspace', '--session-scope', '--gateway-url',
+  ]);
+  const switches = new Set(['--dry-route', '--explain', '--resume', '--approve', '--verbose']);
+  const argv: string[] = [];
+  let rest = raw.trim();
+  const take = (): string => {
+    const match = rest.match(/^(?:"([^"]*)"|'([^']*)'|(\S+))(?:\s+|$)/);
+    if (!match) throw new Error('Unterminated quoted option');
+    rest = rest.slice(match[0].length).trimStart();
+    return match[1] ?? match[2] ?? match[3]!;
+  };
+  while (rest.startsWith('--')) {
+    const flag = take();
+    if (flag === '--') break;
+    if (values.has(flag)) {
+      if (!rest || rest.startsWith('--')) throw new Error(`Missing value for ${flag}`);
+      argv.push(flag, take());
+    } else if (switches.has(flag)) argv.push(flag);
+    else throw new Error(`Unsupported worker flag: ${flag}`);
+  }
+  if (!rest) throw new Error('A task prompt is required');
+  if ((rest.startsWith('"') && rest.endsWith('"')) || (rest.startsWith("'") && rest.endsWith("'"))) rest = rest.slice(1, -1);
+  return [...argv, '--', rest];
 }
 
 interface OrchestrateFlags {
@@ -156,9 +203,36 @@ function formatOrchestration(
   return `${header}:\n${plan || "(empty)"}${synth}${err}${formatWarnings(env.warnings)}`;
 }
 
+function parseFlag(rest: string, name: string): string | undefined {
+  const m = rest.match(new RegExp(`(?:^|\\s)${name}\\s+(\\S+)`));
+  return m?.[1];
+}
+
+function parseQuoted(rest: string, name: string): string | undefined {
+  const re = new RegExp(`${name}\\s+"([^"]*)"`);
+  const m = rest.match(re);
+  return m?.[1];
+}
+
+async function execMemoryCli(argv: string[], cwd: string): Promise<string> {
+  const cli = fileURLToPath(new URL("../cli.js", import.meta.url));
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [cli, "memory", ...argv], {
+      cwd,
+      timeout: 60_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (error) {
+    const output = (error as { stdout?: string }).stdout;
+    if (output?.trim()) return output.trim();
+    throw error;
+  }
+}
+
 export default function agentctlExtension(pi: ExtensionAPI) {
   pi.registerCommand("agentctl", {
-    description: "Dispatch to agentctl (ask | route | delegate | orchestrate | health)",
+    description: "Dispatch to agentctl (ask | route | delegate | orchestrate | health | memory-test)",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = parts[0] ?? "help";
@@ -173,14 +247,146 @@ export default function agentctlExtension(pi: ExtensionAPI) {
               "Pi = cockpit. agentctl = traffic controller. Codex/gpt-6-astra = orchestrator.",
               "Usage:",
               "  /agentctl health",
+              "  /agentctl memory-test  (3 live Cursor calls, synthetic data only)",
+              "  /agentctl briefing [--workspace <id>]  (local resume packet, no model call)",
+              "  /agentctl memory-review [--workspace <id>]  (proposed queue; gateway if AGENTCTL_GATEWAY_URL)",
+              "  /agentctl memory-write --workspace <id> --text \"…\" [--source pi:…]",
+              "  /agentctl memory-accept --workspace <id> --id <uuid> --revision <n>",
               "  /agentctl ask --to <agent> <prompt>",
               "  /agentctl route <task>",
               "  /agentctl delegate <task>",
+              "Team memory (optional): AGENTCTL_GATEWAY_URL + AGENTCTL_BRIEFING_WORKSPACE (JIT context on delegate/route/ask)",
+              "  /agentctl delegate --briefing-workspace team-atlas \"…\"  (or rely on env default)",
               "  /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-6-astra] <goal>",
               "Defaults: orchestrate is --dry-plan; --run plans with codex + gpt-6-astra then delegates steps.",
             ].join("\n"),
             "info",
           );
+          return;
+        }
+
+        if (sub === "briefing") {
+          const workspace = (() => {
+            const m = rest.match(/^--workspace\s+(\S+)/);
+            return m?.[1] ?? "agentctl-pilot";
+          })();
+          const cli = fileURLToPath(new URL("../cli.js", import.meta.url));
+          let stdout: string;
+          try {
+            ({ stdout } = await execFileAsync(process.execPath, [
+              cli, "memory", "briefing", "--workspace", workspace, "--provider", "pi",
+            ], { cwd: ctx.cwd, timeout: 30_000, maxBuffer: 512 * 1024 }));
+          } catch (error) {
+            const output = (error as { stdout?: string }).stdout;
+            if (!output?.trim()) throw error;
+            stdout = output;
+          }
+          const body = JSON.parse(stdout.trim()) as {
+            packet?: {
+              checkpoint?: { goal?: string; state?: string; blockers?: string[]; nextAction?: string; revision?: number } | null;
+              decisions?: Array<{ text?: string; source?: string; revision?: number }>;
+              omittedDecisionRefs?: string[];
+              unresolvedDecisionRefs?: string[];
+            };
+          };
+          const p = body.packet;
+          const cp = p?.checkpoint;
+          const lines = [
+            `Resume briefing · workspace ${workspace}`,
+            cp ? `Goal: ${cp.goal}` : "No checkpoint saved yet.",
+            cp ? `State: ${cp.state}` : "",
+            cp?.blockers?.length ? `Blockers: ${cp.blockers.join("; ")}` : "",
+            cp ? `Next: ${cp.nextAction} (rev ${cp.revision})` : "",
+            p?.decisions?.length
+              ? `Decisions:\n${p.decisions.map(d => `- ${d.text} (${d.source}, rev ${d.revision})`).join("\n")}`
+              : "",
+            p?.omittedDecisionRefs?.length ? `Omitted refs: ${p.omittedDecisionRefs.join(", ")}` : "",
+            p?.unresolvedDecisionRefs?.length ? `Unresolved refs: ${p.unresolvedDecisionRefs.join(", ")}` : "",
+          ].filter(Boolean);
+          ctx.ui.notify(lines.join("\n"), "info");
+          return;
+        }
+
+        if (sub === "memory-review") {
+          const workspace = defaultMemoryWorkspace(parseFlag(rest, "--workspace"));
+          const gateway = process.env.AGENTCTL_GATEWAY_URL?.trim();
+          const stdout = gateway
+            ? await execMemoryCli(["gateway", "review", "--workspace", workspace], ctx.cwd)
+            : await execMemoryCli(["review", "--workspace", workspace], ctx.cwd);
+          const body = JSON.parse(stdout) as { proposed?: Array<{ id: string; revision: number; text: string }> } | Array<{ id: string; revision: number; text: string }>;
+          const items = Array.isArray(body) ? body : (body.proposed ?? []);
+          ctx.ui.notify([
+            `Review queue · ${workspace}${gateway ? " (gateway)" : ""}`,
+            items.length
+              ? items.map(m => `- [${m.id.slice(0, 8)}… rev ${m.revision}] ${m.text.slice(0, 120)}`).join("\n")
+              : "(empty)",
+          ].join("\n"), "info");
+          return;
+        }
+
+        if (sub === "memory-write") {
+          const workspace = parseFlag(rest, "--workspace") ?? resolveBriefingWorkspace();
+          const text = parseQuoted(rest, "--text") ?? rest.replace(/^--text\s+\S+\s*/, "").trim();
+          if (!workspace || !text) {
+            ctx.ui.notify("Usage: /agentctl memory-write --workspace <id> --text \"…\" [--source pi:…]", "warning");
+            return;
+          }
+          const source = parseQuoted(rest, "--source") ?? parseFlag(rest, "--source") ?? "pi:operator";
+          const gateway = process.env.AGENTCTL_GATEWAY_URL?.trim();
+          const argv = gateway
+            ? ["gateway", "write", "--workspace", workspace, "--text", text, "--source", source, "--mode", "propose"]
+            : ["write", "--workspace", workspace, "--text", text, "--source", source, "--mode", "propose"];
+          const stdout = await execMemoryCli(argv, ctx.cwd);
+          const out = JSON.parse(stdout) as { status?: string; memory?: { id: string; revision: number } };
+          ctx.ui.notify(
+            `Memory ${out.status ?? "ok"}${out.memory ? ` · id ${out.memory.id} rev ${out.memory.revision}` : ""}`,
+            out.status === "rejected" ? "error" : "info",
+          );
+          return;
+        }
+
+        if (sub === "memory-accept") {
+          const workspace = parseFlag(rest, "--workspace");
+          const id = parseFlag(rest, "--id");
+          const revision = parseFlag(rest, "--revision");
+          if (!workspace || !id || !revision) {
+            ctx.ui.notify("Usage: /agentctl memory-accept --workspace <id> --id <uuid> --revision <n>", "warning");
+            return;
+          }
+          const gateway = process.env.AGENTCTL_GATEWAY_URL?.trim();
+          const stdout = gateway
+            ? await execMemoryCli([
+              "gateway", "accept", "--workspace", workspace, "--id", id, "--revision", revision, "--human-approved",
+            ], ctx.cwd)
+            : await execMemoryCli([
+              "accept", id, "--workspace", workspace, "--revision", revision,
+            ], ctx.cwd);
+          const out = JSON.parse(stdout) as { memory?: { id: string; revision: number; state: string } };
+          ctx.ui.notify(
+            `Accepted · ${out.memory?.id ?? id} rev ${out.memory?.revision ?? revision} (${out.memory?.state ?? "accepted"})`,
+            "info",
+          );
+          return;
+        }
+
+        if (sub === "memory-test") {
+          const cli = fileURLToPath(new URL("../cli.js", import.meta.url));
+          let stdout: string;
+          try {
+            ({ stdout } = await execFileAsync(process.execPath, [cli, "memory", "test"], {
+              cwd: ctx.cwd, timeout: 300_000, maxBuffer: 2 * 1024 * 1024,
+            }));
+          } catch (error) {
+            const output = (error as { stdout?: string }).stdout;
+            if (!output?.trim()) throw error;
+            stdout = output;
+          }
+          const result = JSON.parse(stdout) as { ok: boolean; directory: string; stages: Array<{stage:string;passed:boolean}>; error?:string };
+          ctx.ui.notify([
+            "Memory pilot: " + (result.ok ? "passed" : "failed/incomplete"),
+            ...result.stages.map(s => `${s.passed ? "✓" : "✗"} ${s.stage}`),
+            `Evidence: ${result.directory}/evidence/STATUS.md`, result.error ?? "",
+          ].join("\n"), result.ok ? "info" : "error");
           return;
         }
 
@@ -193,13 +399,7 @@ export default function agentctlExtension(pi: ExtensionAPI) {
         }
 
         if (sub === "ask") {
-          const match = rest.match(/^--to\s+(\S+)\s+([\s\S]*)$/);
-          if (!match) {
-            ctx.ui.notify("Usage: /agentctl ask --to <agent> <prompt>", "warning");
-            return;
-          }
-          const [, agent, prompt] = match;
-          const env = await runAgentctl(["ask", "--to", agent!, prompt!], ctx.cwd);
+          const env = await runAgentctl(["ask", ...applyWorkerBriefingArgv(parseWorkerArgs(rest))], ctx.cwd);
           const results = (env.result as { results?: Array<{ text?: string }> })?.results ?? [];
           const text = results[0]?.text ?? env.error ?? "no response";
           ctx.ui.notify(`${text}${formatWarnings(env.warnings)}`, env.ok ? "info" : "error");
@@ -211,7 +411,7 @@ export default function agentctlExtension(pi: ExtensionAPI) {
             ctx.ui.notify(`Usage: /agentctl ${sub} <task>`, "warning");
             return;
           }
-          const env = await runAgentctl([sub, rest], ctx.cwd);
+          const env = await runAgentctl([sub, ...applyWorkerBriefingArgv(parseWorkerArgs(rest))], ctx.cwd);
           const result = env.result as { route?: { agent?: string; model?: string }; ask?: { text?: string } } | undefined;
           const route = result?.route;
           const answer = result?.ask?.text;
