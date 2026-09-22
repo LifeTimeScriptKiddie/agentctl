@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { AdapterRegistry } from '../adapters/registry.js';
-import { findDestructive } from '../approval.js';
+import { stepApprovalBlock } from '../approval.js';
 import { redact } from './redact.js';
 import { agentctlHome } from './agentHome.js';
 import { askOne, type AskResult } from './ask.js';
@@ -131,9 +131,8 @@ export async function runOrchestrateGoal(
   );
   return runOrchestration(opts.goal, deps, {
     dryPlan: opts.dryPlan ?? false,
-    approveStep: (step) => (
-      (opts.approve ?? false)
-      || (findDestructive(step.instruction) === null && !step.needs.includes('canPublish'))
+    approveStep: (step, routedAgentCaps, composedPrompt) => (
+      (opts.approve ?? false) || stepApprovalBlock(step, routedAgentCaps, composedPrompt) === null
     ),
     completed: opts.completed,
     onStep: opts.onStep,

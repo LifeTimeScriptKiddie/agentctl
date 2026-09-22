@@ -204,7 +204,8 @@ export function buildProgram(): Command {
     .option('--session-scope <id>', 'project scope for resume (pairs with memory workspace)')
     .option('--resume', 'resume the most recent session', false)
     .option('--plain', 'classic scroll-only chat (no header dashboard)', false)
-    .action(async (opts: { agent?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean }) => {
+    .option('--approve', 'allow orchestrated steps on shell/repo-write/publish lanes', false)
+    .action(async (opts: { agent?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean; approve: boolean }) => {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
         stdio.err(
           'agentctl chat requires an interactive terminal (stdin and stdout must be TTYs).\n' +
@@ -240,6 +241,7 @@ export function buildProgram(): Command {
         {
           ...(sess ? { session: sess.record, persist: sess.persist } : {}),
           tui: !opts.plain,
+          approve: opts.approve,
         },
       );
     });

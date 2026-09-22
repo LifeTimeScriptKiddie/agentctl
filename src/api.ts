@@ -158,6 +158,7 @@ async function executeSingleAsk(
     briefingWorkspace?: string;
     sessionScope?: string;
     gatewayUrl?: string | null;
+    approve: boolean;
   },
   warnings: string[],
 ): Promise<{ exitCode: number; result: AskResult; error?: string }> {
@@ -232,6 +233,25 @@ async function executeSingleAsk(
     briefingWorkspace,
     gatewayUrl: args.gatewayUrl,
   });
+
+  const at = prompt.lastIndexOf(args.prompt);
+  const injected = at < 0 ? prompt : prompt.slice(0, at) + prompt.slice(at + args.prompt.length);
+  try {
+    assertApproved(injected, args.approve, 'injected-context');
+    assertApproved(args.prompt, args.approve);
+  } catch (e) {
+    if (!(e instanceof ApprovalRequiredError)) throw e;
+    return {
+      exitCode: 3,
+      result: {
+        agent: args.to, ok: false, text: e.message, failureClass: 'approval_required',
+        sessionId: null, costUsd: null,
+        usage: NULL_USAGE,
+        model: null, steppedDown: 0, evidence: '',
+      },
+      error: e.message,
+    };
+  }
 
   const result = await askOne(
     registry.resolveRole('chat', args.to),
@@ -308,6 +328,7 @@ export async function agentAsk(
       briefingWorkspace: opts.briefingWorkspace,
       sessionScope: opts.sessionScope,
       gatewayUrl: opts.gatewayUrl,
+      approve,
     },
     warnings,
   );
@@ -382,6 +403,7 @@ export async function agentRoute(
       briefingWorkspace: opts.briefingWorkspace,
       sessionScope: opts.sessionScope,
       gatewayUrl: opts.gatewayUrl,
+      approve: opts.approve ?? false,
     },
     warnings,
   );
