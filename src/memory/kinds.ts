@@ -38,6 +38,11 @@ kinds:
     label: Process / runbook
     default_workspace: team-ops
     briefing_default: false
+  ops_note:
+    label: Ops / shift handoff note
+    description: Status updates so the next operator can resume without re-reading chat
+    default_workspace: team-ops
+    briefing_default: true
   technique:
     label: Technique / TTP
     description: Tools, procedures, tradecraft notes (short claims)

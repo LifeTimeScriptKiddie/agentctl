@@ -97,7 +97,7 @@ flowchart TB
   subgraph vm [Memory VM — writers stay here]
     TLS[TLS reverse proxy]
     Serve["agentctl memory serve"]
-    DB1[(Postgres: team core\n decisions · checkpoints)]
+    DB1[(Postgres: primary workspace\n decisions · checkpoints · ops)]
     DB2[(Postgres: reports / techniques\n workspaces · kinds · RAG)]
     Audit["memory-serve-audit.jsonl"]
     SG[SessionGraph checkout\n observe · analyze · suggest]
@@ -136,6 +136,7 @@ Everything lives in a **workspace** (string id, e.g. `team-atlas`, `team-reports
 | `decision` | `team-atlas` | Approved team choices, owners, rollback policy |
 | `report` | `team-reports` | Engagement summaries, conclusions, scope notes |
 | `process` | `team-ops` | Runbooks, on-call steps |
+| `ops_note` | `team-ops` | Shift/status handoff (“where things stand now”) |
 | `cve` | `team-sec-cve` | Advisory tracking, vendor fix status |
 | `technique` | `team-techniques` | TTP notes, tool usage (custom kind — add in YAML) |
 | `preference` | (per team) | Explicit operator preferences |
@@ -287,6 +288,45 @@ Injected context is **prefix text** for the worker you chose (Copilot via Pi, Co
 
 Use checkpoints for session handoff; use **accepted** memories for things the whole team should rely on next month.
 
+### Ops notes (status for the next operator)
+
+Ops notes are how **user A leaves state** and **user B picks up without re-reading the thread**. Two complementary paths:
+
+| Path | When | What the next user gets |
+| --- | --- | --- |
+| **Checkpoint** (primary for “move on now”) | End of shift, before logout, mid-incident | **`goal`**, **`state`**, **`blockers`**, **`nextAction`**, optional links to approved decisions — injected on **`/v1/turn`**, **`memory briefing`**, and Pi **`delegate`** when `AGENTCTL_BRIEFING_WORKSPACE` matches |
+| **`ops_note` memory** | Durable status worth search later | Accepted claim (`kind: ops_note`, workspace **`team-ops`**) — findable via FTS like other memories |
+
+**Checkpoint (fast handoff)** — one row per workspace, no accept queue; use optimistic **`revision`** on updates:
+
+```bash
+agentctl memory checkpoint set --workspace team-ops \
+  --goal 'Memory VM smoke' \
+  --state 'Docker gatekeeper green; .68 offline' \
+  --next-action 'Power mini PC and rerun turn smoke' \
+  --blockers 'ssh timeout to 192.168.50.68' \
+  --source 'operator:alice@shift-end'
+```
+
+Next operator (same workspace on the gatekeeper):
+
+```bash
+export AGENTCTL_GATEWAY_URL=https://memory.example.com
+export AGENTCTL_BRIEFING_WORKSPACE=team-ops
+agentctl memory briefing --workspace team-ops --provider pi
+# or: agentctl delegate "What is blocked on the memory VM smoke?"
+```
+
+**Ops note (accepted memory)** — when the status should survive beyond the current checkpoint or appear in search:
+
+```bash
+agentctl memory save --workspace team-ops --kind ops_note \
+  --text '2026-09-22: Gatekeeper QA 9/9 on MiniMac; waiting on .68 power-on for LAN smoke.' \
+  --source 'ops:alice' --key 'vm-smoke-status' --accept --providers pi
+```
+
+Propose → accept still applies if you use **`write --mode propose`** instead of **`save --accept`**. Checkpoints are **not** memories — update them with **`checkpoint set`**, not the write graph.
+
 ### Operator commands (Pi and CLI)
 
 | Intent | Pi (examples) | CLI |
@@ -297,6 +337,7 @@ Use checkpoints for session handoff; use **accepted** memories for things the wh
 | Accept | `/agentctl memory-accept …` | `agentctl memory gateway accept …` |
 | Local pilot / test | `/agentctl memory-test` | `agentctl memory test` |
 | Resume without model | `/agentctl briefing --workspace …` | `agentctl memory briefing --workspace …` |
+| **Ops handoff** | Set checkpoint / ops note on VM, then next user same **`AGENTCTL_BRIEFING_WORKSPACE`** | `memory checkpoint set` · `memory save --kind ops_note` |
 
 Full HTTP and env tables: [INTEGRATIONS.md](docs/INTEGRATIONS.md). Graph audit: [TURN-GRAPH.md](docs/TURN-GRAPH.md). Postgres on the VM: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md). SessionGraph observer: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
 
