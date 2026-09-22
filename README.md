@@ -1,8 +1,20 @@
 # agentctl
 
-**Pi extension and CLI** for delegating work to **your** agent subscriptions — GitHub Copilot, OpenAI Codex, Anthropic, Cursor, or any backend you configure in [`src/adapters/presets`](src/adapters/presets). agentctl routes tasks, bounds multi-step plans, and optionally connects to a **[team memory gatekeeper](#team-shared-knowledge-domain)** over HTTP (shared knowledge domain — workspaces, human accept, ACL-filtered retrieval).
+**Pi extension and CLI** built around **multi-subscription orchestration**: one entry point (`/agentctl`, `agentctl delegate`, `agentctl orchestrate`) that routes work to **your** signed-in agents — GitHub Copilot via Pi, OpenAI Codex, Anthropic Claude, Cursor, or any backend in [`src/adapters/presets`](src/adapters/presets). You pick the subscription and model with **`--to`** / **`--model`**; agentctl handles lane selection, bounded plans, and worker subprocesses without merging billing or credentials across providers.
 
-Full phased deploy (VM, Postgres, SessionGraph): [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md).
+The project **started there** (route · ask · delegate · orchestrate across CLIs). It **grew** optional layers on the same core:
+
+| Layer | What it adds |
+| --- | --- |
+| **Orchestration** (core) | Multi-step plans, dry-run routing, recursion limits, Pi + standalone CLI |
+| **[Team memory](#team-shared-knowledge-domain)** | Linux VM gatekeeper, workspaces, propose → accept, ACL-filtered **`POST /v1/turn`** |
+| **Storage (modular)** | Pluggable SQLite/Postgres backends; add **workspaces, kinds, or whole databases** on the VM without changing Pi/CLI clients |
+| **[SessionGraph](#sessiongraph-on-the-backend-observe--suggest)** | Backend observer — audit + store flow → findings, **graph-engineering** hints, workflow suggestions |
+| **Usage & monitor** | [`agentctl usage`](docs/USAGE.md) token ledger; macOS `agentctl monitor` (read-only agent snapshot in README below) |
+
+Nothing beyond orchestration is required for a single developer with Pi and one provider. Turn on memory and SessionGraph when the team needs shared, reviewed knowledge on a central VM.
+
+Deploy walkthrough (VM, Postgres, nightly analysis): [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md).
 
 ## Install (Pi)
 
@@ -100,7 +112,7 @@ flowchart TB
 
   Pi -->|"AGENTCTL_GATEWAY_URL\nPOST /v1/turn"| TLS
   CLI --> TLS
-  SG -.->|findings · workflow suggestions\n human review| Ops[Operators]
+  SG -.->|findings · graph engineering ·\nworkflow suggestions| Ops[Operators]
 ```
 
 | Client env | Purpose |
@@ -131,6 +143,14 @@ Everything lives in a **workspace** (string id, e.g. `team-atlas`, `team-reports
 Kinds are not separate databases by themselves; they label rows and drive briefing defaults. **Physical separation** is done with workspaces and/or separate Postgres databases on the same VM (below).
 
 ### Storage on the memory VM (one host, multiple planes)
+
+**Modular by design.** The gatekeeper talks to storage through a small **backend adapter** (`sqlite` default, `postgres` via `AGENTCTL_MEMORY_BACKEND` + `AGENTCTL_MEMORY_DATABASE_URL`). Thin clients never embed connection strings — they only send workspace + query + auth. To **add another database** as the team grows (reports, techniques, a new corpus):
+
+- **Register a domain** — new workspace ids and kinds in `memory-kinds.yaml` (no code change for standard claims).
+- **Add a Postgres database** — create DB + run `agentctl memory postgres migrate`; bind a **new** `memory serve` instance (new `AGENTCTL_HOME` or URL) behind Caddy; point clients at the matching **`AGENTCTL_GATEWAY_URL`** / workspace.
+- **Extend the schema plane** — optional tables such as `rag_documents` ship as **versioned migrations** (`001_core`, `002_search`, …); wire new read paths in the turn graph when you add corpora.
+
+Same VM, same TLS edge, **N backends** — each backend is one store + one serve (today). Federation across serves in a single `/v1/turn` is a future composition layer; modularity today means you can stand up another DB + serve without forking agentctl.
 
 **One Linux VM** is enough for production: a single TLS edge and one or more **`agentctl memory serve`** processes. Clients still never mount database files or SSH for Q&A.
 
@@ -164,14 +184,15 @@ Migrations and tables: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md) (`memories`
 
 [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) is a **separate product** that sits **on the memory VM beside** `agentctl memory serve`. It does not replace the gatekeeper and is **not vendored** into agentctl; you install a git checkout and point **`AGENTCTL_SESSIONGRAPH_ROOT`** at it.
 
-**Role:** observe how the team uses shared knowledge, correlate **HTTP gatekeeper traffic** with **database state**, and produce **evidence-backed suggestions** for operators (workflow, graph tuning, review backlog, backend sizing). SessionGraph **never** accepts memories, edits Postgres/SQLite, or answers user chat directly.
+**Role:** observe how the team uses shared knowledge, correlate **HTTP gatekeeper traffic** with **database state**, and produce **evidence-backed suggestions** for operators — including **graph engineering** (turn-graph / retrieval pipeline tuning, write-path separation, evidence-gate edges), workflow sketches, review backlog, and backend sizing. SessionGraph **never** accepts memories, edits Postgres/SQLite, or applies graph YAML automatically.
 
 | Signal (today) | Source |
 | --- | --- |
 | Turns, context, writes, accepts | `$AGENTCTL_HOME/logs/memory-serve-audit.jsonl` (route, user, workspace, status, counts — not full prompt storage by default) |
 | Workspaces, propose/accept backlog, checkpoints | Memory store snapshot in export (`sessiongraph.memory_plane.v1`) |
 | Findings | SessionGraph analyzers (`high_abstain_rate`, `review_backlog`, `postgres_migration_candidate`, …) |
-| Suggestions | `suggest-workflow --target agentctl` → dated `task.md` / `run.yaml` / `rubric.md` under reports |
+| **Graph engineering hints** | Report section **Architecture recommendations** + analysis metadata tied to abstain/review/backend patterns |
+| Workflow / graph change proposals | `suggest-workflow --target agentctl` → dated `task.md`, `run.yaml`, `rubric.md` (starter packs for turn-graph and ops changes — **human review before merge**) |
 
 **Batch path (shipped):** systemd timer or cron runs:
 
@@ -179,9 +200,9 @@ Migrations and tables: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md) (`memories`
 agentctl memory sessiongraph nightly --since 24h
 ```
 
-That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/`. Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
+That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture + graph-engineering suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/` (see **`Architecture recommendations`** in `report.md` and `suggest-agentctl/`). Gatekeeper graphs themselves live in agentctl: [`turn-graph.default.yaml`](src/memory/turn-graph.default.yaml), optional override `$AGENTCTL_HOME/config/turn-graph.yaml` — [TURN-GRAPH.md](docs/TURN-GRAPH.md). Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
 
-**Direction (plan):** tighten backend placement so SessionGraph continuously **observes user input and DB flow** on the VM—richer turn/query metadata, cross-workspace usage, and retrieval outcomes—then surfaces **actionable suggestions** (kinds/workspaces to add, evidence gates to tune, review cadence). Human operators remain the approval path for any memory or config change; suggestions are advisory artifacts only.
+**Direction (plan):** tighten backend placement so SessionGraph continuously **observes user input and DB flow** on the VM—richer turn/query metadata, cross-workspace usage, and retrieval outcomes—then surfaces **actionable suggestions**, especially **graph engineering** (when to add evidence nodes, split pipelines, or adjust abstain/fallback edges) plus kinds/workspaces and review cadence. Human operators merge graph YAML and database changes; SessionGraph only proposes.
 
 ```mermaid
 flowchart LR
@@ -193,7 +214,7 @@ flowchart LR
   Export --> SG
   DB -.->|store counts| Export
   SG --> Report[report.md · analysis.json]
-  SG --> Suggest[suggest-agentctl/]
+  SG --> Suggest[suggest-agentctl/\ngraph · workflow drafts]
   Suggest --> Human[Human review]
 ```
 
