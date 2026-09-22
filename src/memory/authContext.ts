@@ -26,6 +26,25 @@ export function clearanceAllows(userClearance: Classification, resource: Classif
   return clearanceRank[userClearance] >= clearanceRank[resource];
 }
 
+/** Identity of an unauthenticated memory-serve caller (AGENTCTL_SERVE_ALLOW_ANON=1). */
+export const ANONYMOUS_USER_ID = 'anonymous';
+
+export function anonymousAuthContext(): AuthContext {
+  return { userId: ANONYMOUS_USER_ID, groups: [], clearance: 'public' };
+}
+
+export class SelfAcceptForbiddenError extends Error {
+  constructor() {
+    super('The proposer of a memory cannot accept it.');
+    this.name = 'SelfAcceptForbiddenError';
+  }
+}
+
+export interface CheckpointAccessFields {
+  ownerUserId: string | null;
+  allowedGroups: string[];
+}
+
 /** No env / flags → null (single-user dev: no auth trim). */
 export function loadAuthContext(overrides?: Partial<AuthContext>): AuthContext | null {
   const userId = overrides?.userId ?? process.env.AGENTCTL_USER_ID?.trim();
@@ -47,16 +66,21 @@ export function canReadMemory(memory: MemoryAccessFields, ctx: AuthContext | nul
 }
 
 /**
- * A checkpoint summarizes the decisions it references, so an authenticated
- * caller sees it only with `internal` clearance and read access to every
- * referenced decision. A reference that doesn't resolve (null) fails closed.
- * No auth context → visible (single-user CLI).
+ * An identified caller sees a checkpoint only as its owner or a member of one
+ * of its groups; a checkpoint with neither (legacy) is hidden. The checkpoint
+ * also summarizes the decisions it references, so the caller needs `internal`
+ * clearance and read access to every referenced decision. A reference that
+ * doesn't resolve (null) fails closed. No auth context → visible (single-user CLI).
  */
 export function canReadCheckpoint(
+  checkpoint: CheckpointAccessFields,
   decisions: Array<MemoryAccessFields | null>,
   ctx: AuthContext | null,
 ): boolean {
   if (!ctx) return true;
+  const isOwner = checkpoint.ownerUserId !== null && checkpoint.ownerUserId === ctx.userId;
+  const sharesGroup = checkpoint.allowedGroups.some(g => ctx.groups.includes(g));
+  if (!isOwner && !sharesGroup) return false;
   if (!clearanceAllows(ctx.clearance, 'internal')) return false;
   return decisions.every(d => d !== null && canReadMemory(d, ctx));
 }

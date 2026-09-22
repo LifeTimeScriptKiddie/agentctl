@@ -18,6 +18,7 @@ afterEach(() => {
 });
 
 describe('memory serve evidence flags', () => {
+  const SERVE_TOKEN = 'evidence-serve-token';
   let server: ReturnType<typeof createMemoryServerForTest> | undefined;
   let base = '';
 
@@ -31,14 +32,16 @@ describe('memory serve evidence flags', () => {
 
   async function start(): Promise<void> {
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-serve-evidence-')));
-    vi.stubEnv('AGENTCTL_SERVE_ALLOW_ANON', '1');
     vi.stubEnv('TYPESAFE_API_KEY', 'host-key');
     for (const name of [
-      'AGENTCTL_USER_ID', 'AGENTCTL_GROUPS', 'AGENTCTL_CLEARANCE', 'AGENTCTL_SERVE_TOKEN',
+      'AGENTCTL_GROUPS', 'AGENTCTL_CLEARANCE', 'AGENTCTL_SERVE_ALLOW_ANON',
       'AGENTCTL_LAYA_EVIDENCE', 'AGENTCTL_LAYA', 'AGENTCTL_JEV_EVIDENCE',
     ]) {
       vi.stubEnv(name, undefined);
     }
+    // The legacy shared token authenticates as the server owner (internal clearance).
+    vi.stubEnv('AGENTCTL_SERVE_TOKEN', SERVE_TOKEN);
+    vi.stubEnv('AGENTCTL_USER_ID', 'operator');
     const store = await MemoryStore.open(undefined, { auth: null });
     store.save({
       workspace: 'w', text: 'Rollback owner is the platform lead', source: 'runbook', key: 'k1',
@@ -58,7 +61,7 @@ describe('memory serve evidence flags', () => {
   async function post(path: string, body: Record<string, unknown>): Promise<number> {
     const r = await fetch(`${base}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${SERVE_TOKEN}` },
       body: JSON.stringify({ workspace: 'w', query: 'rollback owner', ...body }),
     });
     await r.arrayBuffer();
@@ -100,7 +103,7 @@ describe('jev evidence gate withholds confidential memories', () => {
     return {
       id, workspace: 'w', revision: 1, text: `rollback note ${id}`, source: 's', providers: [],
       state: 'accepted', updatedAt: 1, kind: 'decision', ownerUserId: null, allowedGroups: [],
-      classification, visibility: 'team',
+      classification, visibility: 'team', proposedBy: null,
     };
   }
 

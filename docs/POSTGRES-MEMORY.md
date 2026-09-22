@@ -31,7 +31,7 @@ agentctl memory postgres migrate --dry-run
 agentctl memory postgres migrate
 ```
 
-Migrations: **`dist/memory/postgres/migrations/`** (`001_core.sql`, `002_search.sql`).
+Migrations: **`dist/memory/postgres/migrations/`** (`001_core.sql`, `002_search.sql`, `003_proposed_by.sql`, `004_checkpoint_acl.sql`).
 
 ## Semantics
 

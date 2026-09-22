@@ -119,7 +119,7 @@ flowchart TB
 | --- | --- |
 | **`AGENTCTL_GATEWAY_URL`** | Gatekeeper base URL for **`POST /v1/turn`** (JIT context + optional central model). |
 | **`AGENTCTL_BRIEFING_WORKSPACE`** | Which **domain** to query (`team-atlas`, `team-reports`, `team-techniques`, …). |
-| **`AGENTCTL_USER_ID`** / **`AGENTCTL_GROUPS`** / **`AGENTCTL_CLEARANCE`** | Auth headers for filtered retrieval. |
+| **`AGENTCTL_GATEWAY_TOKEN`** | Per-user bearer token (`memory serve token add` on the VM); the gatekeeper derives identity from it. |
 
 See [Storage on the memory VM](#storage-on-the-memory-vm-one-host-multiple-planes) under the team domain section. Deploy: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md), [STACK-SETUP.md](docs/STACK-SETUP.md).
 
@@ -254,15 +254,13 @@ An operator saying “remember this” in chat **does not** bypass accept — on
 
 ### Who sees what (access control)
 
-On the gatekeeper, set identity on each client:
+On the gatekeeper, identity comes from a per-user bearer token. The operator issues one per person on the VM:
 
 ```bash
-export AGENTCTL_USER_ID=alice@example.com
-export AGENTCTL_GROUPS=atlas-eng,oncall
-export AGENTCTL_CLEARANCE=internal   # public | internal | confidential
+agentctl memory serve token add --user alice@example.com --groups atlas-eng,oncall --clearance internal
 ```
 
-HTTP headers: `x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`. Without `AGENTCTL_USER_ID`, auth trim is off (single-user dev only).
+The client sets `AGENTCTL_GATEWAY_TOKEN` to the printed token. Identity headers (`x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`) are rejected. For in-process CLI use against the local store, `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` still set the identity; without `AGENTCTL_USER_ID`, auth trim is off there (single-user dev only).
 
 **Read path order:** workspace scope → full-text candidates → **ACL filter** → optional evidence gate → byte limits. Clearance is enforced **before** ranking; private memories never leak via “helpful” reranking.
 

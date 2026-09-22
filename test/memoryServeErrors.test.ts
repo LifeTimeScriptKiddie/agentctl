@@ -41,10 +41,10 @@ describe('memory serve error responses', () => {
     base = `http://127.0.0.1:${address.port}`;
   }
 
-  function post(path: string, body: unknown): Promise<Response> {
+  function post(path: string, body: unknown, token?: string): Promise<Response> {
     return fetch(`${base}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
     });
   }
@@ -101,12 +101,14 @@ describe('memory serve error responses', () => {
   });
 
   it('/v1/memory/accept store errors keep 400 but no longer echo the store message', async () => {
+    // The legacy shared token authenticates as the server owner identity.
     await start({
       AGENTCTL_USER_ID: 'rev@co', AGENTCTL_GROUPS: 'reviewers', AGENTCTL_MEMORY_REVIEWER_GROUPS: 'reviewers',
+      AGENTCTL_SERVE_TOKEN: 'errors-token',
     });
     const response = await post('/v1/memory/accept', {
       workspace: 'w', memory_id: '0b1c2d3e-aaaa-4bbb-8ccc-123456789abc', revision: 1, human_approved: true,
-    });
+    }, 'errors-token');
     expect(response.status).toBe(400);
     const body = await response.json() as { error: string; request_id: string };
     expect(body).toEqual({ error: 'internal_error', request_id: expect.any(String) });
