@@ -1,60 +1,134 @@
 # agentctl
 
-> **Stack architecture & step-by-step setup (agents):** [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md) — mermaid diagrams, Phases 0–6, env table.  
-> **Sibling repos on disk:** `~/code/agentctl/{prod,sessiongraph,archive}` · index: `~/code/agentctl/README.md` (local only).
+**Pi extension and CLI** for delegating work to **your** agent subscriptions — GitHub Copilot, OpenAI Codex, Anthropic, Cursor, or any backend you configure in [`src/adapters/presets`](src/adapters/presets). agentctl routes tasks, bounds multi-step plans, and optionally connects to a **team memory gatekeeper** over HTTP.
 
-A CLI, TypeScript library, and Pi extension for routing tasks to local AI agent CLIs and coordinating bounded multi-step work.
+Full phased deploy (VM, Postgres, SessionGraph): [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md).
 
-## Install
+## Install (Pi)
 
-Requires Node.js 20 or newer and at least one separately installed, authenticated agent CLI for live tasks. Model availability depends on your provider account; the shipped model roster is configurable and is not a promise of availability.
-
-```sh
-npm install -g @lifetimescriptkiddie/agentctl
-agentctl --help
-agentctl agents list
-```
-
-For Pi, install the package and restart Pi or reload extensions:
+Requires [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) and Node.js 20+. Authenticate the providers you use in Pi (for example **GitHub Copilot** or Codex) before running live tasks.
 
 ```sh
 pi install npm:@lifetimescriptkiddie/agentctl
 ```
 
-Then use `/agentctl` for help. The extension includes its own CLI; a separate global agentctl installation is unnecessary.
+Reload Pi, then:
 
 ```text
+/agentctl
 /agentctl health
-/agentctl route review this module
-/agentctl ask --to codex explain this function
-/agentctl orchestrate review this project
+/agentctl delegate explain this function
+/agentctl delegate --to pi --model <your-copilot-or-provider-model> "summarize this module"
+/agentctl ask --to pi --model openai-codex/gpt-5.6-luna "what does this test cover?"
+/agentctl orchestrate review this package
 ```
 
-`route` and `delegate` choose a backend and execute the task. Use the CLI `route --dry-route` to inspect routing without execution.
+The extension bundles its own CLI (no separate global install required). **`delegate`** and **`ask`** run one worker with the agent and model you choose. **`orchestrate`** previews a plan by default; **`/agentctl orchestrate --run …`** executes and can spend quota on **your** subscription — use **`--budget`** and **`--max-replans`**.
 
-`orchestrate` in Pi defaults to a dry-plan preview. `--run` executes a plan and can consume provider credits. Use `--budget` and `--max-replans` to bound execution. `--approve` authorizes gated operations; review the requested task before using it. A dry plan does not guarantee that all subsequent steps will succeed.
+Pick models explicitly with **`--to`** and **`--model`**. Defaults in shipped presets are examples only; **`agentctl agents list`** shows configured lanes. **`agentctl delegate --dry-route --explain "…"`** shows routing without calling a provider.
 
-For a synthetic CLI check without an authenticated provider:
+Synthetic check with no live provider:
 
 ```sh
 agentctl ask --to dry_run "hello" --format json
 ```
 
-## Configuration and integrations
+### Standalone CLI (optional)
 
-Use `agentctl --help` and each subcommand's `--help` for options. Agent presets live in `src/adapters/presets`; custom agent configuration can override defaults. See [model routing](docs/MODEL-ROUTING.md) and [Pi integration](docs/INTEGRATIONS.md).
+```sh
+npm install -g @lifetimescriptkiddie/agentctl
+agentctl --help
+```
 
-The browser adapter is optional and requires Playwright plus an explicitly configured CDP browser. Automatic browser launch is disabled by default. The managed launch helper targets macOS; other platforms must provide their own CDP endpoint. Core subprocess backends depend on the corresponding CLI being available on PATH.
+Same commands as Pi; useful in CI or when Pi is not running.
+
+## Models and subscriptions
+
+You designate the worker:
+
+| You have | Typical Pi / agentctl usage |
+| --- | --- |
+| **GitHub Copilot** | Sign in to Copilot in Pi; pass **`--to pi --model <id>`** where **`<id>`** is a Copilot-capable model from **`pi models`** (or your Pi config). |
+| **OpenAI Codex / other Pi providers** | **`--to pi --model openai-codex/…`** (or your provider prefix). |
+| **Another installed CLI** | **`--to claude`**, **`--to cursor`**, **`--to codex`**, etc., with **`--model`** for that CLI’s catalog. |
+
+agentctl does not grant model access — only routes to CLIs already signed in on your machine. Curated routing tables in [MODEL-ROUTING.md](docs/MODEL-ROUTING.md) are **optional defaults** for mixed teams; override anytime with explicit flags. See [INTEGRATIONS.md](docs/INTEGRATIONS.md) for Pi commands, gatekeeper env vars, and memory routes.
+
+## Architecture
+
+### On your machine (Pi + workers)
+
+```mermaid
+flowchart LR
+  Pi["Pi /agentctl"]
+  CTL[agentctl CLI in extension]
+  W1["Worker: Pi + your model\n(Copilot, Codex, …)"]
+  W2["Worker: other CLI\n(claude, cursor, codex, …)"]
+  Pi --> CTL
+  CTL --> W1
+  CTL --> W2
+```
+
+Pi owns intent and approvals. agentctl picks a lane, spawns the subprocess worker, and returns results to the chat. Workers inherit your local credentials for that provider.
+
+### Team memory (optional)
+
+For shared Q&A, use **one Linux VM** as the only writer to the memory database. Laptops and Pi stay **thin clients** — HTTP to the gatekeeper, not SSH per question.
+
+```mermaid
+flowchart TB
+  subgraph clients [Thin clients]
+    Pi[Pi /agentctl]
+    CLI[agentctl on laptop]
+  end
+
+  subgraph vm [Memory VM]
+    TLS[TLS reverse proxy]
+    Serve["agentctl memory serve"]
+    DB[(SQLite or PostgreSQL)]
+    TLS --> Serve --> DB
+  end
+
+  Pi -->|"AGENTCTL_GATEWAY_URL\nPOST /v1/turn"| TLS
+  CLI --> TLS
+```
+
+| Client env | Purpose |
+| --- | --- |
+| **`AGENTCTL_GATEWAY_URL`** | Gatekeeper base URL for **`POST /v1/turn`** (JIT context + optional central model). |
+| **`AGENTCTL_BRIEFING_WORKSPACE`** | Workspace id for team memory. |
+| **`AGENTCTL_USER_ID`** / **`AGENTCTL_GROUPS`** / **`AGENTCTL_CLEARANCE`** | Auth headers for filtered retrieval. |
+
+Proposed memories flow **propose → human review → accept** on the server. Nightly usage analysis can export to [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) — see [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md). HTTP route table: [TURN-GRAPH.md](docs/TURN-GRAPH.md), [INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
+## Local memory (single user)
+
+**`agentctl memory --help`** — opt-in save, review, accept, search, and handoff under **`~/.agentctl/memory/`** (or **`AGENTCTL_HOME`**). Requires Node with **`node:sqlite`**. In Pi: **`/reload`**, then **`/agentctl memory-test`** for an isolated synthetic lifecycle (uses your configured worker models, up to three calls).
+
+## Token usage
+
+**`agentctl usage`** — persistent provider-reported counters by agent and model (no prompt text). See [USAGE.md](docs/USAGE.md).
+
+## Local agent monitoring (macOS)
+
+Read-only snapshot of observed agent processes and loopback listeners (former AgentWatch collectors):
+
+```bash
+agentctl monitor --once --json
+agentctl watch --interval 5
+```
+
+Requires macOS **`ps`**, **`lsof`**, **`nettop`**. Not billing data. Details unchanged in package docs; library exports **`collectMonitorOutput`** from the package root.
+
+## Configuration
+
+Presets live under **`src/adapters/presets`**. Copy and adjust for your org’s CLIs and model ids. Browser adapter is optional (Playwright + CDP). See **`agentctl --help`** and subcommand **`--help`**.
 
 ## Privacy and trust
 
-This release contains source and synthetic tests, not personal sessions, browser profiles, captured pages, credentials, or the original development repository's history.
+Prompts go to the backend you select. State may persist under **`~/.agentctl`** (sessions, usage ledger, optional memory). Capability checks are not an OS sandbox. This repository ships source and synthetic tests only — no personal sessions or credentials.
 
-When you use agentctl, prompts and selected context go to the backend you choose. Child processes inherit your environment and can access credentials available to that backend. Capability declarations and approval checks are not an operating-system sandbox. Only use trusted backends, extensions, and configuration.
-
-Agentctl can persist transcripts, provider session identifiers, quota state and orchestration records under `~/.agentctl` (override with `AGENTCTL_HOME`). Run directories may also contain prompts, traces and results. Use `agentctl sessions --help` to inspect session management options and store work in a private directory. There is no blanket no-retention guarantee; review or remove local state when finished.
-
-Browser evidence is saved only when `AGENTCTL_CAPTURE_EVIDENCE=1`. `AGENTCTL_EVIDENCE_DIR` sets its destination. Captures can include screenshots, page HTML, prompts and answers. Text redaction is best-effort; screenshots and page content may still contain personal data. URL query strings and fragments are omitted from metadata. Never publish runtime directories or captured evidence without review.
+Browser evidence requires **`AGENTCTL_CAPTURE_EVIDENCE=1`**. Review before sharing captures.
 
 ## Development
 
@@ -65,104 +139,8 @@ npm run typecheck
 npm test
 ```
 
-The committed lockfile preserves reviewed dependency versions. Respect a 14-day dependency publication cooldown when refreshing it. The npm artifact contains compiled JavaScript and runtime assets; Python is not a runtime requirement.
+Respect a 14-day dependency publication cooldown when refreshing the lockfile.
 
 ## License
 
-MIT. Dependencies remain under their respective licenses and are installed separately, not vendored into this repository.
-
-## Local agent monitoring
-
-AgentWatch's read-only collectors now live inside agentctl. They need no separate
-AgentWatch installation, process, registry, or runtime dependency. agentctl owns
-live operations; iseeagents remains the project for recorded workflow evidence.
-
-```bash
-agentctl monitor --once --json
-agentctl monitor --table
-agentctl monitor --statusline
-agentctl watch --interval 5
-agentctl monitor --feed "$HOME/.cache/agentctl/monitor.json" --interval 5
-```
-
-Monitoring currently requires macOS, an ordinary current-user account, and the
-host's `ps`, `lsof`, and `nettop` commands. It does not require elevated privileges.
-`monitor` defaults to one JSON snapshot. `watch` requires an interactive terminal;
-Ctrl-C or SIGTERM stops refreshes. Feed/watch collection is sequential, with a
-3–3600 second refresh interval (default 5). Shutdown interrupts the wait between
-samples; an in-progress collector may finish before shutdown, bounded by its
-command timeout. A snapshot takes approximately three seconds for network sampling.
-
-The table shows **observed agent families**, including manually launched agents.
-Network totals cover each family's matched process trees. They are not per-job
-measurements, proof of progress, provider identification, or billing data. No PID
-is treated as authorization to control an observed process. Use `agentctl status`
-for controller run state; dispatch, cancellation, permissions, and existing chat
-commands retain their existing paths. Exact invocation correlation and automatic
-iseeagents event export are not implemented by this migration.
-
-### Snapshot contract and privacy
-
-JSON retains AgentWatch schema 1 for existing consumers: `generated_at`, host UID,
-collector status, sampling mode/window, and agent-family process/byte fields.
-Consumers must check `generated_at` for freshness and collector status for
-availability; zero bytes after collector failure do not mean zero traffic.
-`state: unknown` takes precedence over the legacy `activity` field. Legacy
-`activity: active` means recent network/session evidence only, never verified job
-progress. The table calls this a `signal`. Family totals must not be assigned to
-individual parallel workers. Comet traffic remains excluded from AI activity.
-
-Only session-file metadata is inspected; session bodies and command arguments are
-never emitted. Model enrichment only probes loopback listener ports discovered
-for matched current-user processes. `AGENTCTL_MONITOR_OLLAMA_PORT` and
-`AGENTCTL_MONITOR_LMSTUDIO_PORT` select a discovered port; legacy
-`AGENTWATCH_OLLAMA_PORT` / `AGENTWATCH_LMSTUDIO_PORT` aliases remain accepted.
-
-Feed files use atomic replacement and mode `0600`. Newly created feed directories
-use `0700`; existing parent directory permissions are left intact. No feed file is
-written unless requested. Collector failures appear as unknown/warnings; fatal
-collection errors stop the command and leave an existing feed's timestamp intact.
-
-### DesktopMon migration
-
-DesktopMon installations that invoke `node ENTRY --once --json` can point their
-configured entrypoint at this package's built `dist/monitor/compat.js`:
-
-```bash
-node /path/to/agentctl/dist/monitor/compat.js --once --json
-```
-
-This is a compatibility entrypoint within agentctl, not another installed product.
-It shares the `monitor` options and collector implementation. Existing consumers
-can also read a feed produced by `agentctl monitor --feed`. No existing DesktopMon
-configuration or background service is changed by building this package.
-
-Library users can import `collectMonitorOutput`, `MonitorOutput`, `runFeed`, and
-`writeFeedAtomic` from the package root. The standalone AgentWatch control plane,
-registration store, dispatch adapters, and conversation UI were not imported;
-agentctl's existing control and chat implementations remain authoritative.
-
-
-## Cursor-first local policy
-
-All callers (Codex, Claude Code, Cursor, Pi and standalone CLI) share the policy in [MODEL-ROUTING.md](docs/MODEL-ROUTING.md). Codex/Astra plans; Cursor/Composer handles routine work and cyber triage; Codex/Daybreak Blue validates cyber findings; native Claude handles writing and deep review. See [INTEGRATIONS.md](docs/INTEGRATIONS.md) for invocation and explicit model overrides. Ambiguous routes stop for human selection, and subprocess workers cannot recursively delegate. Pinned `--dry-route` calls never execute a backend.
-
-### Local memory pilot
-
-`agentctl memory --help` exposes opt-in save/review/accept/search/inspect/history/correct/forget/handoff commands. Requires a Node runtime with `node:sqlite` (tested on Node 26.7); no new dependency is needed. Data lives under `$AGENTCTL_HOME/memory/` or `~/.agentctl/memory/`. Saves default to proposed and local-only; `--accept` explicitly approves the supplied claim. Handoff output has a UTF-8 byte ceiling, not a measured model-token count. Forget suppresses retrieval but does not physically purge stored history. Automatic capture, dispatch injection and nightly processing are not enabled.
-
-To try the full synthetic lifecycle with a live agent, run `agentctl memory test` (up to three Cursor/Composer calls). In Pi: `/reload`, then `/agentctl memory-test`. The test handles IDs and revisions automatically, prints stage results and retains its isolated evidence directory.
-
-
-## Token usage by model
-
-`agentctl usage` shows persistent provider-reported usage by agent and model. Use
-`agentctl usage --model composer-2.5 --since 2026-09-22 --format json` for a filtered report.
-Every subprocess attempt is recorded, including failed calls and each model fallback.
-Cursor now uses JSON output; its final answer remains plain text to callers.
-
-The ledger lives at `~/.agentctl/usage/calls.jsonl` (or `$AGENTCTL_HOME/usage/`;
-`AGENTCTL_USAGE_FILE` overrides the file). It contains counters and model attribution,
-not prompts or answers. Unknown counters stay unknown; `*` marks a partial reported
-subtotal. Requested model labels are distinguished from provider-reported identities.
-See [usage accounting](docs/USAGE.md) for coverage, cache semantics and limitations.
+MIT. Dependencies remain under their respective licenses.
