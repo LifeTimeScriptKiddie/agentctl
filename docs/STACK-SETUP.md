@@ -238,6 +238,16 @@ Pi: set the same env vars; use `/agentctl delegate …`, `/agentctl memory-revie
 
 Details: **`dev/docs/SESSIONGRAPH-NIGHTLY.md`**.
 
+### Security
+
+Memory serve requires authenticated identity headers by default. Configure
+`AGENTCTL_SERVE_TOKEN` for bearer-token authentication, and use
+`AGENTCTL_SERVE_ALLOW_ANON=1` only for trusted single-user local development.
+`AGENTCTL_SERVE_ALLOWED_ORIGINS` is a comma-separated origin allowlist,
+`AGENTCTL_SERVE_MAX_BODY` sets the request-body limit in bytes (default 1 MiB),
+and `AGENTCTL_MEMORY_REVIEWER_GROUPS` restricts memory acceptance to callers in
+the listed groups. Non-loopback binds require `AGENTCTL_SERVE_TOKEN`.
+
 ---
 
 ### Phase 6 — Release to GitHub / npm
