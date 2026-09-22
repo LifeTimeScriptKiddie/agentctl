@@ -399,6 +399,10 @@ export default function agentctlExtension(pi: ExtensionAPI) {
         }
 
         if (sub === "ask") {
+          if (!rest.trim()) {
+            ctx.ui.notify("Usage: /agentctl ask --to <agent> <prompt>", "warning");
+            return;
+          }
           const env = await runAgentctl(["ask", ...applyWorkerBriefingArgv(parseWorkerArgs(rest))], ctx.cwd);
           const results = (env.result as { results?: Array<{ text?: string }> })?.results ?? [];
           const text = results[0]?.text ?? env.error ?? "no response";
