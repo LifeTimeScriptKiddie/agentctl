@@ -1,5 +1,8 @@
 # agentctl
 
+> **Stack architecture & step-by-step setup (agents):** [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md) — mermaid diagrams, Phases 0–6, env table.  
+> **Sibling repos on disk:** `~/code/agentctl/{prod,sessiongraph,archive}` · index: `~/code/agentctl/README.md` (local only).
+
 A CLI, TypeScript library, and Pi extension for routing tasks to local AI agent CLIs and coordinating bounded multi-step work.
 
 ## Install
