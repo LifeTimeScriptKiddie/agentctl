@@ -46,6 +46,21 @@ export function canReadMemory(memory: MemoryAccessFields, ctx: AuthContext | nul
   return memory.allowedGroups.some(g => ctx.groups.includes(g));
 }
 
+/**
+ * A checkpoint summarizes the decisions it references, so an authenticated
+ * caller sees it only with `internal` clearance and read access to every
+ * referenced decision. A reference that doesn't resolve (null) fails closed.
+ * No auth context → visible (single-user CLI).
+ */
+export function canReadCheckpoint(
+  decisions: Array<MemoryAccessFields | null>,
+  ctx: AuthContext | null,
+): boolean {
+  if (!ctx) return true;
+  if (!clearanceAllows(ctx.clearance, 'internal')) return false;
+  return decisions.every(d => d !== null && canReadMemory(d, ctx));
+}
+
 export function assertCanWriteScope(
   fields: Pick<MemoryAccessFields, 'visibility' | 'ownerUserId'>,
   ctx: AuthContext | null,

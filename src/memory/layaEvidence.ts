@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
@@ -60,6 +60,89 @@ export function layaEvidenceEnabled(explicit?: boolean): boolean {
   return loadLayaConfig().enabled;
 }
 
+/** The operator's own setting (server env or laya.yaml), independent of any request flag. */
+export function layaOperatorEnabled(): boolean {
+  const env = process.env.AGENTCTL_LAYA_EVIDENCE;
+  return env === '1' || env === 'true' || loadLayaConfig().enabled;
+}
+
+const LAYA_MAX_CONCURRENT = 2;
+const LAYA_MAX_OUTPUT = 4 * 1024 * 1024;
+let layaActive = 0;
+const layaWaiters: Array<() => void> = [];
+
+async function acquireLayaSlot(): Promise<void> {
+  if (layaActive < LAYA_MAX_CONCURRENT) {
+    layaActive++;
+    return;
+  }
+  await new Promise<void>(resolve => layaWaiters.push(resolve));
+}
+
+function releaseLayaSlot(): void {
+  const next = layaWaiters.shift();
+  if (next) next();
+  else layaActive--;
+}
+
+function layaTimeoutMs(): number {
+  const configured = Number(process.env.AGENTCTL_LAYA_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 120_000;
+}
+
+interface LayaProcessResult {
+  error?: Error;
+  status?: number | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+function runLayaProcess(
+  python: string,
+  script: string,
+  input: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<LayaProcessResult> {
+  return new Promise(resolve => {
+    let child: ChildProcess;
+    try {
+      child = spawn(python, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (e) {
+      resolve({ error: e instanceof Error ? e : new Error(String(e)) });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (result: LayaProcessResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish({ error: new Error(`laya subprocess timed out after ${timeoutMs}ms`) });
+    }, timeoutMs);
+    const collect = (which: 'stdout' | 'stderr') => (chunk: Buffer | string) => {
+      if (which === 'stdout') stdout += chunk.toString();
+      else stderr += chunk.toString();
+      if (stdout.length + stderr.length > LAYA_MAX_OUTPUT) {
+        child.kill('SIGKILL');
+        finish({ error: new Error('laya subprocess output exceeded 4 MiB') });
+      }
+    };
+    child.stdout?.on('data', collect('stdout'));
+    child.stderr?.on('data', collect('stderr'));
+    child.on('error', error => finish({ error }));
+    child.on('close', status => finish({ status, stdout, stderr }));
+    // The child may exit before reading stdin; that surfaces through 'close'.
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(input);
+  });
+}
+
 function bundledScriptPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   return pathJoin(here, '..', '..', 'scripts', 'laya_evidence.py');
@@ -73,12 +156,16 @@ function resolvePython(cfg: LayaConfig): string {
   );
 }
 
-/** Local Laya System-1 choice over eligible memory candidates (post-ACL). */
-export function selectEvidence(
+/**
+ * Local Laya System-1 choice over eligible memory candidates (post-ACL).
+ * Async so memory serve's event loop keeps running; at most two Python
+ * processes at once, each killed after AGENTCTL_LAYA_TIMEOUT_MS (default 120s).
+ */
+export async function selectEvidence(
   query: string,
   candidates: EvidenceCandidate[],
   overrides?: Partial<LayaConfig>,
-): LayaEvidenceResult {
+): Promise<LayaEvidenceResult> {
   const cfg = { ...loadLayaConfig(), ...overrides };
   if (!candidates.length) {
     return { ok: true, choice: null, reason: 'no_candidates', latencyMs: 0 };
@@ -95,12 +182,19 @@ export function selectEvidence(
     preload: cfg.preload,
     instructions: cfg.instructions,
   };
-  const proc = spawnSync(python, [script], {
-    input: JSON.stringify(payload),
-    encoding: 'utf8',
-    maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, LAYA_PRELOAD: cfg.preload ? '1' : '0' },
-  });
+  await acquireLayaSlot();
+  let proc: LayaProcessResult;
+  try {
+    proc = await runLayaProcess(
+      python,
+      script,
+      JSON.stringify(payload),
+      { ...process.env, LAYA_PRELOAD: cfg.preload ? '1' : '0' },
+      layaTimeoutMs(),
+    );
+  } finally {
+    releaseLayaSlot();
+  }
   if (proc.error) {
     return { ok: false, unavailable: true, error: proc.error.message, choice: null };
   }
@@ -109,7 +203,7 @@ export function selectEvidence(
     return { ok: false, unavailable: true, error: err.slice(0, 2000), choice: null };
   }
   try {
-    const parsed = JSON.parse(proc.stdout) as LayaEvidenceResult;
+    const parsed = JSON.parse(proc.stdout ?? '') as LayaEvidenceResult;
     return { ...parsed, choice: parsed.choice ?? null };
   } catch {
     return { ok: false, unavailable: true, error: 'invalid JSON from laya_evidence.py', choice: null };

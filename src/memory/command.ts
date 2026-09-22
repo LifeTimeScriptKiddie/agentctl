@@ -213,7 +213,7 @@ export function registerMemoryCommands(program: Command): void {
     .action(async () => run(async () => {
       const { selectEvidence, loadLayaConfig } = await import('./layaEvidence.js');
       const cfg = loadLayaConfig();
-      const r = selectEvidence('ping test query', [
+      const r = await selectEvidence('ping test query', [
         { id: 'a', text: 'The ping test answer is alpha.' },
         { id: 'b', text: 'Unrelated chatter about lunch.' },
       ], { ...cfg, enabled: true });

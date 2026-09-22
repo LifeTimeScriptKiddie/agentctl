@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionRecordSchema, type SessionRecord, type SessionTurn } from '../schema/session.js';
 import { agentctlHome } from './agentHome.js';
+import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 
 /** Root for persisted chat sessions: ~/.agentctl/sessions (override via AGENTCTL_HOME). */
 export function sessionsDir(): string {
@@ -38,10 +39,10 @@ export class SessionWriteConflict extends Error {
   }
 }
 
-/** Atomic write (temp + rename) so a crash can't leave a half-written session. */
+/** Atomic private write (unique temp + rename, 0600 in a 0700 dir) so a crash can't leave a half-written session. */
 export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchangedSince?: number }): void {
   const path = sessionPath(rec.id);
-  mkdirSync(sessionsDir(), { recursive: true });
+  ensurePrivateDir(sessionsDir());
   if (opts?.ifUnchangedSince !== undefined && existsSync(path)) {
     const onDisk = loadSession(rec.id);
     if (onDisk && onDisk.updatedAt !== opts.ifUnchangedSince) {
@@ -49,11 +50,7 @@ export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchange
     }
   }
   const withStamp = { ...rec, updatedAt: now };
-  // unique tmp per writer so two processes persisting the same id can't splice
-  // their JSON into a shared temp file before the atomic rename.
-  const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(withStamp, null, 2), 'utf8');
-  renameSync(tmp, path);
+  writePrivateFile(path, JSON.stringify(withStamp, null, 2));
 }
 
 /** Session ids on disk, most-recently-updated first. Optional scope filters to one workspace label. */

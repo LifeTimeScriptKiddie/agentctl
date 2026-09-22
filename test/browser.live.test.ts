@@ -5,7 +5,7 @@ import { waitForAnswer, firstVisible, extractAnswer } from '../src/adapters/brow
 // (`npx playwright install chromium`). Validates the CDP-attach plumbing and
 // the capture helpers against a throwaway Chromium — no Perplexity/login needed.
 //
-// Ports stay clear of the comet preset's 9333. Reusing it made these tests
+// Ports stay clear of 9333, a common explicit comet cdpEndpoint. Reusing it made these tests
 // attach to the managed Perplexity browser instead of the throwaway one
 // whenever it happened to be running, which is neither hermetic nor safe.
 const RUN = process.env.AGENTCTL_LIVE_BROWSER === '1';

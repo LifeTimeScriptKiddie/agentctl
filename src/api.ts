@@ -10,9 +10,8 @@ import {
 import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { NULL_USAGE } from './schema/result.js';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { dirname } from 'node:path';
+import { readFileSync, existsSync, rmSync } from 'node:fs';
+import { redact } from './core/redact.js';
 import {
   askOne,
   askAll,
@@ -27,6 +26,7 @@ import {
   orchestrationRunPath,
   logRoute,
   logHallucinationIncidents,
+  writeOrchestrationRun,
 } from './core/orchestrateFlow.js';
 import { collectStatus } from './core/loadRegistry.js';
 import type { AskResult } from './core/ask.js';
@@ -479,21 +479,6 @@ function emptyOrchestration(goal: string): OrchestrationResult {
   };
 }
 
-function writeOrchestrationRun(
-  path: string,
-  value: { goal: string; outcomes: StepOutcome[] },
-): void {
-  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
-    renameSync(tmp, path);
-  } catch {
-    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
-    /* persistence is best-effort */
-  }
-}
-
 /** Plan, execute, verify, and synthesize a multi-step goal. */
 export async function agentOrchestrate(
   registry: AdapterRegistry,
@@ -520,7 +505,7 @@ export async function agentOrchestrate(
         goal?: unknown;
         outcomes?: StepOutcome[];
       };
-      if (prior.goal === opts.goal) {
+      if (prior.goal === opts.goal || prior.goal === redact(opts.goal)) {
         completed = (prior.outcomes ?? []).filter((o) => o.ok);
         if (completed.length) {
           warnings.push(`resuming: ${completed.length} step(s) already done`);

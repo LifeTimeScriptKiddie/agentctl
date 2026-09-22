@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { agentctlHome } from './agentHome.js';
+import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 
 /**
  * Remembers which model tiers are currently spent, so a capped tier isn't
@@ -52,10 +52,8 @@ export function loadLimits(path: string = limitsPath()): LimitMap {
 /** Write atomically (tmp + rename) so a concurrent reader never sees a half file. */
 export function saveLimits(map: LimitMap, path: string = limitsPath()): void {
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(map, null, 2), 'utf8');
-    renameSync(tmp, path);
+    ensurePrivateDir(dirname(path));
+    writePrivateFile(path, JSON.stringify(map, null, 2));
   } catch {
     /* best effort: losing the cache costs a wasted probe, never a run */
   }

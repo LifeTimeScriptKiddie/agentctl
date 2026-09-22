@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   type AuthContext,
   assertCanWriteScope,
+  canReadCheckpoint,
   canReadMemory,
   loadAuthContext,
 } from '../authContext.js';
@@ -353,11 +354,20 @@ export class PostgresMemoryStore {
     });
   }
 
-  async getCheckpoint(workspace: string): Promise<TaskCheckpoint | null> {
+  /** `auth` null → unfiltered (single-user CLI); otherwise see `canReadCheckpoint`. */
+  async getCheckpoint(workspace: string, auth: AuthContext | null = null): Promise<TaskCheckpoint | null> {
     label.parse(workspace);
     return this.withClient(async (client) => {
       const { rows } = await client.query('SELECT * FROM task_checkpoints WHERE workspace = $1', [workspace]);
-      return rows[0] ? decodeCheckpoint(rows[0]) : null;
+      if (!rows[0]) return null;
+      const checkpoint = decodeCheckpoint(rows[0]);
+      if (!auth) return checkpoint;
+      const decisions = [];
+      for (const id of checkpoint.decisionRefs) {
+        const ref = await client.query('SELECT * FROM memories WHERE workspace = $1 AND id = $2', [workspace, id]);
+        decisions.push(ref.rows[0] ? accessFields(decodeRow(ref.rows[0])) : null);
+      }
+      return canReadCheckpoint(decisions, auth) ? checkpoint : null;
     });
   }
 

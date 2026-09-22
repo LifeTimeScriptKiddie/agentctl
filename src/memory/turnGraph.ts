@@ -200,7 +200,14 @@ export async function runContextRetrievalGraph(
           traceStep(trace, step.id, step.action, 'skipped_empty', t0);
           break;
         }
-        const shortlist = readable.slice(0, 6);
+        // Jev is hosted off-host; confidential memories never leave the machine.
+        const shareable = readable.filter(m => m.classification !== 'confidential');
+        const withheld = readable.length - shareable.length;
+        if (!shareable.length) {
+          traceStep(trace, step.id, step.action, 'skipped_confidential_only', t0, { withheld });
+          break;
+        }
+        const shortlist = shareable.slice(0, 6);
         const judgment = await selectJevEvidence(
           input.query,
           shortlist.map(m => ({ id: m.id, text: m.text, source: m.source })),
@@ -218,6 +225,7 @@ export async function runContextRetrievalGraph(
           readable = [];
           traceStep(trace, step.id, step.action, 'jev_abstain', t0, {
             confidence: judgment.confidence,
+            withheld,
           });
           break;
         }
@@ -226,6 +234,7 @@ export async function runContextRetrievalGraph(
           choice: judgment.choice,
           confidence: judgment.confidence,
           model: judgment.model,
+          withheld,
         });
         break;
       }
@@ -235,7 +244,7 @@ export async function runContextRetrievalGraph(
           break;
         }
         const shortlist = readable.slice(0, 6);
-        const judgment = selectEvidence(
+        const judgment = await selectEvidence(
           input.query,
           shortlist.map(m => ({ id: m.id, text: m.text, source: m.source })),
         );

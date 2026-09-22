@@ -8,6 +8,7 @@ import {
   type AuthContext,
   type Classification,
   assertCanWriteScope,
+  canReadCheckpoint,
   canReadMemory,
   loadAuthContext,
 } from './authContext.js';
@@ -476,10 +477,18 @@ export class MemoryStore {
       return this.inspect(opts.workspace, opts.memoryId)!;
     });
   }
-  getCheckpoint(workspace: string): TaskCheckpoint | null {
+  /** `auth` null → unfiltered (single-user CLI); otherwise see `canReadCheckpoint`. */
+  getCheckpoint(workspace: string, auth: AuthContext | null = null): TaskCheckpoint | null {
     label.parse(workspace);
     const row = this.db.prepare('SELECT * FROM task_checkpoints WHERE workspace=?').get(workspace);
-    return row ? decodeCheckpoint(row) : null;
+    if (!row) return null;
+    const checkpoint = decodeCheckpoint(row);
+    if (!auth) return checkpoint;
+    const decisions = checkpoint.decisionRefs.map(id => {
+      const ref = this.db.prepare('SELECT * FROM memories WHERE workspace=? AND id=?').get(workspace, id);
+      return ref ? accessFields(decode(ref)) : null;
+    });
+    return canReadCheckpoint(decisions, auth) ? checkpoint : null;
   }
   /** Provisional task state; not an approved memory. Revision 0 creates; otherwise compare-and-swap. */
   setCheckpoint(raw: TaskCheckpointInput): TaskCheckpoint {

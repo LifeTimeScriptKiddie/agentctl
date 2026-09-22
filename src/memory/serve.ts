@@ -1,5 +1,4 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
@@ -10,8 +9,10 @@ import { loadAuthContext } from './authContext.js';
 import { parseKindList } from './kinds.js';
 import { buildContextBundle, policyCheckBundle } from './contextBundle.js';
 import type { MemoryProvider } from './layaEvidence.js';
-import { MEMORY_PROVIDERS } from './layaEvidence.js';
+import { MEMORY_PROVIDERS, layaOperatorEnabled } from './layaEvidence.js';
+import { jevOperatorEnabled } from './jevEvidence.js';
 import { agentctlHome } from '../core/agentHome.js';
+import { appendPrivate, ensurePrivateDir } from '../core/privateFs.js';
 import { writeBodySchema } from './memoryWriteGraph.js';
 import { ApprovalRequiredError, assertApproved } from '../approval.js';
 
@@ -167,6 +168,21 @@ function reviewerGroups(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Body evidence flags are requests, not overrides: a gate the operator hasn't
+ * enabled stays off (explicit false also stops `provider: "jev"` from turning
+ * Jev on). With the gate enabled, an omitted flag keeps the operator default.
+ */
+function serveEvidenceGate(body: { laya_evidence?: boolean; jev_evidence?: boolean }): {
+  laya: boolean | undefined;
+  jev: boolean | undefined;
+} {
+  return {
+    laya: layaOperatorEnabled() ? body.laya_evidence : false,
+    jev: jevOperatorEnabled() ? body.jev_evidence : false,
+  };
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -179,11 +195,10 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 function auditEvent(event: Record<string, unknown>): void {
   try {
     const dir = join(agentctlHome(), 'logs');
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    appendFileSync(
+    ensurePrivateDir(dir);
+    appendPrivate(
       join(dir, 'memory-serve-audit.jsonl'),
       `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`,
-      { mode: 0o600 },
     );
   } catch {
     /* best-effort */
@@ -336,9 +351,11 @@ export async function handleMemoryHttpRequest(
         input.provider,
         input.limit,
         kinds,
-        { laya: input.laya_evidence, jev: input.jev_evidence },
+        serveEvidenceGate(input),
       );
-      const checkpoint = input.include_checkpoint ? await Promise.resolve(store.getCheckpoint(input.workspace)) : null;
+      const checkpoint = input.include_checkpoint
+        ? await Promise.resolve(store.getCheckpoint(input.workspace, auth))
+        : null;
       const bundle = buildContextBundle({
         workspace: input.workspace,
         query: input.query,
@@ -396,9 +413,9 @@ export async function handleMemoryHttpRequest(
         input.provider as MemoryProvider,
         input.max_context_items || input.limit,
         kinds,
-        { laya: input.laya_evidence, jev: input.jev_evidence },
+        serveEvidenceGate(input),
       );
-      const checkpoint = await Promise.resolve(store.getCheckpoint(input.workspace));
+      const checkpoint = await Promise.resolve(store.getCheckpoint(input.workspace, auth));
       if (retrieval.terminal.startsWith('abstain')) {
         auditEvent({
           route: '/v1/turn',
