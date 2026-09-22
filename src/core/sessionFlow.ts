@@ -1,6 +1,6 @@
 import {
   loadSession, newSession, saveSession, latestSession, addTurn, setNative,
-  SessionWriteConflict, boundTranscript,
+  SessionWriteConflict, InvalidSessionIdError, boundTranscript,
 } from './session.js';
 import { resolveBriefingWorkspace } from '../memory/briefingEnv.js';
 import type { SessionRecord, SessionTurn } from '../schema/session.js';
@@ -37,6 +37,7 @@ export function resolveSession(
     try {
       existing = loadSession(opts.session);
     } catch (e) {
+      if (e instanceof InvalidSessionIdError) throw e;
       throw new Error(
         `session '${opts.session}' is unreadable (${e instanceof Error ? e.message : String(e)}). ` +
           `Move or delete the file under ~/.agentctl/sessions/ to start fresh.`,

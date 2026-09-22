@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { buildInvocation, SubprocessAdapter, resolveModel, expandHome } from '../src/adapters/subprocess.js';
+import {
+  buildInvocation, SubprocessAdapter, resolveModel, resolveEffort, expandHome,
+} from '../src/adapters/subprocess.js';
 import { parseClaudeJson } from '../src/adapters/parsers.js';
 import { loadPreset, presetsDir } from '../src/assets.js';
 import type { AdapterRequest } from '../src/schema/index.js';
@@ -190,6 +192,48 @@ describe('per-agent model switching', () => {
     const escaped = resolveModel(claude, 'claude-4-experimental');
     expect(escaped.model).toBe('claude-4-experimental');
     expect(escaped.known).toBe(false);
+  });
+});
+
+describe('argv value validation (security review L2)', () => {
+  it('rejects an effort value containing a quote instead of splicing it into -c TOML', () => {
+    const injected = 'low" sandbox_mode="danger-full-access';
+    expect(() => resolveEffort(loadPreset('codex'), injected)).toThrow(/invalid reasoning effort/);
+    expect(() => buildInvocation(loadPreset('codex'), req({ role: 'chat', effort: injected })))
+      .toThrow(/invalid reasoning effort/);
+  });
+
+  it('rejects effort and model values starting with - or outside the allowed set', () => {
+    const codex = loadPreset('codex');
+    for (const bad of ['-high', 'hi gh', 'x'.repeat(101), '', "a'b", 'a\nb']) {
+      expect(() => resolveEffort(codex, bad), JSON.stringify(bad)).toThrow(/invalid reasoning effort/);
+    }
+    for (const bad of ['--dangerously-bypass', 'gpt 5', 'm"x', 'a;b']) {
+      expect(() => resolveModel(codex, bad), bad).toThrow(/invalid model/);
+    }
+  });
+
+  it('still passes through off-list values that are well-formed', () => {
+    expect(resolveEffort(loadPreset('codex'), 'ultra')).toMatchObject({ value: 'ultra', known: false });
+    expect(resolveModel(loadPreset('claude'), 'claude-opus-4-1[1m]').model).toBe('claude-opus-4-1[1m]');
+    expect(resolveModel(loadPreset('claude'), 'org/model:v1=a,b').known).toBe(false);
+  });
+
+  it('applyResume validates the resume session id', () => {
+    const claude = loadPreset('claude');
+    for (const bad of ['../x', 'a b', '-flag', 'x'.repeat(201), 'id"']) {
+      expect(() => buildInvocation(claude, req({ role: 'chat', resumeSessionId: bad })), bad)
+        .toThrow(/invalid resume session id/);
+    }
+    const ok = buildInvocation(claude, req({ role: 'chat', resumeSessionId: '0b1c2d3e-aaaa.bbbb_cc' }));
+    expect(ok.args).toContain('0b1c2d3e-aaaa.bbbb_cc');
+  });
+
+  it('SubprocessAdapter.invoke rejects before spawning anything', async () => {
+    runMock.mockClear();
+    await expect(new SubprocessAdapter(loadPreset('codex')).invoke(req({ role: 'chat', effort: 'x"y' })))
+      .rejects.toThrow(/invalid reasoning effort/);
+    expect(runMock).not.toHaveBeenCalled();
   });
 });
 

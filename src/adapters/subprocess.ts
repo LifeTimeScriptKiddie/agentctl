@@ -48,6 +48,18 @@ function substitute(token: string, req: AdapterRequest, deliverViaArg: boolean, 
     .replaceAll('{max_turns}', String(req.maxTurns));
 }
 
+/** Model and effort values land in argv and in Codex `-c key="value"` TOML, so no quotes or spaces. */
+const ARG_VALUE = /^[A-Za-z0-9._:\/\[\]=,-]{1,100}$/;
+const RESUME_ID = /^[A-Za-z0-9._-]{1,200}$/;
+
+function assertArgValue(kind: string, value: string): void {
+  if (!ARG_VALUE.test(value) || value.startsWith('-')) {
+    throw new Error(
+      `invalid ${kind} ${JSON.stringify(value)}: use 1-100 of [A-Za-z0-9._:/[]=,-], not starting with '-'`,
+    );
+  }
+}
+
 /**
  * Resolve the effective model + flag for a call. Precedence:
  *   request.model  →  preset.models.default  →  preset.model (legacy pin).
@@ -60,6 +72,7 @@ export function resolveModel(
 ): { model: string | null; flag: string; known: boolean } {
   const flag = preset.models?.flag ?? preset.modelFlag;
   const model = requested ?? preset.models?.default ?? preset.model ?? null;
+  if (model !== null) assertArgValue('model', model);
   const options = preset.models?.options ?? [];
   const known = model === null || options.length === 0 || options.includes(model);
   return { model, flag, known };
@@ -78,6 +91,7 @@ export function resolveEffort(
   const cfg = preset.effort;
   if (!cfg) return null;
   const value = requested ?? cfg.default;
+  assertArgValue('reasoning effort', value);
   const known = cfg.options.length === 0 || cfg.options.includes(value);
   return { args: [cfg.flag, `${cfg.key}="${value}"`], value, known };
 }
@@ -92,6 +106,9 @@ export function applyResume(preset: Preset, req: AdapterRequest, args: string[])
   const sess = preset.session;
   const id = req.resumeSessionId;
   if (!sess?.supportsResume || !id) return;
+  if (!RESUME_ID.test(id) || id.startsWith('-')) {
+    throw new Error(`invalid resume session id ${JSON.stringify(id)}: use 1-200 of [A-Za-z0-9._-], not starting with '-'`);
+  }
   if (sess.resumeStyle === 'codex_resume') {
     const execIdx = args.indexOf('exec');
     if (execIdx >= 0) args.splice(execIdx + 1, 0, 'resume', id);

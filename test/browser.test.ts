@@ -1,16 +1,31 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   BrowserAdapter, buildLaunchArgs, buildManagedLaunchArgs, parsePort, defaultProfileDir,
   parseDevToolsActivePort, matchDevToolsVersion, verifiedManagedEndpoint,
+  parseLsofUids, checkDevToolsListenerOwner, evidenceDir, captureEvidence,
 } from '../src/adapters/browser.js';
 import { loadPreset } from '../src/assets.js';
 import { PresetSchema } from '../src/schema/agents.js';
 import type { AdapterRequest } from '../src/schema/index.js';
+import { run, type ExecOutcome } from '../src/util/exec.js';
+
+vi.mock('../src/util/exec.js', () => ({ run: vi.fn() }));
+const runMock = vi.mocked(run);
+const myUid = process.getuid?.() ?? 501;
+
+function lsofOutcome(stdout: string, extra: Partial<ExecOutcome> = {}): ExecOutcome {
+  return { exitCode: stdout ? 0 : 1, stdout, stderr: '', timedOut: false, failed: !stdout, ...extra };
+}
+
+beforeEach(() => {
+  runMock.mockReset();
+  runMock.mockResolvedValue(lsofOutcome(`p4242\nu${myUid}\nf12\n`));
+});
 
 function req(): AdapterRequest {
   return {
@@ -190,6 +205,74 @@ describe('DevToolsActivePort verification (security review M6)', () => {
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.reason).toMatch(/no DevToolsActivePort/);
     });
+
+    it('checks the listener owner with lsof (argv only) before attaching', async () => {
+      const port = await listen(p => `ws://127.0.0.1:${p}${wsPath}`);
+      expect((await verifiedManagedEndpoint(profileWith(`${port}\n${wsPath}\n`))).ok).toBe(true);
+      expect(runMock).toHaveBeenCalledWith(
+        'lsof',
+        ['-nP', '-w', '-a', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpu'],
+        expect.objectContaining({ timeoutMs: expect.any(Number) }),
+      );
+    });
+
+    it.skipIf(process.getuid === undefined)('refuses a matching listener owned by another user', async () => {
+      runMock.mockResolvedValue(lsofOutcome(`p4242\nu${myUid + 1}\nf12\n`));
+      const port = await listen(p => `ws://127.0.0.1:${p}${wsPath}`);
+      const r = await verifiedManagedEndpoint(profileWith(`${port}\n${wsPath}\n`));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toMatch(/held by another user/);
+    });
+
+    it('the adapter refuses to attach to another user\'s listener', async () => {
+      runMock.mockResolvedValue(lsofOutcome(`p4242\nu${myUid + 1}\nf12\n`));
+      const port = await listen(p => `ws://127.0.0.1:${p}${wsPath}`);
+      const managed = PresetSchema.parse({
+        ...loadPreset('comet'),
+        userDataDir: profileWith(`${port}\n${wsPath}\n`),
+        autoLaunch: false,
+      });
+      const r = await new BrowserAdapter(managed).invoke(req());
+      expect(r.ok).toBe(false);
+      expect(r.failureClass).toBe('not_configured');
+      expect(r.stderr).toMatch(/held by another user|playwright is not installed/);
+    });
+
+    it('attaches without the owner check when lsof is not installed', async () => {
+      runMock.mockResolvedValue(lsofOutcome('', { exitCode: -1, notFound: true }));
+      const port = await listen(p => `ws://127.0.0.1:${p}${wsPath}`);
+      const r = await verifiedManagedEndpoint(profileWith(`${port}\n${wsPath}\n`));
+      expect(r).toEqual({ ok: true, wsEndpoint: `ws://127.0.0.1:${port}${wsPath}` });
+    });
+  });
+
+  describe.skipIf(process.getuid === undefined)('checkDevToolsListenerOwner', () => {
+    it('parses owning uids from lsof -Fpu output', () => {
+      expect(parseLsofUids('p1\nu501\nf12\np2\nu0\nf3\n')).toEqual([501, 0]);
+      expect(parseLsofUids('')).toEqual([]);
+    });
+
+    it('accepts only this user\'s listener', async () => {
+      expect(await checkDevToolsListenerOwner(51234)).toEqual({ ok: true });
+      runMock.mockResolvedValue(lsofOutcome(`p1\nu${myUid}\nf3\np2\nu${myUid + 7}\nf3\n`));
+      const mixed = await checkDevToolsListenerOwner(51234);
+      expect(mixed.ok).toBe(false);
+      if (!mixed.ok) expect(mixed.reason).toContain(`uid ${myUid + 7}`);
+    });
+
+    it('refuses when lsof finds no listener of ours, times out, or cannot run', async () => {
+      runMock.mockResolvedValue(lsofOutcome(''));
+      expect((await checkDevToolsListenerOwner(51234)).ok).toBe(false);
+      runMock.mockResolvedValue(lsofOutcome('', { exitCode: -1, timedOut: true }));
+      expect((await checkDevToolsListenerOwner(51234)).ok).toBe(false);
+      runMock.mockRejectedValue(new Error('spawn blocked'));
+      expect((await checkDevToolsListenerOwner(51234)).ok).toBe(false);
+    });
+
+    it('skips gracefully when lsof is missing', async () => {
+      runMock.mockResolvedValue(lsofOutcome('', { exitCode: -1, notFound: true }));
+      expect(await checkDevToolsListenerOwner(51234)).toEqual({ ok: true });
+    });
   });
 
   it('a managed preset without a verified endpoint fails closed with a setup hint', async () => {
@@ -201,5 +284,55 @@ describe('DevToolsActivePort verification (security review M6)', () => {
     const health = await new BrowserAdapter(managed).healthcheck();
     expect(health.available).toBe(false);
     expect(health.detail).toMatch(/agentctl comet setup|playwright not installed/);
+  });
+});
+
+describe('browser evidence location (security review L5)', () => {
+  let home = '';
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agentctl-evidence-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    vi.stubEnv('AGENTCTL_EVIDENCE_DIR', undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  const mode = (path: string) => statSync(path).mode & 0o777;
+
+  it('defaults to $AGENTCTL_HOME/evidence/comet, not the working directory', () => {
+    const dir = evidenceDir();
+    expect(relative(join(home, 'evidence', 'comet'), dir)).toMatch(/^\d+$/);
+    expect(realpathSync(dir).startsWith(realpathSync(process.cwd()))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('creates the evidence dirs 0700', () => {
+    const dir = evidenceDir();
+    expect(mode(join(home, 'evidence'))).toBe(0o700);
+    expect(mode(join(home, 'evidence', 'comet'))).toBe(0o700);
+    expect(mode(dir)).toBe(0o700);
+  });
+
+  it('keeps an explicit AGENTCTL_EVIDENCE_DIR override', () => {
+    const custom = mkdtempSync(join(tmpdir(), 'agentctl-evidence-custom-'));
+    vi.stubEnv('AGENTCTL_EVIDENCE_DIR', custom);
+    expect(relative(custom, evidenceDir())).toMatch(/^\d+$/);
+  });
+
+  it('writes the screenshot there and redacts the text evidence', async () => {
+    const token = `ghp_${'a'.repeat(36)}`;
+    const shots: string[] = [];
+    const page = {
+      screenshot: async (o: { path: string }) => { shots.push(o.path); writeFileSync(o.path, 'png'); },
+      url: () => `https://www.perplexity.ai/search/token=${token}?q=secret#frag`,
+      content: async () => `<html>${token}</html>`,
+    };
+    const dir = await captureEvidence(page, `use ${token} please`, { text: `answer ${token}`, partial: false });
+    expect(relative(join(home, 'evidence', 'comet'), dir)).toMatch(/^\d+$/);
+    expect(shots).toEqual([join(dir, 'screenshot.png')]);
+    for (const name of ['answer.txt', 'url.txt', 'meta.json', 'page.html']) {
+      const text = readFileSync(join(dir, name), 'utf8');
+      expect(text, name).not.toContain(token);
+      expect(text, name).toContain('[REDACTED]');
+    }
+    expect(readFileSync(join(dir, 'url.txt'), 'utf8')).not.toContain('q=secret');
   });
 });

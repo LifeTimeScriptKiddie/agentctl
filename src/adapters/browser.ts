@@ -135,10 +135,43 @@ export function matchDevToolsVersion(version: unknown, active: DevToolsActivePor
   return { ok: true, wsEndpoint: `ws://127.0.0.1:${active.port}${url.pathname}` };
 }
 
+/** Owning uids from `lsof -Fpu` output (`u<uid>` lines). */
+export function parseLsofUids(output: string): number[] {
+  return output.split(/\r?\n/).filter((line) => /^u\d+$/.test(line)).map((line) => Number(line.slice(1)));
+}
+
+/**
+ * The process listening on the DevTools port must be this user's, or another
+ * local account could stand in for the managed browser. Skipped when lsof is
+ * not installed or the platform has no uids; any other lsof failure refuses.
+ */
+export async function checkDevToolsListenerOwner(port: number): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return { ok: true };
+  let outcome;
+  try {
+    outcome = await run('lsof', ['-nP', '-w', '-a', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpu'], { timeoutMs: 3000 });
+  } catch (e) {
+    return { ok: false, reason: `could not check who owns DevTools port ${port} (${e instanceof Error ? e.message : String(e)})` };
+  }
+  if (outcome.notFound) return { ok: true };
+  const uids = parseLsofUids(outcome.stdout);
+  if (uids.length === 0) {
+    return { ok: false, reason: `no process owned by this user is listening on DevTools port ${port}` };
+  }
+  const foreign = uids.filter((u) => u !== uid);
+  if (foreign.length > 0) {
+    return { ok: false, reason: `DevTools port ${port} is held by another user (uid ${[...new Set(foreign)].join(', ')})` };
+  }
+  return { ok: true };
+}
+
 /** The managed browser's WebSocket endpoint, verified against its private profile's port file. */
 export async function verifiedManagedEndpoint(profileDir: string): Promise<VerifiedEndpoint> {
   const active = readDevToolsActivePort(profileDir);
   if (!active) return { ok: false, reason: `no DevToolsActivePort in ${profileDir}` };
+  const owner = await checkDevToolsListenerOwner(active.port);
+  if (!owner.ok) return owner;
   let version: unknown;
   try {
     const r = await fetch(`http://127.0.0.1:${active.port}/json/version`, { signal: AbortSignal.timeout(2000) });
@@ -335,10 +368,43 @@ export async function waitForAnswer(
   return { text: last, partial: true };
 }
 
-function evidenceDir(workdir: string | null): string {
-  const base = process.env.AGENTCTL_EVIDENCE_DIR ?? join(workdir ?? process.cwd(), '.agentctl', 'comet');
+/** Per-capture evidence dir: `$AGENTCTL_EVIDENCE_DIR`, else `$AGENTCTL_HOME/evidence/comet` (0700, outside any repo). */
+export function evidenceDir(): string {
+  const configured = process.env.AGENTCTL_EVIDENCE_DIR;
+  const base = configured ?? join(agentctlHome(), 'evidence', 'comet');
+  if (!configured) {
+    ensurePrivateDir(join(agentctlHome(), 'evidence'));
+    ensurePrivateDir(base);
+  }
   const dir = join(base, String(Date.now()));
   ensurePrivateDir(dir);
+  return dir;
+}
+
+/** Screenshot plus redacted text evidence for one answer. Returns the evidence dir. */
+export async function captureEvidence(
+  page: any,
+  prompt: string,
+  answer: { text: string; partial: boolean },
+): Promise<string> {
+  const dir = evidenceDir();
+  const screenshot = join(dir, 'screenshot.png');
+  await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});
+  const safeUrl = new URL(page.url());
+  safeUrl.search = "";
+  safeUrl.hash = "";
+  const url = redact(safeUrl.toString());
+  writePrivateFile(join(dir, 'answer.txt'), redact(answer.text));
+  writePrivateFile(join(dir, 'url.txt'), url);
+  writePrivateFile(
+    join(dir, 'meta.json'),
+    JSON.stringify({ prompt: redact(prompt), url, partial: answer.partial, ts: new Date().toISOString() }, null, 2),
+  );
+  try {
+    writePrivateFile(join(dir, 'page.html'), redact(await page.content()));
+  } catch {
+    /* best effort */
+  }
   return dir;
 }
 
@@ -462,25 +528,7 @@ export class BrowserAdapter implements AgentAdapter {
 
       let dir: string | undefined;
       if (process.env.AGENTCTL_CAPTURE_EVIDENCE === '1') {
-        dir = evidenceDir(request.workdir);
-      const screenshot = join(dir, 'screenshot.png');
-      await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});
-      const safeUrl = new URL(page.url());
-      safeUrl.search = "";
-      safeUrl.hash = "";
-      const url = safeUrl.toString();
-      writePrivateFile(join(dir, 'answer.txt'), redact(answer.text));
-      writePrivateFile(join(dir, 'url.txt'), url);
-      writePrivateFile(
-        join(dir, 'meta.json'),
-        JSON.stringify({ prompt: redact(request.prompt), url, partial: answer.partial, ts: new Date().toISOString() }, null, 2),
-      );
-      try {
-        writePrivateFile(join(dir, 'page.html'), redact(await page.content()));
-      } catch {
-        /* best effort */
-      }
-
+        dir = await captureEvidence(page, request.prompt, answer);
       }
 
       // close our temp page, then disconnect. close() on a CDP-attached browser

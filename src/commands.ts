@@ -10,7 +10,7 @@ import { readPrompt } from './assets.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { color, agentColor } from './util/colors.js';
 import {
-  listSessions, deleteSession, pruneSessions,
+  listSessions, deleteSession, pruneSessions, InvalidSessionIdError,
 } from './core/session.js';
 import { formatStatus } from './status.js';
 import { loadRegistry, collectStatus } from './core/loadRegistry.js';
@@ -460,7 +460,12 @@ export function cmdSessions(
   const now = args.now ?? Date.now;
   if (args.action === 'rm') {
     if (!args.id) { io.err('usage: agentctl sessions rm <id>'); return 2; }
-    if (deleteSession(args.id)) { io.out(`removed session '${args.id}'`); return 0; }
+    try {
+      if (deleteSession(args.id)) { io.out(`removed session '${args.id}'`); return 0; }
+    } catch (e) {
+      if (!(e instanceof InvalidSessionIdError)) throw e;
+      io.err(e.message); return 2;
+    }
     io.err(`no session '${args.id}'`); return 2;
   }
   if (args.action === 'prune') {
