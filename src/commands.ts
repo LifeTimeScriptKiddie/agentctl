@@ -652,10 +652,6 @@ function logHallucinationIncidents(
   }
 }
 
-/** Optional LLM tiebreak: on an ambiguous route, ask a cheap codex (luna) or claude
- *  (haiku) to pick among available agents. Returns a validated agent name, or null. */
-
-
 export async function cmdRoute(
   registry: AdapterRegistry,
   args: {
@@ -707,7 +703,6 @@ export async function cmdRoute(
   const decision = route(args.task, agents);
 
   // Ambiguous decisions require a human-selected target.
-
 
   const chosen = decision.agent ? agentColor(decision.agent)(decision.agent) : color.red('none');
   const modelStr = decision.model ? color.dim(`:${decision.model}`) : '';
@@ -837,8 +832,6 @@ export async function cmdDelegate(
     available: health[name]?.available ?? false,
   }));
   const decision = route(args.task, agents);
-
-
 
   const chosen = decision.agent ? agentColor(decision.agent)(decision.agent) : color.red('none');
   const modelStr = decision.model ? color.dim(`:${decision.model}`) : '';

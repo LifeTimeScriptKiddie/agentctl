@@ -38,7 +38,7 @@ export function parseSinceToMs(since: string, now = Date.now()): number {
   const trimmed = since.trim();
   const rel = /^(\d+)(h|d)$/i.exec(trimmed);
   if (rel) {
-    const amount = Number(rel[1]);
+    const amount = Number(rel[1] ?? 0);
     const unit = (rel[2] ?? 'd').toLowerCase();
     const unitMs = unit === 'h' ? 3_600_000 : 86_400_000;
     return now - amount * unitMs;

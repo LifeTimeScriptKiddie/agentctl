@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
 import { registerUsageCommand } from './usage/command.js';
 import { registerMemoryCommands } from './memory/command.js';
 import { isEntrypoint } from './util/entry.js';
@@ -8,6 +9,8 @@ import { registerMonitorCommands } from './monitor/command.js';
 import { DEFAULT_ORCHESTRATOR_AGENT } from './core/orchestrateRoster.js';
 import { startRepl } from './repl.js';
 import type { OutputFormat } from './format/output.js';
+
+const packageJson = createRequire(import.meta.url)('../package.json') as { version: string };
 
 function parseFormat(value?: string): OutputFormat {
   return value === 'json' ? 'json' : 'text';
@@ -30,7 +33,7 @@ export function buildProgram(): Command {
       'Backend-neutral interface to local AI agent CLIs and browser/container agents ' +
         'with each tool’s SSO preserved, plus a controlled improvement loop.',
     )
-    .version('0.2.0');
+    .version(packageJson.version);
 
   program
     .command('ask')

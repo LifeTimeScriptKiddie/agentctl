@@ -126,7 +126,6 @@ async function routerAgents(registry: AdapterRegistry): Promise<RouterAgent[]> {
 async function resolveRouting(
   registry: AdapterRegistry,
   task: string,
-  _opts: { llm?: boolean; dryRoute?: boolean; timeoutSeconds: number },
 ): Promise<RouteDecision> {
   const agents = await routerAgents(registry);
   const decision = route(task, agents);
@@ -326,11 +325,7 @@ export async function agentRoute(
     throw e;
   }
 
-  const decision = await resolveRouting(registry, opts.task, {
-    llm: opts.llm,
-    dryRoute: opts.dryRoute,
-    timeoutSeconds,
-  });
+  const decision = await resolveRouting(registry, opts.task);
 
   if (opts.dryRoute) {
     return { exitCode: 0, warnings, route: decision };
