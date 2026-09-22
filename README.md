@@ -304,8 +304,8 @@ agentctl memory checkpoint set --workspace team-ops \
   --goal 'Memory VM smoke' \
   --state 'Docker gatekeeper green; .68 offline' \
   --next-action 'Power mini PC and rerun turn smoke' \
-  --blockers 'ssh timeout to 192.168.50.68' \
-  --source 'operator:alice@shift-end'
+  --blockers 'ssh timeout to lab-host.example' \
+  --source 'operator:alice@example.com'
 ```
 
 Next operator (same workspace on the gatekeeper):
@@ -321,8 +321,8 @@ agentctl memory briefing --workspace team-ops --provider pi
 
 ```bash
 agentctl memory save --workspace team-ops --kind ops_note \
-  --text '2026-09-22: Gatekeeper QA 9/9 on MiniMac; waiting on .68 power-on for LAN smoke.' \
-  --source 'ops:alice' --key 'vm-smoke-status' --accept --providers pi
+  --text '2026-09-22: Gatekeeper QA 9/9 on operator workstation; waiting on lab-host power-on for LAN smoke.' \
+  --source 'ops:alice@example.com' --key 'vm-smoke-status' --accept --providers pi
 ```
 
 Propose → accept still applies if you use **`write --mode propose`** instead of **`save --accept`**. Checkpoints are **not** memories — update them with **`checkpoint set`**, not the write graph.

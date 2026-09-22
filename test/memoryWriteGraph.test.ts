@@ -57,7 +57,7 @@ describe('memory_write graph', () => {
     const blocked = await s.writeWithGraph({
       mode: 'propose',
       workspace: 'team-atlas',
-      text: 'Contact alice@company.com for access',
+      text: 'Contact alice@example.com for access',
       source: 'operator:2026-09-22',
     });
     expect(blocked.status).toBe('rejected');
@@ -66,7 +66,7 @@ describe('memory_write graph', () => {
     const allowed = await s.writeWithGraph({
       mode: 'propose',
       workspace: 'team-atlas',
-      text: 'Contact alice@company.com for access',
+      text: 'Contact alice@example.com for access',
       source: 'operator:2026-09-22',
       key: 'pii-key',
     });
