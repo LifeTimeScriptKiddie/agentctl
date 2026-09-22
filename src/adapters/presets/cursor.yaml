@@ -19,6 +19,8 @@ commandTemplate:
   # belt-and-braces: explicitly pin the sandbox rather than inheriting config.
   - --sandbox
   - enabled
+  # never add --approve-mcps: headless runs would then auto-approve every
+  # configured MCP server for this read-only lane.
   - "{prompt}"
 # Prefer the Cursor Models usage pool with Composer; third-party models use
 # a separate allowance. Explicit --model IDs are passed through to Cursor.

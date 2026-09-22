@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,12 +23,22 @@ describe('memory serve HTTP', () => {
     delete process.env.AGENTCTL_SERVE_ALLOWED_ORIGINS;
     delete process.env.AGENTCTL_SERVE_MAX_BODY;
     delete process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS;
+    vi.unstubAllEnvs();
   });
+
+  // Identity headers are only trusted behind a serve token.
+  const TOKEN = 'serve-test-token';
+  const asAlice = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${TOKEN}`,
+    'x-agentctl-user-id': 'alice@co',
+  };
 
   async function start(): Promise<void> {
     home = mkdtempSync(join(tmpdir(), 'agentctl-serve-'));
     process.env.AGENTCTL_HOME = home;
     process.env.AGENTCTL_SERVE_ALLOW_ANON = '1';
+    for (const name of ['AGENTCTL_USER_ID', 'AGENTCTL_GROUPS', 'AGENTCTL_CLEARANCE']) vi.stubEnv(name, undefined);
     const store = await MemoryStore.open(undefined, { auth: null });
     store.save({
       workspace: 'team-atlas',
@@ -59,9 +69,10 @@ describe('memory serve HTTP', () => {
 
   it('POST /v1/context returns bundle', async () => {
     await start();
+    process.env.AGENTCTL_SERVE_TOKEN = TOKEN;
     const r = await fetch(`${base}/v1/context`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentctl-user-id': 'alice@co' },
+      headers: asAlice,
       body: JSON.stringify({
         workspace: 'team-atlas',
         query: 'Rollback owner Atlas',
@@ -121,9 +132,10 @@ describe('memory serve HTTP', () => {
 
   it('POST /v1/memory/write proposes via graph', async () => {
     await start();
+    process.env.AGENTCTL_SERVE_TOKEN = TOKEN;
     const r = await fetch(`${base}/v1/memory/write`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentctl-user-id': 'alice@co' },
+      headers: asAlice,
       body: JSON.stringify({
         mode: 'propose',
         workspace: 'team-atlas',
@@ -170,9 +182,10 @@ describe('memory serve HTTP', () => {
       }),
     });
     const proposed = await w.json() as { memory: { id: string; revision: number } };
+    process.env.AGENTCTL_SERVE_TOKEN = TOKEN;
     const r = await fetch(`${base}/v1/memory/accept`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentctl-user-id': 'alice@co' },
+      headers: asAlice,
       body: JSON.stringify({
         workspace: 'team-atlas',
         memory_id: proposed.memory.id,

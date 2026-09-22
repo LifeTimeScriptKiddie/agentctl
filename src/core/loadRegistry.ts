@@ -1,23 +1,42 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { AgentsConfigSchema } from '../schema/agents.js';
 import { AdapterRegistry } from '../adapters/registry.js';
 import { visibleAgentNames } from './orchestrateRuntime.js';
+import { agentctlHome } from './agentHome.js';
+import { readTrustedConfig } from './configTrust.js';
 import type { AgentStatus } from '../status.js';
 
 export interface RegistryOptions {
-  /** Directories searched for agents.yaml (first match wins after configPath). */
+  /**
+   * Directories searched for a repo-local agents.yaml. A local file loads only
+   * when trusted (`agentctl config trust`); untrusted files are skipped.
+   */
   searchDirs?: string[];
   /** Explicit agents.yaml path (or set AGENTCTL_CONFIG). */
   configPath?: string;
 }
 
-function mergeAgentsFile(reg: AdapterRegistry, path: string): void {
-  reg.mergeConfig(AgentsConfigSchema.parse(parseYaml(readFileSync(path, 'utf8'))));
+function mergeAgentsText(reg: AdapterRegistry, text: string): void {
+  reg.mergeConfig(AgentsConfigSchema.parse(parseYaml(text)));
 }
 
-/** Packaged presets, overlaid with agents.yaml from AGENTCTL_CONFIG or searchDirs. */
+function sameFile(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Packaged presets, overlaid with the first config found:
+ *   configPath / AGENTCTL_CONFIG → trusted agents.yaml in searchDirs →
+ *   $AGENTCTL_HOME/agents.yaml.
+ * A local agents.yaml is working-directory content (a cloned repo or a
+ * write-capable worker can plant one), so it must be trusted by hash first.
+ */
 export function loadRegistry(
   options: string[] | RegistryOptions = [process.cwd()],
 ): AdapterRegistry {
@@ -28,16 +47,23 @@ export function loadRegistry(
   const reg = AdapterRegistry.fromPackaged();
   const configPath = opts.configPath ?? process.env.AGENTCTL_CONFIG;
   if (configPath && existsSync(configPath)) {
-    mergeAgentsFile(reg, configPath);
+    mergeAgentsText(reg, readFileSync(configPath, 'utf8'));
     return reg;
   }
+  const homeConfig = join(agentctlHome(), 'agents.yaml');
   for (const d of searchDirs) {
     const p = join(d, 'agents.yaml');
-    if (existsSync(p)) {
-      mergeAgentsFile(reg, p);
-      break;
+    if (!existsSync(p) || sameFile(p, homeConfig)) continue;
+    const trusted = readTrustedConfig(p);
+    if (trusted !== null) {
+      mergeAgentsText(reg, trusted);
+      return reg;
     }
+    process.stderr.write(
+      `agentctl: ignoring untrusted ${p}; review it and run \`agentctl config trust ${p}\` to load it.\n`,
+    );
   }
+  if (existsSync(homeConfig)) mergeAgentsText(reg, readFileSync(homeConfig, 'utf8'));
   return reg;
 }
 

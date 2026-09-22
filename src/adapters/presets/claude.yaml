@@ -13,6 +13,12 @@ commandTemplate:
   - json
   - --tools
   - Read,Grep,Glob
+  # --tools limits built-in tools only; without these the worker still loads
+  # every user MCP connector (mail/docs send/delete). Only the packaged empty
+  # config is allowed, so this read-only lane gets no MCP servers.
+  - --strict-mcp-config
+  - --mcp-config
+  - "{asset:empty-mcp.json}"
 # evaluator/critic roles append this flag with read-only tools.
 disallowedToolsFlag: --disallowedTools
 # per-invocation model switching (claude accepts an alias or a full name).

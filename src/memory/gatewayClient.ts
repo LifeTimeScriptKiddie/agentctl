@@ -18,8 +18,39 @@ export function resolveGatewayUrl(override?: string | null): string | null {
   return raw.replace(/\/$/, '');
 }
 
+let warnedInsecureGateway = false;
+
+function isLoopbackHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/** Warn once per process: plain http to another host exposes the token and memory text. */
+export function warnIfInsecureGateway(gatewayUrl: string): void {
+  if (warnedInsecureGateway) return;
+  let url: URL;
+  try {
+    url = new URL(gatewayUrl);
+  } catch {
+    return;
+  }
+  if (url.protocol !== 'http:' || isLoopbackHostname(url.hostname)) return;
+  warnedInsecureGateway = true;
+  process.stderr.write(
+    `agentctl: warning: gateway ${url.origin} uses plain http to a non-loopback host; `
+      + 'the bearer token and team memory travel unencrypted. Use https.\n',
+  );
+}
+
+/** Test hook: re-arm the once-per-process insecure gateway warning. */
+export function resetGatewayWarningForTest(): void {
+  warnedInsecureGateway = false;
+}
+
 export function gatewayAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const token = process.env.AGENTCTL_GATEWAY_TOKEN?.trim();
+  if (token) headers.authorization = `Bearer ${token}`;
   const userId = process.env.AGENTCTL_USER_ID?.trim();
   if (userId) headers['x-agentctl-user-id'] = userId;
   if (process.env.AGENTCTL_GROUPS !== undefined) {
@@ -51,6 +82,7 @@ export async function postTurn(
   },
   timeoutMs = 30_000,
 ): Promise<TurnResponse> {
+  warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(`${gatewayUrl}/v1/turn`, {
     method: 'POST',
     headers: gatewayAuthHeaders(),
@@ -129,6 +161,7 @@ export async function getGatewayReview(
   gatewayUrl: string,
   workspace: string,
 ): Promise<{ proposed: Array<{ id: string; revision: number; text: string; source: string }> }> {
+  warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(
     `${gatewayUrl}/v1/memory/review?workspace=${encodeURIComponent(workspace)}`,
     { headers: gatewayAuthHeaders(), signal: AbortSignal.timeout(30_000) },
@@ -142,6 +175,7 @@ export async function postGatewayWrite(
   gatewayUrl: string,
   body: Record<string, unknown>,
 ): Promise<GatewayWriteResult> {
+  warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(`${gatewayUrl}/v1/memory/write`, {
     method: 'POST',
     headers: gatewayAuthHeaders(),
@@ -164,6 +198,7 @@ export async function postGatewayAccept(
     human_approved: boolean;
   },
 ): Promise<{ memory: { id: string; revision: number; state: string } }> {
+  warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(`${gatewayUrl}/v1/memory/accept`, {
     method: 'POST',
     headers: gatewayAuthHeaders(),

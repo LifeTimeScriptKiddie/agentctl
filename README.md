@@ -373,6 +373,14 @@ Requires macOS **`ps`**, **`lsof`**, **`nettop`**. Not billing data. Details unc
 
 Presets live under **`src/adapters/presets`**. Copy and adjust for your org’s CLIs and model ids. Browser adapter is optional (Playwright + CDP). See **`agentctl --help`** and subcommand **`--help`**.
 
+Overrides go in an **`agents.yaml`** ([example](examples/agents.yaml)); entries replace packaged presets by name. agentctl uses the first of:
+
+1. **`AGENTCTL_CONFIG`** (explicit path).
+2. A repo-local **`./agents.yaml`** (for `agentctl run <dir>`, also `<dir>/agents.yaml`), **only if trusted**.
+3. **`$AGENTCTL_HOME/agents.yaml`** (default `~/.agentctl/agents.yaml`).
+
+A local file can replace any lane’s command, health probe and environment, and a cloned repo or a write-capable worker can plant one, so an untrusted local file is skipped with a warning. Review it, then run **`agentctl config trust [path]`** (default `./agents.yaml`). This prints the file and records `sha256(realpath + '\0' + content)` in `$AGENTCTL_HOME/trusted-configs.json`. Any edit revokes trust; **`agentctl config untrust [path]`** removes it.
+
 ## Privacy and trust
 
 Prompts go to the backend you select. State may persist under **`~/.agentctl`** (sessions, usage ledger, optional memory). Capability checks are not an OS sandbox. This repository ships source and synthetic tests only — no personal sessions or credentials.
