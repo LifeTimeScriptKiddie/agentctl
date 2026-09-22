@@ -244,3 +244,153 @@ Trusted input: the user's own CLI arguments and the operator's config. **Everyth
 - **L3:** the Postgres serve path uses one process-wide store/pool. Migrations run once at startup, or only via `agentctl memory migrate` when `AGENTCTL_MEMORY_MIGRATE_ON_SERVE=0`.
 - **L4:** `serve.ts` returns generic `{error: 'internal_error', request_id}` (or zod `validation_failed` without messages that echo input) for 500s and caught exceptions. Details go to the audit log only.
 - **L5:** the browser evidence default dir is `$AGENTCTL_HOME/evidence/comet` (private dir). The screenshot path stays there, and text evidence is redacted.
+
+---
+
+# Verification pass (Opus 5.5, after S1–S4)
+
+Run with the branch build (`node dist/cli.js`); an earlier run used the installed `main` build and was discarded. Claude confirmed N1, the H3 no-token residual and the M2 empty-refs residual in the source.
+
+# agentctl verification pass on `arch-review-fixes`
+
+I only read the code (Read/Grep/Glob). I didn't run `tsc` or `vitest`, and I didn't check that tests exist for each item.
+
+**Result:** 12 of the 17 prior findings are fixed and 5 are partially fixed. Two of the partial fixes are serious: in the default configuration, the new commit gate can be bypassed through `/v1/memory/accept`, and the new token model lets any holder of the shared gateway token claim any identity.
+
+## Prior findings
+
+| ID | Status | Evidence |
+|---|---|---|
+| H1 | **Fixed** | `loadRegistry.ts:49-66`: a local `agents.yaml` loads only through `readTrustedConfig`, which hashes the same bytes it parses (`configTrust.ts:57-68`). `cmdRun` follows the same rule (`commands.ts:558`), and so does serve (`turnModelGenerate.ts:33`). The trust step itself has weaknesses (N8). |
+| H2 | **Partially fixed** | The commit gate at `serve.ts:647-661` is correct. The accept path can still be used to get the same result (N1), and caller identity comes from headers anyone with the token can set (N2). |
+| H3 | **Partially fixed** | With a token set, identity headers are honored (`serve.ts:312-314`) and the client now sends `Bearer` (`gatewayClient.ts:53-54`). **Without a token, the original exploit still works:** at `serve.ts:306-311`, every loopback caller that sends no identity headers is given the *server owner's* identity (`loadAuthContext()`). If `ALLOW_ANON=1`, the caller gets unfiltered access instead (`authContext.ts:39`). So another local account can run `curl 127.0.0.1:8741/v1/context` and read the owner's private or confidential memories. **Fix:** always require a token, for example one generated automatically into `~/.agentctl/serve-token` (0600) that the client reads, or serve over a 0600 unix socket. Separately, the client sends identity headers whenever `AGENTCTL_USER_ID` is set, so against a server with no token it gets 401. |
+| H4 | **Fixed** | The gate now runs on the routed agent's capabilities and on the exact composed prompt, before every attempt and before the comet fallback (`orchestrator.ts:333-347`, `approval.ts:98-109`, `orchestrateFlow.ts:134-136`). Dependency outputs, feedback, synthesis and replan text are all quoted. |
+| X1 | **Fixed** (claude lane) | `claude.yaml:19-21` sets `--strict-mcp-config --mcp-config {asset:empty-mcp.json}`, and the asset path is validated (`subprocess.ts:33-42`). Other lanes have the same class of gap (N5). |
+| X2 | **Fixed** | `parsers.ts:23-30` takes the last `type:"result"` envelope; `session_id` and usage come from that envelope. Minor: an envelope with `is_error:true` is still reported as success. |
+| M1 | **Partially fixed** | Memory, briefing, gateway and transcript text is now wrapped with `quoteUntrusted`, and injected context is scanned separately (`api.ts:237-241`). But on `ask`/`route`/`delegate`, the only guard is a regex, even when the target can write or run shell. See N3. |
+| M2 | **Partially fixed** | Checkpoints are filtered by auth in both stores (`store.ts:481-492`, `memoryStorePostgres.ts:373-387`). But `canReadCheckpoint` (`authContext.ts:55-62`) returns true when `decisionRefs` is empty. **Exploit:** any caller with internal clearance calls `/v1/turn` with any workspace name and reads that workspace's goal, state, blockers and next action. **Fix:** also require workspace membership (group or owner) on the checkpoint itself. |
+| M3 | **Fixed** | The operator setting now gates both flags (`serve.ts:180-188`). Confidential items are filtered out before Jev (`turnGraph.ts:203-210`). Laya uses async `spawn` with a concurrency cap of 2, a timeout and an output cap (`layaEvidence.ts:69-144`). |
+| M4 | **Fixed**, with a small residual | `privateFs.ts` is used for sessions, run files, logs, the profile, evidence and serve logs. Residual (Low): the `run` loop's `trace.jsonl`, candidates and evaluations use default permissions (`trace.ts:22-25`, `controller.ts:30,88-89`). |
+| M5 | **Partially fixed** | `logRoute`, orchestration runs and `ask` sessions are redacted (`orchestrateFlow.ts:169,182`, `sessionFlow.ts:65,74`). **Not redacted:** `agentctl chat --session` transcripts. They are saved through `persist: (r) => saveSession(r, now())` (`sessionFlow.ts:55`), and `saveSession` doesn't redact (`session.ts:57-67`). A token typed in chat lands on disk as-is. **Fix:** `redactDeep` inside `saveSession`. |
+| M6 | **Partially fixed** | Port squatting is blocked: Chrome picks the port (`--remote-debugging-port=0`), it's read from `DevToolsActivePort`, the browser path is compared, and the listener must belong to this user (`browser.ts:67-79,113-184`). The lsof check fails closed. But CDP is still unauthenticated. Another local account can scan `127.0.0.1` for `/json/version`, attach to the logged-in profile and read its cookies. A random port hides the endpoint; it doesn't authenticate anyone. **Fix:** use `--remote-debugging-pipe` (Playwright `launchPersistentContext`) instead of a TCP port. |
+| L1 | **Fixed** | `session.ts:23-29` and `schema/session.ts:15-20` check the regex, reject a leading `.`, and confirm the path stays in the sessions folder. |
+| L2 | **Fixed** | `subprocess.ts:52-61,94,109-111`: `"` is not allowed, a leading `-` is rejected, and resume ids are checked. |
+| L3 | **Fixed** | One pool per process (`serve.ts:241-256`). Migrations still run at startup by default, so the database role still needs schema-changing rights unless `MIGRATE_ON_SERVE=0`. |
+| L4 | **Fixed** | `serve.ts:216-239` returns an error code plus request id, and validation errors carry only paths and codes. Minor: with `include_graph_trace`, up to 200 characters of Laya/Jev error text is still returned (`turnGraph.ts:218,254`). |
+| L5 | **Fixed** | Evidence goes to `$AGENTCTL_HOME/evidence/comet` in a private folder, and text evidence is redacted (`browser.ts:372-408`). |
+
+## New findings
+
+**N1 — High — `/v1/memory/accept` gets around the commit gate (`serve.ts:610-611`)**
+- **Cause:** `requiredGroups.length > 0 && …` means that when `AGENTCTL_MEMORY_REVIEWER_GROUPS` is unset (the default), any authenticated caller may accept.
+- **Exploit:** `POST /v1/memory/write {mode:"propose",…}` returns `memory.id` and `revision`. Then `POST /v1/memory/accept {memory_id, revision, human_approved:true}` makes the memory accepted. It is then fed to every user's briefings.
+- In no-token mode, "authenticated" means any local process, because it inherits the server's identity.
+- **Fix:** use the same rule as commit (groups must be configured and the caller must be in one), refuse self-acceptance, and add a test.
+
+**N2 — High in team deployments — the shared token plus self-asserted identity makes everyone a possible reviewer (`serve.ts:312-314`, `gatewayClient.ts:51-62`)**
+- **Cause:** S1 hands the one serve token to every CLI client, but the server still takes `x-agentctl-user-id`, `groups` and `clearance` from headers.
+- **Exploit:** a team member sets `AGENTCTL_USER_ID=alice AGENTCTL_GROUPS=reviewers AGENTCTL_CLEARANCE=confidential`. They can then read Alice's private memories and `commit` accepted memories (H2 again, and it feeds M1).
+- **Fix:** issue per-user tokens and map token → identity on the server. Never accept groups or clearance from headers; or keep identity headers only for a trusted proxy with its own secret.
+
+**N3 — Medium — injected context reaches write/shell agents on `ask`/`route` behind a bypassable regex (`api.ts:237-241`, `untrusted.ts:12-13,47-54`)**
+- **Cause:** `route` can auto-pick `codex_write` (`router.ts:237-249`), and `AGENTCTL_BRIEFING_WORKSPACE` adds memory to every call. There is no capability gate on this path.
+- **Verified bypasses of the regex:**
+  - Backslash-newline: `git -C . \` then `push` on the next line. The patterns stop at `\n`, but a shell joins the two lines.
+  - Invisible characters the normalizer doesn't strip, placed inside a keyword: U+034F, U+FE0F, and the U+E00xx tag characters.
+  - Shell indirection: `g=git; $g push`, or `base64 -d | sh`.
+- Separately, `--approve` for the user's own prompt also approves whatever the injected context asks for.
+- **Fix:** when any injected context is present and the target has `canRunShell`, `canModifyRepo`, `canPublish` or `canWriteFiles`, require a separate approval (e.g. `--approve-context`) or drop the context.
+
+**N4 — Medium — the `chat` REPL has no quoting and no gate (`repl.ts:270-276,297-312,344-350,362-373`)**
+- `send()` builds its prompt from the raw transcript, which includes web answers from `/search` (agy/comet), and it runs no approval scan. This applies to `@codex_write …` and `/direct` too.
+- `orchestrate()` puts the raw transcript into the planner's `goal`, which is treated as trusted, and scans only the user's own line.
+- Under `chat --approve`, the step gate is off, so injected web text can steer the planner to `codex_write`.
+- **Fix:** wrap the transcript with `quoteUntrusted`, pass it as context instead of as part of the goal, and apply the capability gate plus a scan of the composed prompt in `send()`.
+
+**N5 — Medium (Needs confirmation) — rule 5 isn't applied outside the claude lane**
+- `agy` is `canWriteFiles:true`, has network access and loads MCP servers. "Never run Bash" exists only as prompt text (`agy.yaml:8-21`). `canWriteFiles` isn't in `GATED_CAPABILITIES` (`approval.ts:91`), yet agy receives dependency outputs and web content.
+- `codex -s read-only` and `cursor --mode ask` don't disable already-configured MCP servers.
+- **Fix:** gate `canWriteFiles`, pass agy's tool restrictions as flags, and disable MCP for codex (e.g. `-c mcp_servers={}`, needs confirmation) and cursor.
+
+**N6 — Medium — the `run` loop lets working-folder content pick the agent (`schema/runState.ts:23`, `commands.ts:558-572`, `planner.ts:14-49`)**
+- `run.yaml` can name any adapter as generator, including `codex_write` or `hermes`.
+- Only `task.md` is regex-scanned. `rubric.md`, the last candidate and the evaluator's revision instructions go into the prompt raw and unscanned, every iteration.
+- **Exploit:** a cloned repo's `rubric.md` carries the injection, and `run.yaml` names `codex_write`.
+- **Fix:** capability gate on the generator/repairer unless `--approve`, scan each composed prompt, and quote candidate and evaluation text.
+
+**N7 — Medium (depends on configuration) — `/v1/turn run_model` sends caller text to the server's agent (`turnModelGenerate.ts:33-68`, `serve.ts:455-466`)**
+- The only guard is the regex. If `AGENTCTL_SERVE_MODEL_AGENT` is a shell or write lane, any HTTP caller can make it run commands.
+- **Fix:** refuse agents with shell, write, repo-modify or publish capabilities, and quote the query.
+
+**N8 — Low/Medium — `config trust` saves trust before anyone has reviewed the file (`config/command.ts:18-19`)**
+- It records the hash and prints the file in the same step, with no confirmation. And the untrusted-file warning tells users to run exactly that command.
+- It prints raw bytes, so terminal escape codes could hide a `healthProbe` line (Needs confirmation: whether the `yaml` parser accepts control characters).
+- Trust covers `agents.yaml` only, not scripts it references with repo-relative paths, which a write-capable worker can then change.
+- **Fix:** strip control characters, highlight `commandTemplate`/`healthProbe`/`environment`, ask for `y` or `--yes`, and warn about repo-relative executables.
+
+**N9 — Low — redaction changes data, not just stored copies**
+- A resumed orchestration feeds *redacted* outputs into later steps (`orchestrateFlow.ts:182` → `api.ts:508-509`).
+- The Comet answer itself is returned redacted (`browser.ts:554`).
+- `\bBearer\s+…` matches ordinary prose such as "bearer of", and `token=` matches code samples.
+- **Fix:** redact only what is persisted, and require a minimum token length or entropy for the Bearer and key=value patterns.
+
+**N10 — Low (Needs confirmation) — prompt passed as the last argument without `--` (`cursor.yaml:24`, `pi.yaml:18`)**
+- A planner-written instruction that starts with `-` may be parsed as an option. **Fix:** add `--` before `{prompt}` if both CLIs accept it.
+
+**N11 — Low — the gateway client trusts some response fields (`gatewayClient.ts:105,127`)**
+- `status`, `terminal` and `context_bundle_id` from the gateway response are placed in the prompt unquoted. This matters only if the gateway is compromised or reached over plain http (MITM). **Fix:** check them against an enum or UUID format.
+
+## Checked, no issue found
+- **quoteUntrusted:** fake markers are neutralized and the end marker needs a fresh random nonce each call, so worker text can't close its block early.
+- **Private file writes:** temp files are created 0600 before the atomic rename.
+- **Trust store:** it fails closed on a corrupt store, and the realpath+content hash blocks symlink and edit tricks.
+- **lsof owner check:** it fails closed when no listener owned by this user is visible.
+- **`exec.ts`:** it doesn't use `preferLocal`, so a repo's `node_modules/.bin` can't stand in for `which` or `codex`.
+
+**Suggested order:** N1 and N2, then the H3 no-token default, then N3, N4 and N6.
+
+# Remediation round 2
+
+## S5: identity and authorization (N1, N2, H3 residual, M2 residual)
+- **Identity comes from tokens, never from headers.** Remove header-supplied identity (`x-agentctl-user-id`, `-groups`, `-clearance`) from `serve.ts`. Any request that sends one of those headers gets 400 `identity_headers_not_supported`.
+- **Per-user tokens:** add `$AGENTCTL_HOME/serve-tokens.json` (0600, via `privateFs`). Its shape is `{version:1, tokens:[{id, sha256, userId, groups[], clearance, createdAt}]}`, and only the sha256 of each token is stored. A bearer token is hashed and looked up to get the caller's `AuthContext`. Compare hashes with `timingSafeEqual`. An unknown token gets 401.
+  - CLI: `agentctl memory serve token add --user <id> [--groups a,b] [--clearance internal]` prints a new random 32-byte token once (base64url). Also add `token list` (no secrets shown) and `token revoke <id>`.
+- **Legacy shared token:** `AGENTCTL_SERVE_TOKEN` still works, and its identity is the server owner's (`loadAuthContext()` from the server env). If the owner identity is empty, it's anonymous (see below).
+- **No-token default (loopback):** on first start, if neither a token file entry nor `AGENTCTL_SERVE_TOKEN` exists, generate an owner token into `$AGENTCTL_HOME/serve-token` (0600). It maps to the server owner identity, and the server requires it. `gatewayClient` sends, in order of preference: `AGENTCTL_GATEWAY_TOKEN`, else the contents of `$AGENTCTL_HOME/serve-token` when the gateway URL is loopback. So a no-token server is never open to other local accounts.
+- **`AGENTCTL_SERVE_ALLOW_ANON=1`:** allowed only on a loopback bind. It no longer means "unfiltered". Anonymous callers get `{userId:'anonymous', groups:[], clearance:'public'}`.
+- **`canReadMemory(null)` returning true** is kept only for in-process CLI calls. Serve never passes null.
+- **N1:** `/v1/memory/accept` uses the same rule as commit: `AGENTCTL_MEMORY_REVIEWER_GROUPS` must be set, and the caller must belong to one of those groups. It also refuses self-acceptance: when the memory's proposer (record `proposedBy` on write from the auth context, in both stores, via migration `003_proposed_by.sql` for Postgres and `ALTER TABLE` for SQLite) equals the caller, return 403 `self_accept_forbidden`.
+- **M2:** checkpoints store `ownerUserId` and `allowedGroups`, taken from the setter's auth context and CLI flags `--groups` (migration in both stores). An identified caller can read a checkpoint only if they are the owner or share a group, and they also still need read access to every referenced decision. A checkpoint with no ACL (legacy) can't be read by identified callers; in-process CLI with null auth is unchanged.
+- **Docs and scripts:** update STACK-SETUP, TURN-GRAPH, the gatekeeper smoke script and the Pi integration docs.
+
+## S6: remaining prompt-injection paths (N3–N7, N10, normalizer)
+- **Normalizer:** `normalizeForScan` joins backslash-newline continuations (`\\\n` → space) before the other steps. It strips all `\p{Cf}` characters plus U+034F, U+FE00–U+FE0F and U+E0000–U+E007F.
+- **Patterns:** add patterns for shell indirection feeding a destructive command: `base64 -d | sh`, `eval`, a variable followed by `push|publish`, and `$(…)` containing `push|publish`. Include benign near-miss tests.
+- **Capability gate:** add `canWriteFiles` to the gated capabilities (`GATED_CAPABILITIES`).
+- **N3:** in `executeSingleAsk`, when injected context (briefing, gateway, transcript) is present and the target has any gated capability, require a new `--approve-context` flag on `ask`, `route`, `delegate` and `chat`, plus an API option. Otherwise drop the injected context, keep the call, and warn. `--approve` alone does not cover injected context.
+- **N4 (REPL):**
+  - `send()` and `/direct` wrap transcript text with `quoteUntrusted` and run the composed-prompt scan plus the capability gate.
+  - `orchestrate()` passes the transcript as quoted context, not as part of the goal, and scans only the user's typed line as trusted.
+  - `chat --approve` still gates injected context unless `--approve-context` is also set.
+- **N6 (`run` loop):**
+  - A generator or repairer adapter with gated capabilities requires `--approve`.
+  - Scan each composed generator/evaluator prompt.
+  - Wrap `rubric.md`, prior candidate and evaluator feedback with `quoteUntrusted`.
+- **N7:** `generateTurnAnswer` refuses (`failureClass: 'unsafe_serve_agent'`) any agent with gated capabilities, and quotes the query and goal.
+- **N5:**
+  - Pass agy's restrictions as CLI flags if the agy CLI supports them (check `agy --help`; if not, record "needs confirmation" in a code comment and keep agy behind the capability gate).
+  - For codex read-only lanes, disable MCP servers only with a flag you confirm exists in `codex exec --help` / config docs; otherwise leave a TODO comment.
+  - Cursor: verify `--approve-mcps` is absent and that no MCP is auto-approved.
+- **N10:** put `--` before `{prompt}` in `cursor.yaml` / `pi.yaml`, but only if `cursor-agent --help` / `pi --help` confirm `--` ends options. Otherwise make `buildInvocation` reject prompts that start with `-` for arg-delivery presets by prefixing a space.
+
+## S7: residual Low items (M4, M5, M6 residuals, N8, N9, N11, X2 is_error, L4 trace)
+- **M4 residual:** the run-loop `trace.jsonl`, candidates and evaluations are written through `privateFs`.
+- **M5 residual:** `saveSession` applies `redactDeep` to the transcript, so chat sessions are redacted too.
+- **N8:** `config trust` strips control characters when printing, highlights `commandTemplate`/`healthProbe`/`environment`, and asks for confirmation (y/N on a TTY; `--yes` required when not a TTY). It warns when an executable path in the file is relative or points inside the repo.
+- **N9:**
+  - Redact only persisted and logged copies. The in-memory outputs passed to later steps and returned to the caller are unredacted, except that resumed outputs loaded from disk stay redacted and get a note.
+  - The Bearer pattern needs 20+ token characters; `password|token|secret|api_key=` needs a value of 8+ characters that isn't a placeholder (`xxx`, `<...>`, `${...}`, `***`).
+- **N11:** `gatewayClient` validates `status`/`terminal` against enums and `context_bundle_id` as a UUID, otherwise it drops them.
+- **X2 `is_error`:** a `claude_json` result envelope with `is_error: true` becomes `failResult` (`parse_error`) with the result text as the reason.
+- **L4 trace:** graph-trace error strings from Laya/Jev are replaced with error codes in responses.
+- **M6 residual:** switch the managed browser to Playwright `launchPersistentContext` over a pipe (no TCP CDP port) if the preset's app can be launched that way; keep the verified-port flow only for an explicit `cdpEndpoint`. If Comet can't be launched via Playwright, keep the current flow and document the residual in the code comment.
