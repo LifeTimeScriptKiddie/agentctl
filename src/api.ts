@@ -10,7 +10,8 @@ import {
 import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
 import { assertApproved, ApprovalRequiredError } from './approval.js';
 import { NULL_USAGE } from './schema/result.js';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   askOne,
   askAll,
@@ -23,12 +24,16 @@ import {
 import {
   runOrchestrateGoal,
   orchestrationRunPath,
+  logRoute,
+  logHallucinationIncidents,
 } from './core/orchestrateFlow.js';
 import { collectStatus } from './core/loadRegistry.js';
 import type { AskResult } from './core/ask.js';
 import { buildWorkerPrompt } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
+import { DEFAULT_ORCHESTRATOR_AGENT, resolveOrchestratorModel } from './core/orchestrateRoster.js';
+import { visibleAgentNames } from './core/orchestrateRuntime.js';
 
 export type { AskResult, RouteDecision, OrchestrationResult, StepOutcome, AgentStatus };
 
@@ -70,12 +75,18 @@ export interface RouteOptions {
   briefingWorkspace?: string;
   sessionScope?: string;
   gatewayUrl?: string | null;
+  /** Internal marker used to keep delegate route-log entries compatible. */
+  delegate?: boolean;
 }
 
 export interface RouteCommandResult {
   exitCode: number;
   warnings: string[];
   route: RouteDecision;
+  /** Live agent facts used only by the text renderer for --explain. */
+  agents: RouterAgent[];
+  /** Approval is checked before the route is rendered by the CLI. */
+  approvalRequired?: boolean;
   ask?: AskResult;
   error?: string;
 }
@@ -101,17 +112,25 @@ export interface OrchestrateCommandResult {
   exitCode: number;
   warnings: string[];
   orchestration: OrchestrationResult;
+  orchestrator: string;
+  orchestratorModel: string | null;
   error?: string;
 }
 
 export interface AgentsHealthResult {
   exitCode: number;
   agents: Array<{ name: string; available: boolean; detail: string; transport: string }>;
+  visibleAgents: string[];
 }
 
 export interface StatusResult {
   exitCode: number;
   agents: AgentStatus[];
+}
+
+export interface AgentsResult {
+  exitCode: number;
+  agents: Array<{ name: string; transport: string }>;
 }
 
 async function routerAgents(registry: AdapterRegistry): Promise<RouterAgent[]> {
@@ -124,16 +143,6 @@ async function routerAgents(registry: AdapterRegistry): Promise<RouterAgent[]> {
 }
 
 
-
-async function resolveRouting(
-  registry: AdapterRegistry,
-  task: string,
-): Promise<RouteDecision> {
-  const agents = await routerAgents(registry);
-  const decision = route(task, agents);
-
-  return decision;
-}
 
 async function executeSingleAsk(
   registry: AdapterRegistry,
@@ -237,7 +246,7 @@ async function executeSingleAsk(
       persistSessionExchange(sess, args.prompt, args.to, result);
     } catch (e) {
       return { exitCode: 1, result,
-        error: `Agent call completed but session persistence failed: ${e instanceof Error ? e.message : String(e)}` };
+        error: `session persistence failed: ${e instanceof Error ? e.message : String(e)}` };
     }
   }
 
@@ -279,10 +288,10 @@ export async function agentAsk(
 
   if (opts.to === 'all') {
     if (model || effort || opts.session || opts.resume) {
-      warnings.push('--model/--effort/--session/--resume are ignored with to=all (fan-out uses each agent default).');
+      warnings.push('--model/--effort/--session/--resume are ignored with --to all (fan-out uses each agent’s default, unrecorded).');
     }
     const results = await askAll(registry, opts.prompt, timeoutSeconds);
-    return { exitCode: 0, warnings, results };
+    return { exitCode: results.every((result) => result.ok) ? 0 : 1, warnings, results };
   }
 
   const single = await executeSingleAsk(
@@ -314,6 +323,7 @@ export async function agentRoute(
   registry: AdapterRegistry,
   opts: RouteOptions,
 ): Promise<RouteCommandResult> {
+  const agents = await routerAgents(registry);
   const warnings: string[] = [];
   const timeoutSeconds = opts.timeoutSeconds ?? 120;
 
@@ -321,19 +331,31 @@ export async function agentRoute(
     assertApproved(opts.task, opts.approve ?? false);
   } catch (e) {
     if (e instanceof ApprovalRequiredError) {
-      const decision = route(opts.task, await routerAgents(registry));
-      return { exitCode: 3, warnings, route: decision, error: e.message };
+      const decision = route(opts.task, agents);
+      return { exitCode: 3, warnings, route: decision, agents, approvalRequired: true, error: e.message };
     }
     throw e;
   }
 
-  const decision = await resolveRouting(registry, opts.task);
+  const decision = route(opts.task, agents);
+
+  logRoute({
+    ...(opts.delegate ? { delegate: true } : {}),
+    task: opts.task,
+    agent: decision.agent,
+    model: opts.model ?? decision.model,
+    effort: opts.effort ?? decision.effort,
+    tier: decision.tier,
+    method: decision.method,
+    ambiguous: decision.ambiguous,
+    dryRoute: opts.dryRoute,
+  });
 
   if (opts.dryRoute) {
-    return { exitCode: 0, warnings, route: decision };
+    return { exitCode: 0, warnings, route: decision, agents };
   }
   if (decision.ambiguous) {
-    return { exitCode: 3, warnings, route: decision,
+    return { exitCode: 3, warnings, route: decision, agents,
       error: 'Ambiguous routing requires a human choice; use delegate --to. LLM tiebreak is disabled.' };
   }
   if (!decision.agent) {
@@ -341,6 +363,7 @@ export async function agentRoute(
       exitCode: 2,
       warnings,
       route: decision,
+      agents,
       error: 'no agent available to run the task',
     };
   }
@@ -366,6 +389,7 @@ export async function agentRoute(
     exitCode: ask.exitCode,
     warnings,
     route: decision,
+    agents,
     ask: ask.result,
     ...(ask.error ? { error: ask.error } : {}),
   };
@@ -378,10 +402,11 @@ export async function agentDelegate(
 ): Promise<RouteCommandResult> {
   if (opts.to && opts.dryRoute) {
     const known = registry.has(opts.to);
-    return { exitCode: known ? 0 : 2, warnings: [],
+    const agents = await routerAgents(registry);
+    return { exitCode: known ? 0 : 2, warnings: [], agents,
       route: { agent: known ? opts.to : null, model: opts.model ?? null, effort: opts.effort ?? null,
         tier: null, rationale: 'pinned via to (preview only)', method: 'default', ranked: [], ambiguous: false },
-      ...(!known ? { error: `unknown agent '${opts.to}'` } : {}) };
+      ...(!known ? { error: `unknown agent '${opts.to}'. Known: ${registry.names().join(', ')}` } : {}) };
   }
   if (opts.to) {
     const askResult = await agentAsk(registry, {
@@ -411,11 +436,12 @@ export async function agentDelegate(
         ranked: [],
         ambiguous: false,
       },
+      agents: [],
       ...(ask ? { ask } : {}),
       ...(askResult.error ? { error: askResult.error } : {}),
     };
   }
-  return agentRoute(registry, opts);
+  return agentRoute(registry, { ...opts, delegate: true });
 }
 
 function emptyOrchestration(goal: string): OrchestrationResult {
@@ -436,13 +462,15 @@ export async function agentOrchestrate(
   opts: OrchestrateOptions,
 ): Promise<OrchestrateCommandResult> {
   const warnings: string[] = [];
-  const orchName = opts.orchestrator ?? 'codex';
+  const orchName = opts.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT;
   if (!registry.has(orchName)) {
     return {
       exitCode: 2,
       warnings,
       orchestration: emptyOrchestration(opts.goal),
-      error: `orchestrate needs orchestrator agent '${orchName}'; none configured`,
+      orchestrator: orchName,
+      orchestratorModel: null,
+      error: `orchestrate needs orchestrator agent '${orchName}'; none configured.`,
     };
   }
 
@@ -460,17 +488,26 @@ export async function agentOrchestrate(
     }
   }
 
+  const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
   let orchestration: OrchestrationResult;
   try {
     orchestration = await runOrchestrateGoal(registry, {
       goal: opts.goal,
       timeoutSeconds: opts.timeoutSeconds ?? 180,
       orchestrator: orchName,
-      orchestratorModel: opts.orchestratorModel ?? null,
+      orchestratorModel: orchModel,
       noSynth: opts.noSynth ?? false,
       dryPlan: opts.dryPlan ?? false,
       approve: opts.approve ?? false,
       completed,
+      onStep: (_outcome, all) => {
+        try {
+          mkdirSync(dirname(runPath), { recursive: true });
+          writeFileSync(runPath, JSON.stringify({ goal: opts.goal, outcomes: all }, null, 2), 'utf8');
+        } catch {
+          /* persistence is best-effort */
+        }
+      },
       ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
       ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),
     });
@@ -480,8 +517,20 @@ export async function agentOrchestrate(
       exitCode: 1,
       warnings,
       orchestration: emptyOrchestration(opts.goal),
+      orchestrator: orchName,
+      orchestratorModel: orchModel,
       error: `planning failed: ${msg}`,
     };
+  }
+
+  logRoute({ orchestrate: true, goal: opts.goal, steps: orchestration.plan.steps.length, status: orchestration.status });
+  logHallucinationIncidents(opts.goal, orchestration.outcomes, orchestration.synthesisVerification);
+  if (orchestration.status === 'done') {
+    try {
+      if (existsSync(runPath)) rmSync(runPath);
+    } catch {
+      /* cleanup is best-effort */
+    }
   }
 
   const exitCode =
@@ -491,7 +540,13 @@ export async function agentOrchestrate(
           : opts.dryPlan ? 0
             : 1;
 
-  return { exitCode, warnings, orchestration };
+  return {
+    exitCode,
+    warnings,
+    orchestration,
+    orchestrator: orchName,
+    orchestratorModel: orchModel,
+  };
 }
 
 /** List configured agents with optional live health probes. */
@@ -503,11 +558,21 @@ export async function agentHealth(registry: AdapterRegistry): Promise<AgentsHeal
     detail: health[name]?.detail ?? '',
     transport: registry.get(name).transport,
   }));
-  return { exitCode: 0, agents };
+  const visibleAgents = visibleAgentNames(registry.names(), health);
+  return { exitCode: 0, agents, visibleAgents };
 }
 
 /** Availability, model, and session snapshot for each agent. */
 export async function agentStatus(registry: AdapterRegistry): Promise<StatusResult> {
   const agents = await collectStatus(registry);
+  return { exitCode: 0, agents };
+}
+
+/** List configured agents without probing them. */
+export async function agentAgents(registry: AdapterRegistry): Promise<AgentsResult> {
+  const agents = registry.names().map((name) => ({
+    name,
+    transport: registry.get(name).transport,
+  }));
   return { exitCode: 0, agents };
 }

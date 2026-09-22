@@ -77,7 +77,7 @@ describe('cmdAsk', () => {
       { to: 'all', prompt: 'ping', timeoutSeconds: 10, approve: false },
       io,
     );
-    expect(code).toBe(0);
+    expect(code).toBe(1);
     // a header per targeted agent
     const headers = io.lines.filter((l) => l.startsWith('=== '));
     expect(headers.length).toBeGreaterThanOrEqual(4);
