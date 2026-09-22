@@ -1,4 +1,5 @@
 import type { Evaluation } from '../schema/evaluation.js';
+import { quoteUntrusted } from './untrusted.js';
 
 export interface GeneratorPromptInput {
   template: string; // contents of prompts/generator.md, with {{task}} {{rubric}} {{revision_block}}
@@ -10,7 +11,8 @@ export interface GeneratorPromptInput {
 }
 
 /** Compose the generator prompt. Iteration 1 has no revision block; later
- *  iterations inject the prior candidate + the evaluator's revision guidance. */
+ *  iterations inject the prior candidate + the evaluator's revision guidance.
+ *  rubric.md, the prior candidate and evaluator feedback are untrusted data. */
 export function buildGeneratorPrompt(i: GeneratorPromptInput): string {
   let revision = '';
   if (i.iteration > 1 && i.lastEvaluation) {
@@ -18,18 +20,23 @@ export function buildGeneratorPrompt(i: GeneratorPromptInput): string {
       i.lastEvaluation.failures.map((f) => `- ${f.message}`).join('\n') || '- (none specified)';
     revision = [
       `## Previous attempt (iteration ${i.iteration - 1})`,
-      i.lastCandidate ?? '(previous candidate unavailable)',
+      quoteUntrusted('previous candidate', i.lastCandidate ?? '(previous candidate unavailable)'),
       '',
       '## Required revisions',
-      i.lastEvaluation.revisionInstructions || '(address the failures below)',
-      '',
-      '### Failures to fix',
-      failures,
+      quoteUntrusted(
+        'evaluator feedback',
+        [
+          i.lastEvaluation.revisionInstructions || '(address the failures below)',
+          '',
+          '### Failures to fix',
+          failures,
+        ].join('\n'),
+      ),
     ].join('\n');
   }
   return i.template
     .replaceAll('{{task}}', i.task)
-    .replaceAll('{{rubric}}', i.rubric)
+    .replaceAll('{{rubric}}', quoteUntrusted('rubric.md', i.rubric))
     .replaceAll('{{revision_block}}', revision)
     .trim();
 }
@@ -44,7 +51,7 @@ export interface EvaluatorPromptInput {
 export function buildEvaluatorPrompt(i: EvaluatorPromptInput): string {
   return i.template
     .replaceAll('{{task}}', i.task)
-    .replaceAll('{{rubric}}', i.rubric)
+    .replaceAll('{{rubric}}', quoteUntrusted('rubric.md', i.rubric))
     .replaceAll('{{candidate}}', i.candidate)
     .trim();
 }

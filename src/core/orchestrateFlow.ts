@@ -36,6 +36,7 @@ export function createOrchestrateDeps(
   noSynth = false,
   hooks: OrchestrateHooks = {},
   signal?: AbortSignal,
+  context?: string,
 ): OrchestrateDeps {
   const orchestrator = () => registry.resolveRole('chat', orchName);
   const orchCall = async (prompt: string, phase: OrchCallPhase) => {
@@ -48,7 +49,7 @@ export function createOrchestrateDeps(
   return {
     agents,
     plan: async (goal) => {
-      const r = await orchCall(buildPlannerPrompt(goal, rosterText), 'plan');
+      const r = await orchCall(buildPlannerPrompt(goal, rosterText, undefined, context), 'plan');
       return { text: r.text, costUsd: r.costUsd };
     },
     dispatch: async (agent, instruction, model, effort) => {
@@ -95,6 +96,8 @@ export function createOrchestrateDeps(
 
 export interface RunOrchestrateGoalOpts {
   goal: string;
+  /** Untrusted background for the planner (quoted, not part of the goal). */
+  context?: string;
   timeoutSeconds: number;
   orchestrator?: string;
   orchestratorModel?: string | null;
@@ -127,7 +130,7 @@ export async function runOrchestrateGoal(
   const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
   const deps = createOrchestrateDeps(
     registry, agents, rosterText, opts.timeoutSeconds, orchName, orchModel, opts.noSynth ?? false,
-    opts.hooks ?? {}, opts.signal,
+    opts.hooks ?? {}, opts.signal, opts.context,
   );
   return runOrchestration(opts.goal, deps, {
     dryPlan: opts.dryPlan ?? false,

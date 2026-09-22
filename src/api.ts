@@ -8,7 +8,7 @@ import {
   route,
 } from './core/router.js';
 import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
-import { assertApproved, ApprovalRequiredError } from './approval.js';
+import { assertApproved, ApprovalRequiredError, gateInjectedContext } from './approval.js';
 import { NULL_USAGE } from './schema/result.js';
 import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { redact } from './core/redact.js';
@@ -43,6 +43,12 @@ export interface AskOptions {
   prompt: string;
   timeoutSeconds?: number;
   approve?: boolean;
+  /**
+   * Send briefing, gateway and transcript context to a target that can write
+   * files, run shell, modify the repo or publish. Without it that context is
+   * dropped with a warning; `approve` does not cover it.
+   */
+  approveContext?: boolean;
   model?: string | null;
   effort?: string | null;
   session?: string;
@@ -69,6 +75,8 @@ export interface RouteOptions {
   llm?: boolean;
   timeoutSeconds?: number;
   approve?: boolean;
+  /** See `AskOptions.approveContext`. */
+  approveContext?: boolean;
   model?: string | null;
   effort?: string | null;
   session?: string;
@@ -159,6 +167,7 @@ async function executeSingleAsk(
     sessionScope?: string;
     gatewayUrl?: string | null;
     approve: boolean;
+    approveContext: boolean;
   },
   warnings: string[],
 ): Promise<{ exitCode: number; result: AskResult; error?: string }> {
@@ -236,8 +245,20 @@ async function executeSingleAsk(
 
   const at = prompt.lastIndexOf(args.prompt);
   const injected = at < 0 ? prompt : prompt.slice(0, at) + prompt.slice(at + args.prompt.length);
+  const contextGate = gateInjectedContext({
+    context: injected,
+    agent: args.to,
+    caps: registry.get(args.to).capabilities(),
+    approve: args.approve,
+    approveContext: args.approveContext,
+  });
+  let workerPrompt = prompt;
+  if (contextGate.action === 'drop') {
+    warnings.push(contextGate.warning);
+    workerPrompt = args.prompt;
+  }
   try {
-    assertApproved(injected, args.approve, 'injected-context');
+    if (contextGate.action === 'block') throw contextGate.error;
     assertApproved(args.prompt, args.approve);
   } catch (e) {
     if (!(e instanceof ApprovalRequiredError)) throw e;
@@ -255,7 +276,7 @@ async function executeSingleAsk(
 
   const result = await askOne(
     registry.resolveRole('chat', args.to),
-    prompt,
+    workerPrompt,
     args.timeoutSeconds,
     args.model,
     resumeId,
@@ -329,6 +350,7 @@ export async function agentAsk(
       sessionScope: opts.sessionScope,
       gatewayUrl: opts.gatewayUrl,
       approve,
+      approveContext: opts.approveContext ?? false,
     },
     warnings,
   );
@@ -404,6 +426,7 @@ export async function agentRoute(
       sessionScope: opts.sessionScope,
       gatewayUrl: opts.gatewayUrl,
       approve: opts.approve ?? false,
+      approveContext: opts.approveContext ?? false,
     },
     warnings,
   );
@@ -437,6 +460,7 @@ export async function agentDelegate(
       prompt: opts.task,
       timeoutSeconds: opts.timeoutSeconds,
       approve: opts.approve,
+      approveContext: opts.approveContext,
       model: opts.model,
       effort: opts.effort,
       session: opts.session,

@@ -2,6 +2,8 @@ import { askOne } from '../core/ask.js';
 import { loadRegistry } from '../core/loadRegistry.js';
 import type { ContextBundle } from './contextBundle.js';
 import { formatGatewayTurnPrefix } from './gatewayClient.js';
+import { gatedCapability } from '../approval.js';
+import { quoteUntrusted } from '../core/untrusted.js';
 
 export function resolveServeModelAgent(): string | null {
   const raw = process.env.AGENTCTL_SERVE_MODEL_AGENT?.trim();
@@ -40,6 +42,16 @@ export async function generateTurnAnswer(opts: {
       failureClass: 'unknown_agent',
     };
   }
+  // Any HTTP caller can reach this lane, so it must not write, run shell, modify the repo or publish.
+  if (gatedCapability(registry.get(opts.agent).capabilities())) {
+    return {
+      status: 'failed',
+      answer: null,
+      agent: opts.agent,
+      model: null,
+      failureClass: 'unsafe_serve_agent',
+    };
+  }
   const prefix = formatGatewayTurnPrefix(
     {
       request_id: 'serve',
@@ -53,8 +65,8 @@ export async function generateTurnAnswer(opts: {
     'Answer using only permitted evidence above. Cite memory_id when referencing team memory.';
   const userLine =
     opts.goal.trim() !== opts.query.trim()
-      ? `Goal: ${opts.goal}\nUser query: ${opts.query}\n\n${instruction}`
-      : `${opts.query}\n\n${instruction}`;
+      ? `${quoteUntrusted('goal', opts.goal)}\n${quoteUntrusted('user query', opts.query)}\n\n${instruction}`
+      : `${quoteUntrusted('user query', opts.query)}\n\n${instruction}`;
   const prompt = prefix + userLine;
   const timeout =
     opts.timeoutSeconds ?? Number(process.env.AGENTCTL_SERVE_MODEL_TIMEOUT ?? 120);

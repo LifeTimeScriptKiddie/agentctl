@@ -15,6 +15,10 @@ commandTemplate:
   - --no-session
   - --tools
   - read,grep,find,ls
+  # `pi --help` (0.85.1): "--  End option parsing; treat remaining arguments as
+  # messages/files", so a prompt starting with '-' stays a message. buildInvocation
+  # inserts --model and other appended flags before this `--`.
+  - --
   - "{prompt}"
 # Example provider-qualified model roster. Configure these for your provider account.
 models:

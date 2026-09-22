@@ -3,7 +3,8 @@ import { AdapterRegistry } from './adapters/registry.js';
 import {
   askOne, askAll, collectStatus, runOrchestrateGoal, type IO, type OrchCallPhase,
 } from './commands.js';
-import { findDestructive } from './approval.js';
+import { findDestructive, gateInjectedContext } from './approval.js';
+import { quoteUntrusted } from './core/untrusted.js';
 import { formatOrchestrationForChat } from './core/orchestrateRuntime.js';
 import {
   DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL,
@@ -103,6 +104,8 @@ export interface ReplOptions {
   orchMode?: boolean;
   /** allow orchestrated steps that need shell/repo-write/publish lanes (chat --approve). */
   approve?: boolean;
+  /** send the transcript to lanes that can write/run shell/modify the repo/publish (chat --approve-context). */
+  approveContext?: boolean;
   /** immediate status line while a slow handler runs (e.g. orchestration). */
   onProgress?: (line: string) => void;
   /** redraw header dashboard after each turn (default true in TTY chat). */
@@ -129,6 +132,7 @@ export class ReplSession {
   private readonly orchAgent: string;
   private readonly orchModel: string;
   private readonly approve: boolean;
+  private readonly approveContext: boolean;
   private readonly onProgress?: (line: string) => void;
   private readonly tui: boolean;
   private ui: ReplUIHooks = {};
@@ -146,6 +150,7 @@ export class ReplSession {
     this.orchAgent = DEFAULT_ORCHESTRATOR_AGENT;
     this.orchModel = DEFAULT_ORCHESTRATOR_MODEL;
     this.approve = opts.approve ?? false;
+    this.approveContext = opts.approveContext ?? false;
     this.onProgress = opts.onProgress;
     this.tui = opts.tui ?? true;
     this.persist = opts.persist;
@@ -267,12 +272,30 @@ export class ReplSession {
     }
   }
 
-  buildPrompt(_agent: string, msg: string): string {
-    if (this.transcript.length === 0) return msg;
-    const ctx = this.transcript
+  private transcriptText(): string {
+    return this.transcript
       .map((t) => (t.role === 'user' ? `User: ${t.text}` : `${t.agent}: ${t.text}`))
       .join('\n');
-    return `${ctx}\nUser: ${msg}\nAssistant:`;
+  }
+
+  /** The transcript (including web answers) is untrusted data, so it is quoted. */
+  buildPrompt(_agent: string, msg: string): string {
+    if (this.transcript.length === 0) return msg;
+    return `${quoteUntrusted('chat transcript', this.transcriptText())}\nUser: ${msg}\nAssistant:`;
+  }
+
+  /** A notice is a system line in the TUI, otherwise a note line before the reply. */
+  private notice(text: string): string[] {
+    if (this.uiMode) {
+      this.ui.onSystem?.(text);
+      return [];
+    }
+    return [color.yellow(`note: ${text}`)];
+  }
+
+  private blocked(text: string): string {
+    if (this.uiMode) this.ui.onSystem?.(text);
+    return text;
   }
 
   private snapshot(): SessionRecord {
@@ -303,7 +326,26 @@ export class ReplSession {
     }
     const native = !!this.registry.getPreset(agent)?.session?.supportsResume;
     const resumeId = native ? this.native.get(agent) ?? null : null;
-    const prompt = native && resumeId ? msg : this.buildPrompt(agent, msg);
+    const typedHit = this.approve ? null : findDestructive(msg);
+    if (typedHit) {
+      return this.blocked(`blocked: destructive intent (${typedHit}). Restart chat with --approve, or rephrase.`);
+    }
+    let prompt = native && resumeId ? msg : this.buildPrompt(agent, msg);
+    const gate = gateInjectedContext({
+      context: prompt === msg ? '' : this.transcriptText(),
+      agent,
+      caps: adapter.capabilities(),
+      approve: this.approve,
+      approveContext: this.approveContext,
+    });
+    if (gate.action === 'block') {
+      return this.blocked(
+        `blocked: the chat transcript requests a destructive/outward-facing action ('${gate.error.matched}'). `
+          + 'Use /reset to clear it, or restart chat with --approve.',
+      );
+    }
+    const notes = gate.action === 'drop' ? this.notice(gate.warning) : [];
+    if (gate.action === 'drop') prompt = msg;
     const model = modelOverride !== undefined ? modelOverride : this.modelFor(agent);
     const toNode = displayFlowNode(agent, model);
     this.ledger.route.setActive(`you → ${toNode}`);
@@ -326,7 +368,7 @@ export class ReplSession {
     this.ui.onAssistant?.(agent, body);
     await this.bound();
     this.persistNow();
-    return result.ok ? result.text : `error (${result.failureClass}): ${result.text}`;
+    return [...notes, result.ok ? result.text : `error (${result.failureClass}): ${result.text}`].join('\n');
   }
 
   private async searchWeb(query: string): Promise<string> {
@@ -367,10 +409,16 @@ export class ReplSession {
     if (!this.registry.has(this.orchAgent)) {
       return [`orchestrator agent '${this.orchAgent}' is not configured`];
     }
-    const ctx = this.transcript.length
-      ? `Conversation so far:\n${this.transcript.map((t) => (t.role === 'user' ? `User: ${t.text}` : `${t.agent}: ${t.text}`)).join('\n')}\n\n`
-      : '';
-    const fullGoal = `${ctx}Current request: ${goal}`;
+    // Only the typed line is the goal; the transcript is quoted planner context.
+    // With --approve the step gate is off, so the transcript also needs --approve-context.
+    let context = this.transcriptText();
+    const notes: string[] = [];
+    if (context && this.approve && !this.approveContext) {
+      context = '';
+      notes.push(...this.notice(
+        'planning without the chat transcript: --approve does not cover it. Restart chat with --approve-context to include it.',
+      ));
+    }
 
     const orchLabel = this.orchestratorLabel();
     this.ledger.recordFlowHop('you', orchLabel);
@@ -380,7 +428,8 @@ export class ReplSession {
     let result;
     try {
       result = await runOrchestrateGoal(this.registry, {
-        goal: fullGoal,
+        goal,
+        ...(context ? { context } : {}),
         timeoutSeconds: this.timeout,
         orchestrator: this.orchAgent,
         orchestratorModel: this.orchModel,
@@ -458,10 +507,10 @@ export class ReplSession {
       this.persistNow();
     }
     if (this.quietOrch || this.uiMode) {
-      if (dryPlan) return lines;
-      return [];
+      if (dryPlan) return [...notes, ...lines];
+      return notes;
     }
-    return lines;
+    return [...notes, ...lines];
   }
 
   async handle(line: string): Promise<{ outputs: string[]; exit?: boolean }> {
@@ -597,7 +646,7 @@ export class ReplSession {
   }
 }
 
-export interface ReplStartOptions extends Pick<ReplOptions, 'session' | 'persist' | 'orchMode' | 'tui' | 'approve'> {}
+export interface ReplStartOptions extends Pick<ReplOptions, 'session' | 'persist' | 'orchMode' | 'tui' | 'approve' | 'approveContext'> {}
 
 export async function startRepl(
   registry: AdapterRegistry,

@@ -12,4 +12,14 @@ describe('cli program', () => {
     const names = buildProgram().commands.map((c) => c.name());
     expect(names).toEqual(expect.arrayContaining(['ask', 'agents', 'run', 'resume', 'delegate']));
   });
+
+  it('offers --approve-context (separate from --approve) on ask, route, delegate and chat', () => {
+    const program = buildProgram();
+    for (const name of ['ask', 'route', 'delegate', 'chat']) {
+      const flags = program.commands.find((c) => c.name() === name)!.options.map((o) => o.long);
+      expect(flags, name).toEqual(expect.arrayContaining(['--approve', '--approve-context']));
+    }
+    expect(program.commands.find((c) => c.name() === 'orchestrate')!.options.map((o) => o.long))
+      .not.toContain('--approve-context');
+  });
 });

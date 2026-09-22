@@ -71,8 +71,8 @@ describe('buildInvocation argv (against real presets)', () => {
     const inv = buildInvocation(loadPreset('pi'), req({ role: 'chat' }));
     expect(inv.file).toBe('pi');
     expect(inv.args).toEqual([
-      '-p', '--mode', 'text', '--no-session', '--tools', 'read,grep,find,ls', 'PROMPT',
-      '--model', 'openai-codex/gpt-5.6-luna',
+      '-p', '--mode', 'text', '--no-session', '--tools', 'read,grep,find,ls',
+      '--model', 'openai-codex/gpt-5.6-luna', '--', 'PROMPT',
     ]);
     expect(inv.input).toBeUndefined();
   });
@@ -131,11 +131,68 @@ describe('buildInvocation argv (against real presets)', () => {
     expect(runMock.mock.calls[1]![2]!.cwd).toBe('/somewhere/else');
   });
 
+  it('agy lanes pass --sandbox (terminal restrictions) and never skip permissions', () => {
+    for (const name of ['agy', 'agy_image']) {
+      const inv = buildInvocation(loadPreset(name), req({ role: 'chat', resumeSessionId: 'conv-1' }));
+      expect(inv.args, name).toContain('--sandbox');
+      expect(inv.args, name).not.toContain('--dangerously-skip-permissions');
+      expect(inv.args.indexOf('--sandbox'), name).toBeLessThan(inv.args.indexOf('--conversation'));
+    }
+  });
+
+  it('cursor never auto-approves MCP servers, for any role or model', () => {
+    for (const role of ['generator', 'evaluator', 'chat', 'repairer'] as const) {
+      const inv = buildInvocation(loadPreset('cursor'), req({ role, model: 'composer-2.5' }));
+      expect(inv.args, role).not.toContain('--approve-mcps');
+      expect(inv.args, role).not.toContain('--force');
+    }
+  });
+
+  it('codex read-only lane adds no unconfirmed MCP override', () => {
+    const inv = buildInvocation(loadPreset('codex'), req({ role: 'chat' }));
+    expect(inv.args.some((a) => a.includes('mcp'))).toBe(false);
+  });
+
   it('treats shell metacharacters in the prompt as inert argv data', () => {
     const malicious = '"; rm -rf / #`$(whoami)`';
     const inv = buildInvocation(loadPreset('agy'), req({ role: 'chat', prompt: malicious }));
     // the metachars land as a single argv element — never a shell string
     expect(inv.args.filter((arg) => arg.includes(malicious))).toHaveLength(1);
+  });
+});
+
+describe('prompts that start with - (security review N10)', () => {
+  it('pi: the prompt follows `--`, and model/resume flags stay before it', () => {
+    const preset = {
+      ...loadPreset('pi'),
+      session: { supportsResume: true, idFrom: null, resumeStyle: 'append_flag' as const, resumeFlag: '--session', resumeExtraArgs: [] },
+    };
+    const inv = buildInvocation(preset, req({ role: 'chat', prompt: '--tools bash', model: 'openai-codex/gpt-5.6-sol', resumeSessionId: 's-1' }));
+    expect(inv.args.slice(-2)).toEqual(['--', '--tools bash']);
+    expect(inv.args.indexOf('--model')).toBeLessThan(inv.args.indexOf('--'));
+    expect(inv.args.indexOf('--session')).toBeLessThan(inv.args.indexOf('--'));
+  });
+
+  it('cursor (no documented `--`): a leading-dash prompt gets a leading space', () => {
+    const inv = buildInvocation(loadPreset('cursor'), req({ role: 'chat', prompt: '--mode agent do it' }));
+    expect(inv.args).toContain(' --mode agent do it');
+    expect(inv.args).not.toContain('--mode agent do it');
+    expect(inv.args.filter((a) => a === '--mode')).toHaveLength(1);
+    expect(buildInvocation(loadPreset('cursor'), req({ role: 'chat', prompt: 'a - b' })).args).toContain('a - b');
+  });
+
+  it('stdin delivery and prefixed arg prompts are unchanged', () => {
+    expect(buildInvocation(loadPreset('claude'), req({ role: 'chat', prompt: '-x' })).input).toBe('-x');
+    const agy = buildInvocation(loadPreset('agy'), req({ role: 'chat', prompt: '-x' }));
+    expect(agy.args[1]!.startsWith('For current or online facts')).toBe(true);
+    expect(agy.args[1]!.endsWith('-x')).toBe(true);
+  });
+
+  it('a `--` that does not directly precede {prompt} keeps flags appended at the end', () => {
+    const base = loadPreset('cursor');
+    const preset = { ...base, commandTemplate: ['uv', 'run', '--', 'mycli', '-p', '{prompt}'] };
+    const inv = buildInvocation(preset, req({ role: 'chat', prompt: '-x', model: 'composer-2.5' }));
+    expect(inv.args).toEqual(['run', '--', 'mycli', '-p', ' -x', '--model', 'composer-2.5']);
   });
 });
 

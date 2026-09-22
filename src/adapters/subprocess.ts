@@ -41,10 +41,19 @@ function assetPath(name: string): string {
   return path;
 }
 
-function substitute(token: string, req: AdapterRequest, deliverViaArg: boolean, promptPrefix: string): string {
+function substitute(
+  token: string,
+  req: AdapterRequest,
+  deliverViaArg: boolean,
+  promptPrefix: string,
+  guardLeadingDash: boolean,
+): string {
+  let prompt = deliverViaArg ? `${promptPrefix}${req.prompt}` : '';
+  // A standalone prompt argv element starting with '-' would be parsed as an option.
+  if (guardLeadingDash && prompt.startsWith('-')) prompt = ` ${prompt}`;
   return token
     .replace(ASSET_TOKEN, (_m, name: string) => assetPath(name))
-    .replaceAll('{prompt}', deliverViaArg ? `${promptPrefix}${req.prompt}` : '')
+    .replaceAll('{prompt}', prompt)
     .replaceAll('{max_turns}', String(req.maxTurns));
 }
 
@@ -124,6 +133,10 @@ export function applyResume(preset: Preset, req: AdapterRequest, args: string[])
  * Pure argv builder — no I/O, so the exact command is unit-testable. Prompts
  * are passed as argv elements or stdin (never interpolated into a shell
  * string), so shell metacharacters in model output are inert.
+ *
+ * A template `--` directly before `{prompt}` ends option parsing: appended
+ * flags (effort, model, tool limits, resume) are inserted before it. Without
+ * that `--`, an arg-delivered prompt starting with `-` gets a leading space.
  */
 export function buildInvocation(preset: Preset, req: AdapterRequest): Invocation {
   const tmpl = preset.commandTemplate;
@@ -132,7 +145,12 @@ export function buildInvocation(preset: Preset, req: AdapterRequest): Invocation
   }
   const deliverViaArg = preset.promptDelivery === 'arg';
   const file = tmpl[0]!;
-  const args = tmpl.slice(1).map((t) => substitute(t, req, deliverViaArg, preset.promptPrefix));
+  const rest = tmpl.slice(1);
+  const args = rest.map((t, i) => substitute(
+    t, req, deliverViaArg, preset.promptPrefix, deliverViaArg && t === '{prompt}' && rest[i - 1] !== '--',
+  ));
+  const promptAt = rest.indexOf('{prompt}');
+  const tail = promptAt > 0 && rest[promptAt - 1] === '--' ? args.splice(promptAt - 1) : [];
 
   // pin reasoning effort (per-request override → preset default) before the
   // model flag, so the argv reads `-c model_reasoning_effort=… -m <model>`.
@@ -154,6 +172,7 @@ export function buildInvocation(preset: Preset, req: AdapterRequest): Invocation
 
   // resume a native session when requested and the CLI supports it
   applyResume(preset, req, args);
+  args.push(...tail);
 
   const inv: Invocation = { file, args };
   if (preset.promptDelivery === 'stdin' || preset.promptDelivery === 'file') {

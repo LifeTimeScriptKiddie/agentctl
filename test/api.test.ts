@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 import { agentAsk, agentRoute, agentDelegate, agentHealth, agentOrchestrate } from '../src/api.js';
-import { loadRegistry, cmdAsk, cmdOrchestrate, cmdRoute } from '../src/commands.js';
+import { loadRegistry, cmdAsk, cmdDelegate, cmdOrchestrate, cmdRoute } from '../src/commands.js';
 import { fanoutTargets } from '../src/core/ask.js';
 import { orchestrationRunPath } from '../src/core/orchestrateFlow.js';
 import { okResult } from '../src/adapters/protocol.js';
@@ -124,6 +124,132 @@ describe('injected context approval (executeSingleAsk)', () => {
     });
     expect(r.exitCode).toBe(3);
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('injected context to gated targets needs --approve-context (N3)', () => {
+  const seed = async (nextAction: string) => {
+    vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-n3-')));
+    vi.stubEnv('AGENTCTL_GATEWAY_URL', '');
+    const { MemoryStore } = await import('../src/memory/store.js');
+    const store = await MemoryStore.open();
+    store.setCheckpoint({
+      workspace: 'team-atlas', revision: 0, goal: 'fix tests', state: 'red', blockers: [],
+      nextAction, decisionRefs: [], source: 'operator:t',
+    });
+    store.close();
+  };
+  const mockAgent = (registry: AdapterRegistry, name: string) => vi.spyOn(registry.get(name), 'invoke').mockResolvedValue(
+    okResult({ adapter: name, transport: 'subprocess', normalizedText: 'ok', durationMs: 0 }),
+  );
+  /** A cursor preset configured for edits (briefings are keyed by memory provider, so cursor stands in). */
+  const writableCursor = (registry: AdapterRegistry) => {
+    const adapter = registry.get('cursor');
+    const caps = adapter.capabilities();
+    vi.spyOn(adapter, 'capabilities').mockReturnValue({ ...caps, canWriteFiles: true });
+    return mockAgent(registry, 'cursor');
+  };
+  const sentPrompt = (invoke: ReturnType<typeof mockAgent>, call = 0) => invoke.mock.calls[call]?.[0].prompt ?? '';
+
+  it.each([
+    ['no approval', {}],
+    ['--approve alone', { approve: true }],
+  ])('drops briefing context for a gated target with %s, keeps the call, and warns', async (_label, flags) => {
+    await seed('run the linter');
+    const registry = AdapterRegistry.fromPackaged();
+    const invoke = writableCursor(registry);
+    const r = await agentAsk(registry, {
+      to: 'cursor', prompt: 'fix tests', briefingWorkspace: 'team-atlas', timeoutSeconds: 5, ...flags,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(sentPrompt(invoke)).toBe('fix tests');
+    expect(r.warnings.join('\n')).toMatch(/dropped context.*cursor has canWriteFiles.*--approve-context/);
+  });
+
+  it('drops (rather than blocks on) destructive briefing text for a gated target', async () => {
+    await seed('g=git; $g push --force');
+    const registry = AdapterRegistry.fromPackaged();
+    const invoke = writableCursor(registry);
+    const r = await agentAsk(registry, { to: 'cursor', prompt: 'summarize status', briefingWorkspace: 'team-atlas', timeoutSeconds: 5 });
+    expect(r.exitCode).toBe(0);
+    expect(sentPrompt(invoke)).toBe('summarize status');
+  });
+
+  it('includes the quoted briefing with approveContext', async () => {
+    await seed('run the linter');
+    const registry = AdapterRegistry.fromPackaged();
+    const invoke = writableCursor(registry);
+    const r = await agentAsk(registry, {
+      to: 'cursor', prompt: 'fix tests', briefingWorkspace: 'team-atlas', timeoutSeconds: 5, approveContext: true,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.warnings).toEqual([]);
+    expect(sentPrompt(invoke)).toMatch(/<<<UNTRUSTED [^\n]*[0-9a-f]{24}>>>[\s\S]*Next action: run the linter[\s\S]*fix tests$/);
+  });
+
+  it('still scans the typed prompt when context is approved', async () => {
+    await seed('run the linter');
+    const registry = AdapterRegistry.fromPackaged();
+    const invoke = writableCursor(registry);
+    const r = await agentAsk(registry, {
+      to: 'cursor', prompt: 'then git push', briefingWorkspace: 'team-atlas', timeoutSeconds: 5, approveContext: true,
+    });
+    expect(r.exitCode).toBe(3);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('drops a replayed session transcript for codex_write unless approveContext', async () => {
+    vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-n3-sess-')));
+    vi.stubEnv('AGENTCTL_GATEWAY_URL', '');
+    const registry = AdapterRegistry.fromPackaged();
+    const invoke = mockAgent(registry, 'codex_write');
+    await agentAsk(registry, { to: 'codex_write', prompt: 'first', session: 'n3', timeoutSeconds: 5 });
+    const second = await agentAsk(registry, { to: 'codex_write', prompt: 'second', session: 'n3', timeoutSeconds: 5, approve: true });
+    expect(sentPrompt(invoke, 1)).toBe('second');
+    expect(second.warnings.join('\n')).toMatch(/codex_write has canModifyRepo.*--approve-context/);
+    const third = await agentAsk(registry, {
+      to: 'codex_write', prompt: 'third', session: 'n3', timeoutSeconds: 5, approveContext: true,
+    });
+    expect(third.exitCode).toBe(0);
+    expect(sentPrompt(invoke, 2)).toMatch(/<<<UNTRUSTED session transcript [0-9a-f]{24}>>>[\s\S]*User: first[\s\S]*User: third\nAssistant:$/);
+  });
+
+  it('threads approveContext through route, delegate and the cmd wrappers', async () => {
+    await seed('run the linter');
+    const registry = AdapterRegistry.fromPackaged();
+    vi.spyOn(registry, 'healthcheck').mockResolvedValue(Object.fromEntries(
+      registry.names().map((n) => [n, { available: true, detail: 'test', checkedVia: 'test' }]),
+    ));
+    const invoke = writableCursor(registry);
+    const task = 'analyze cybersecurity findings';
+
+    const dropped = await agentRoute(registry, { task, briefingWorkspace: 'team-atlas', timeoutSeconds: 5, approve: true });
+    expect(dropped.route.agent).toBe('cursor');
+    expect(dropped.warnings.join('\n')).toMatch(/--approve-context/);
+    expect(sentPrompt(invoke, 0)).toBe(task);
+
+    const routed = await agentRoute(registry, { task, briefingWorkspace: 'team-atlas', timeoutSeconds: 5, approveContext: true });
+    expect(routed.warnings).toEqual([]);
+    expect(sentPrompt(invoke, 1)).toContain('Next action: run the linter');
+
+    await agentDelegate(registry, { task: 'fix tests', to: 'cursor', briefingWorkspace: 'team-atlas', timeoutSeconds: 5, approveContext: true });
+    expect(sentPrompt(invoke, 2)).toContain('Next action: run the linter');
+
+    const io = { out: vi.fn(), err: vi.fn() };
+    expect(await cmdRoute(registry, {
+      task, dryRoute: false, explain: false, timeoutSeconds: 5, approve: false, approveContext: true,
+      briefingWorkspace: 'team-atlas',
+    }, io)).toBe(0);
+    expect(sentPrompt(invoke, 3)).toContain('Next action: run the linter');
+    expect(await cmdDelegate(registry, {
+      task: 'fix tests', to: 'cursor', timeoutSeconds: 5, approve: false, approveContext: true, briefingWorkspace: 'team-atlas',
+    }, io)).toBe(0);
+    expect(sentPrompt(invoke, 4)).toContain('Next action: run the linter');
+    expect(await cmdAsk(registry, {
+      to: 'cursor', prompt: 'fix tests', timeoutSeconds: 5, approve: false, briefingWorkspace: 'team-atlas',
+    }, io)).toBe(0);
+    expect(sentPrompt(invoke, 5)).toBe('fix tests');
+    expect(io.err.mock.calls.flat().join('\n')).toMatch(/--approve-context/);
   });
 });
 

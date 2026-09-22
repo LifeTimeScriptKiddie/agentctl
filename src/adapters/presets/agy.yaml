@@ -15,10 +15,16 @@ promptPrefix: |-
   User task:
 
 
+# `agy --help` (1.2.7): --sandbox is a boolean "Run in a sandbox with terminal
+# restrictions enabled" and enforces the no-terminal rule above. Needs
+# confirmation: agy has no per-run tool allowlist or MCP-disable flag (`agy mcp`
+# only edits config), so this canWriteFiles lane stays behind the approval
+# capability gate.
 commandTemplate:
   - agy
   - --prompt
   - "{prompt}"
+  - --sandbox
   - --output-format
   - json
 # Native Antigravity conversations can be resumed by id when callers opt into
