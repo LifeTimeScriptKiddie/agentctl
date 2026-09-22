@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   newSession, saveSession, loadSession, latestSession, listSessions, addTurn, setNative,
-  deleteSession, pruneSessions,
+  deleteSession, pruneSessions, sessionPath, sessionsDir, InvalidSessionIdError,
 } from '../src/core/session.js';
+import { SessionRecordSchema } from '../src/schema/session.js';
 import { extractSessionId } from '../src/adapters/parsers.js';
 import { buildInvocation } from '../src/adapters/subprocess.js';
 import { loadPreset } from '../src/assets.js';
@@ -122,6 +123,48 @@ describe('session store (roundtrip)', () => {
     expect(loadSession('demo')).toBeNull();
     // rm missing → exit 2
     expect(cmdSessions({ action: 'rm', id: 'gone' }, io)).toBe(2);
+  });
+
+  describe('session id validation (security review L1)', () => {
+    const traversal = ['../../../tmp/x', '../victim', 'a/b', '.hidden', '..', '', 'x'.repeat(65), 'bad id', 'a\\b'];
+
+    it('sessionPath, loadSession, saveSession and deleteSession refuse ../ and other unsafe ids', () => {
+      for (const id of traversal) {
+        expect(() => sessionPath(id), id).toThrow(InvalidSessionIdError);
+        expect(() => loadSession(id), id).toThrow(/invalid session id/);
+        expect(() => deleteSession(id), id).toThrow(/invalid session id/);
+      }
+      expect(() => saveSession(newSession(1000, '../escape'), 2000)).toThrow(/invalid session id/);
+      expect(existsSync(join(home, 'escape.json'))).toBe(false);
+    });
+
+    it('accepts ordinary ids and keeps paths inside the sessions dir', () => {
+      for (const id of ['demo', 'a.b_c-1', 'x'.repeat(64), newSession(0).id]) {
+        expect(sessionPath(id)).toBe(join(sessionsDir(), `${id}.json`));
+      }
+    });
+
+    it('the session schema rejects unsafe ids', () => {
+      const base = { createdAt: 0, updatedAt: 0 };
+      expect(SessionRecordSchema.safeParse({ ...base, id: '../x' }).success).toBe(false);
+      expect(SessionRecordSchema.safeParse({ ...base, id: '.x' }).success).toBe(false);
+      expect(SessionRecordSchema.safeParse({ ...base, id: 'ok-id' }).success).toBe(true);
+    });
+
+    it('`sessions rm ../victim` refuses and leaves the file outside the sessions dir alone', async () => {
+      const { cmdSessions } = await import('../src/commands.js');
+      writeFileSync(join(home, 'victim.json'), '{}', 'utf8');
+      const err: string[] = [];
+      const io = { out: () => {}, err: (s: string) => err.push(s) };
+      expect(cmdSessions({ action: 'rm', id: '../victim' }, io)).toBe(2);
+      expect(err.join('\n')).toMatch(/invalid session id/);
+      expect(existsSync(join(home, 'victim.json'))).toBe(true);
+    });
+
+    it('resolveSession reports an invalid --session name directly', async () => {
+      const { resolveSession } = await import('../src/commands.js');
+      expect(() => resolveSession({ session: '../../x' }, () => 1)).toThrow(/^invalid session id/);
+    });
   });
 
   it('resolveSession surfaces a clean error for a corrupt named session (no crash)', async () => {

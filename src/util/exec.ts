@@ -20,6 +20,8 @@ export interface ExecOutcome {
   timedOut: boolean;
   /** true when exitCode !== 0, the process was killed, or it failed to spawn. */
   failed: boolean;
+  /** true when the executable could not be found (spawn ENOENT). */
+  notFound?: boolean;
 }
 
 export interface RunOptions {
@@ -73,5 +75,6 @@ export async function run(
     stderr: asString(result.stderr),
     timedOut: result.timedOut === true,
     failed: result.failed === true,
+    ...((result as { code?: unknown }).code === 'ENOENT' ? { notFound: true } : {}),
   };
 }

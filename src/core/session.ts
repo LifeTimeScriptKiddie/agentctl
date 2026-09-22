@@ -1,7 +1,9 @@
 import { readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { SessionRecordSchema, type SessionRecord, type SessionTurn } from '../schema/session.js';
+import {
+  SessionRecordSchema, isValidSessionId, type SessionRecord, type SessionTurn,
+} from '../schema/session.js';
 import { agentctlHome } from './agentHome.js';
 import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 
@@ -10,8 +12,20 @@ export function sessionsDir(): string {
   return join(agentctlHome(), 'sessions');
 }
 
+/** Thrown for a session id that could name a file outside the sessions dir. */
+export class InvalidSessionIdError extends Error {
+  constructor(id: string) {
+    super(`invalid session id '${id}': use 1-64 letters, digits, '.', '_' or '-', not starting with '.'`);
+    this.name = 'InvalidSessionIdError';
+  }
+}
+
 export function sessionPath(id: string): string {
-  return join(sessionsDir(), `${id}.json`);
+  if (!isValidSessionId(id)) throw new InvalidSessionIdError(id);
+  const dir = sessionsDir();
+  const path = join(dir, `${id}.json`);
+  if (dirname(resolve(path)) !== resolve(dir)) throw new InvalidSessionIdError(id);
+  return path;
 }
 
 /** A fresh, empty session. `now` is injectable so callers/tests stay deterministic. */

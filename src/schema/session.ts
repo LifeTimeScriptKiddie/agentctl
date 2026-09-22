@@ -9,6 +9,17 @@ export const SessionTurnSchema = z.object({
 });
 export type SessionTurn = z.infer<typeof SessionTurnSchema>;
 
+/** Session ids become file names under the sessions dir: no separators, no leading `.`. */
+export const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+export function isValidSessionId(id: string): boolean {
+  return SESSION_ID_PATTERN.test(id) && !id.startsWith('.');
+}
+
+export const SessionIdSchema = z.string().refine(isValidSessionId, {
+  message: "session id must be 1-64 of [A-Za-z0-9._-] and must not start with '.'",
+});
+
 /**
  * A durable chat session. Holds both memory mechanisms:
  *  - `native`: each agent's own CLI session id (claude etc.), replayed on resume;
@@ -16,7 +27,7 @@ export type SessionTurn = z.infer<typeof SessionTurnSchema>;
  *    can't resume natively (codex/cursor) and shared across agent switches.
  */
 export const SessionRecordSchema = z.object({
-  id: z.string(),
+  id: SessionIdSchema,
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   /** Optional project/workspace label; `--resume` only matches within the same scope. */

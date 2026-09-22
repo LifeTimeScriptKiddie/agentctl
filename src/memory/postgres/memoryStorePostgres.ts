@@ -96,23 +96,38 @@ export class PostgresMemoryStore {
   private constructor(
     private readonly pool: PgPool,
     readonly auth: AuthContext | null,
+    private readonly ownsPool: boolean,
   ) {}
 
-  static async open(options: MemoryStoreOptions = {}): Promise<PostgresMemoryStore> {
+  /** Connection pool for this backend, running migrations first when `migrate` is set. */
+  static async openPool(opts: { migrate: boolean }): Promise<PgPool> {
     ensureKindsConfig();
     assertPostgresConfig();
     const pool = await loadPgPool();
     if (!pool) {
       throw new Error('Install the `pg` package on the memory VM to use AGENTCTL_MEMORY_BACKEND=postgres.');
     }
-    const migrate = await runPostgresMigrations({ dryRun: false });
-    if (migrate.error) throw new Error(migrate.error);
+    if (opts.migrate) {
+      const migrate = await runPostgresMigrations({ dryRun: false });
+      if (migrate.error) throw new Error(migrate.error);
+    }
+    return pool;
+  }
+
+  static async open(options: MemoryStoreOptions = {}): Promise<PostgresMemoryStore> {
+    const pool = await PostgresMemoryStore.openPool({ migrate: true });
     const auth = options.auth === undefined ? loadAuthContext() : options.auth;
-    return new PostgresMemoryStore(pool, auth);
+    return new PostgresMemoryStore(pool, auth, true);
+  }
+
+  /** A store over a pool the caller owns; `close()` leaves the pool open. */
+  static withPool(pool: PgPool, options: MemoryStoreOptions = {}): PostgresMemoryStore {
+    const auth = options.auth === undefined ? loadAuthContext() : options.auth;
+    return new PostgresMemoryStore(pool, auth, false);
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    if (this.ownsPool) await this.pool.end();
   }
 
   private async withClient<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T> {

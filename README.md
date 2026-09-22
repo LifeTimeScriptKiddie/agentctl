@@ -385,7 +385,7 @@ A local file can replace any lane’s command, health probe and environment, and
 
 Prompts go to the backend you select. State may persist under **`~/.agentctl`** (sessions, usage ledger, optional memory). Capability checks are not an OS sandbox. This repository ships source and synthetic tests only — no personal sessions or credentials.
 
-Browser evidence requires **`AGENTCTL_CAPTURE_EVIDENCE=1`**. Review before sharing captures.
+Browser evidence requires **`AGENTCTL_CAPTURE_EVIDENCE=1`**. Captures go to `~/.agentctl/evidence/comet/` (private, outside the repo) unless `AGENTCTL_EVIDENCE_DIR` is set; text files are redacted, but the screenshot is not. Review before sharing captures.
 
 ## Development
 

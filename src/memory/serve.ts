@@ -14,6 +14,10 @@ import { jevOperatorEnabled } from './jevEvidence.js';
 import { agentctlHome } from '../core/agentHome.js';
 import { appendPrivate, ensurePrivateDir } from '../core/privateFs.js';
 import { writeBodySchema } from './memoryWriteGraph.js';
+import { resolveMemoryBackend } from './backendConfig.js';
+import { PostgresMemoryStore } from './postgres/memoryStorePostgres.js';
+import type { PgPool } from './postgres/pgClient.js';
+import { redact } from '../core/redact.js';
 import { ApprovalRequiredError, assertApproved } from '../approval.js';
 
 /**
@@ -205,10 +209,65 @@ function auditEvent(event: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Callers get error codes only; the exception text (paths, SQL, driver
+ * messages) is kept in the private audit log under the same request id.
+ */
+function internalError(
+  res: ServerResponse,
+  route: string,
+  requestId: string,
+  error: unknown,
+  status = 500,
+): void {
+  auditEvent({
+    route,
+    request_id: requestId,
+    status: 'internal_error',
+    error: redact(error instanceof Error ? error.message : String(error)),
+  });
+  json(res, status, { error: 'internal_error', request_id: requestId });
+}
+
+/** Issue paths and zod codes only: zod messages can quote the rejected input. */
+function validationFailed(res: ServerResponse, requestId: string, error: z.ZodError): void {
+  json(res, 400, {
+    error: 'validation_failed',
+    request_id: requestId,
+    issues: error.issues.map(issue => ({ path: issue.path.map(String).join('.'), code: issue.code })),
+  });
+}
+
+let servePostgresPool: Promise<PgPool> | null = null;
+
+/**
+ * One Postgres pool per serve process. Migrations run when the pool is first
+ * opened (startup), unless AGENTCTL_MEMORY_MIGRATE_ON_SERVE=0 leaves them to
+ * `agentctl memory postgres migrate` under a DDL-capable role.
+ */
+export function servePostgres(): Promise<PgPool> {
+  servePostgresPool ??= PostgresMemoryStore.openPool({
+    migrate: process.env.AGENTCTL_MEMORY_MIGRATE_ON_SERVE !== '0',
+  }).catch((error: unknown) => {
+    servePostgresPool = null;
+    throw error;
+  });
+  return servePostgresPool;
+}
+
+export async function closeServePostgresForTest(): Promise<void> {
+  const pending = servePostgresPool;
+  servePostgresPool = null;
+  if (pending) await (await pending.catch(() => null))?.end();
+}
+
 async function withStore<T>(
   auth: AuthContext | null,
   fn: (store: OpenMemoryStore) => Promise<T> | T,
 ): Promise<T> {
+  if (resolveMemoryBackend() === 'postgres') {
+    return fn(PostgresMemoryStore.withPool(await servePostgres(), { auth }));
+  }
   const store = await openMemoryStore(undefined, { auth });
   try {
     return await fn(store);
@@ -339,7 +398,7 @@ export async function handleMemoryHttpRequest(
   if (url.pathname === '/v1/context') {
     const parsed = contextBodySchema.safeParse(body);
     if (!parsed.success) {
-      json(res, 400, { error: 'validation_failed', details: parsed.error.flatten() });
+      validationFailed(res, requestId, parsed.error);
       return;
     }
     const input = parsed.data;
@@ -387,7 +446,7 @@ export async function handleMemoryHttpRequest(
   if (url.pathname === '/v1/turn') {
     const parsed = turnBodySchema.safeParse(body);
     if (!parsed.success) {
-      json(res, 400, { error: 'validation_failed', details: parsed.error.flatten() });
+      validationFailed(res, requestId, parsed.error);
       return;
     }
     const input = parsed.data;
@@ -541,7 +600,7 @@ export async function handleMemoryHttpRequest(
     });
     const parsed = acceptSchema.safeParse(body);
     if (!parsed.success) {
-      json(res, 400, { error: 'validation_failed', details: parsed.error.flatten() });
+      validationFailed(res, requestId, parsed.error);
       return;
     }
     if (!parsed.data.human_approved) {
@@ -572,8 +631,7 @@ export async function handleMemoryHttpRequest(
       });
       json(res, 200, { request_id: requestId, auth_applied: auth !== null, memory });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      json(res, 400, { error: msg, request_id: requestId });
+      internalError(res, '/v1/memory/accept', requestId, e, 400);
     }
     return;
   }
@@ -581,7 +639,7 @@ export async function handleMemoryHttpRequest(
   if (url.pathname === '/v1/memory/write') {
     const parsed = writeBodySchema.safeParse(body);
     if (!parsed.success) {
-      json(res, 400, { error: 'validation_failed', details: parsed.error.flatten() });
+      validationFailed(res, requestId, parsed.error);
       return;
     }
     // Commit writes an accepted memory directly, so the body's human_approved
@@ -619,10 +677,7 @@ export async function handleMemoryHttpRequest(
             : 200;
       json(res, httpStatus, { request_id: requestId, auth_applied: auth !== null, ...outcome });
     } catch (e) {
-      json(res, 500, {
-        error: e instanceof Error ? e.message : String(e),
-        request_id: requestId,
-      });
+      internalError(res, '/v1/memory/write', requestId, e);
     }
     return;
   }
@@ -651,21 +706,22 @@ export async function startMemoryServer(opts: { host: string; port: number }): P
   } else if (warm.detail && process.env.AGENTCTL_LAYA_WARM !== '0') {
     process.stderr.write(`agentctl memory serve: Laya warmup skipped (${warm.detail})\n`);
   }
-  const server = createServer((req, res) => {
-    handleMemoryHttpRequest(req, res, opts.host).catch(err => {
-      json(res, 500, { error: err instanceof Error ? err.message : String(err) });
-    });
-  });
+  if (resolveMemoryBackend() === 'postgres') await servePostgres();
+  const server = memoryServer(opts.host);
   return new Promise((resolve, reject) => {
     server.listen(opts.port, opts.host, () => resolve());
     server.on('error', reject);
   });
 }
 
-export function createMemoryServerForTest(opts: { boundHost?: string } = {}) {
+function memoryServer(boundHost: string) {
   return createServer((req, res) => {
-    handleMemoryHttpRequest(req, res, opts.boundHost ?? '127.0.0.1').catch(err => {
-      json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    handleMemoryHttpRequest(req, res, boundHost).catch(err => {
+      internalError(res, (req.url ?? '/').split('?')[0]!, randomUUID(), err);
     });
   });
+}
+
+export function createMemoryServerForTest(opts: { boundHost?: string } = {}) {
+  return memoryServer(opts.boundHost ?? '127.0.0.1');
 }
