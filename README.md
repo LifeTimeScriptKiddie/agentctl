@@ -73,7 +73,7 @@ Pi owns intent and approvals. agentctl picks a lane, spawns the subprocess worke
 
 ### Team memory (optional)
 
-For shared Q&A, use **one Linux VM** as the only writer to the memory database. Laptops and Pi stay **thin clients** — HTTP to the gatekeeper, not SSH per question.
+For shared Q&A, use **one Linux VM** as the **only host that opens team databases** (SQLite or PostgreSQL). Laptops and Pi stay **thin clients** — HTTP to the gatekeeper, not SSH per question. That VM often runs **more than one database** (or more than one workspace plane) so reports, techniques, CVE tracking, and approved team claims stay separated while sharing one TLS front door.
 
 ```mermaid
 flowchart TB
@@ -82,11 +82,14 @@ flowchart TB
     CLI[agentctl on laptop]
   end
 
-  subgraph vm [Memory VM]
+  subgraph vm [Memory VM — writers stay here]
     TLS[TLS reverse proxy]
     Serve["agentctl memory serve"]
-    DB[(SQLite or PostgreSQL)]
-    TLS --> Serve --> DB
+    DB1[(Postgres: team core\n decisions · checkpoints)]
+    DB2[(Postgres: reports / techniques\n workspaces · kinds · RAG)]
+    Serve --> DB1
+    Serve --> DB2
+    TLS --> Serve
   end
 
   Pi -->|"AGENTCTL_GATEWAY_URL\nPOST /v1/turn"| TLS
@@ -96,8 +99,10 @@ flowchart TB
 | Client env | Purpose |
 | --- | --- |
 | **`AGENTCTL_GATEWAY_URL`** | Gatekeeper base URL for **`POST /v1/turn`** (JIT context + optional central model). |
-| **`AGENTCTL_BRIEFING_WORKSPACE`** | Workspace id for team memory. |
+| **`AGENTCTL_BRIEFING_WORKSPACE`** | Which **domain** to query (`team-atlas`, `team-reports`, `team-techniques`, …). |
 | **`AGENTCTL_USER_ID`** / **`AGENTCTL_GROUPS`** / **`AGENTCTL_CLEARANCE`** | Auth headers for filtered retrieval. |
+
+See [Storage on the memory VM](#storage-on-the-memory-vm-one-host-multiple-planes) under the team domain section. Deploy: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md), [STACK-SETUP.md](docs/STACK-SETUP.md).
 
 Proposed memories flow **propose → human review → accept** on the server. Details: [Team shared knowledge domain](#team-shared-knowledge-domain) below. Nightly usage analysis can export to [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) — see [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md). HTTP route table: [TURN-GRAPH.md](docs/TURN-GRAPH.md), [INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
@@ -105,7 +110,48 @@ Proposed memories flow **propose → human review → accept** on the server. De
 
 This is the **durable, team-owned layer** agents may read during work — not chat transcripts, not automatic “remember everything,” and not a replacement for your git repo or wiki. It holds **short claims** your team has chosen to treat as shared context: decisions, runbooks, CVE notes, report conclusions, explicit preferences.
 
-Everything lives in a **workspace** (string id, e.g. `team-atlas`, `team-sec-cve`). Workspaces isolate retrieval: a query and write always name one workspace. The shipped **kind registry** (`$AGENTCTL_HOME/config/memory-kinds.yaml`) can suggest default workspaces per kind (for example CVE → `team-sec-cve`); you define ids to match how your org splits domains.
+Everything lives in a **workspace** (string id, e.g. `team-atlas`, `team-reports`, `team-techniques`, `team-sec-cve`). Workspaces isolate retrieval: a query and write always name one workspace. The shipped **kind registry** (`$AGENTCTL_HOME/config/memory-kinds.yaml`) maps **kinds** to default workspaces — extend it for your domains (reports, techniques, CVEs, runbooks):
+
+| Kind (examples) | Typical workspace | Content |
+| --- | --- | --- |
+| `decision` | `team-atlas` | Approved team choices, owners, rollback policy |
+| `report` | `team-reports` | Engagement summaries, conclusions, scope notes |
+| `process` | `team-ops` | Runbooks, on-call steps |
+| `cve` | `team-sec-cve` | Advisory tracking, vendor fix status |
+| `technique` | `team-techniques` | TTP notes, tool usage (custom kind — add in YAML) |
+| `preference` | (per team) | Explicit operator preferences |
+
+Kinds are not separate databases by themselves; they label rows and drive briefing defaults. **Physical separation** is done with workspaces and/or separate Postgres databases on the same VM (below).
+
+### Storage on the memory VM (one host, multiple planes)
+
+**One Linux VM** is enough for production: a single TLS edge and one or more **`agentctl memory serve`** processes. Clients still never mount database files or SSH for Q&A.
+
+| Plane | Engine | What it holds | Governance |
+| --- | --- | --- | --- |
+| **Team memory** | SQLite (small) or **PostgreSQL** (team prod) | Versioned **claims** in `memories` — decisions, report takeaways, technique notes, checkpoints | **Propose → human accept** before search/briefing |
+| **Workspace domains** | Same DB | Logical split: `team-reports`, `team-techniques`, `team-sec-cve`, … — each query/write names one workspace | Same ACL + accept rules per row |
+| **RAG / corpus** | PostgreSQL `rag_documents` (migration `002_search.sql`) | Longer report bodies, technique libraries, pasted reference text | **Import + ACL** — not the same lifecycle as every short claim; schema ships today; gatekeeper wiring evolves |
+| **Usage / audit** | Files under `$AGENTCTL_HOME` | `logs/memory-serve-audit.jsonl`, SessionGraph export JSON | Ops telemetry, not agent briefing |
+
+**PostgreSQL on the VM (typical team setup)**
+
+```bash
+export AGENTCTL_MEMORY_BACKEND=postgres
+export AGENTCTL_MEMORY_DATABASE_URL=postgres://agentctl@127.0.0.1:5432/team_memory
+agentctl memory postgres migrate
+agentctl memory serve --host 127.0.0.1 --port 8741
+```
+
+One database URL = one store behind a given `memory serve`. To **hard-separate** reports vs techniques at the DB layer, common patterns on the **same VM**:
+
+1. **Single Postgres, multiple workspaces** (simplest) — one URL, many workspaces/kinds; backup once; ACL on every row.
+2. **Multiple Postgres databases** — e.g. `team_reports`, `team_techniques`, each with its own `AGENTCTL_HOME` + `memory serve` on a different loopback port; Caddy routes `https://memory.example.com/reports` vs `/techniques` to different backends; clients set different **`AGENTCTL_GATEWAY_URL`** / **`AGENTCTL_BRIEFING_WORKSPACE`**.
+3. **SQLite per domain** (dev only) — separate `$AGENTCTL_HOME` trees; not for multi-client prod.
+
+Thin clients remain dumb: they only pass **workspace**, **query**, and **auth headers**; the gatekeeper chooses candidates from the store bound to that serve instance.
+
+Migrations and tables: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md) (`memories`, `revisions`, `task_checkpoints`, optional `rag_documents`).
 
 ### What a memory is
 
@@ -114,7 +160,7 @@ Each record is a **versioned text claim** plus metadata:
 | Field | Meaning |
 | --- | --- |
 | **text** | The claim agents may see (keep it concise; link out to docs for detail). |
-| **kind** | Category from the registry — default kinds include `decision`, `cve`, `report`, `process`, `preference`. |
+| **kind** | Category from the registry — defaults include `decision`, `cve`, `report`, `process`, `preference`; add **`technique`** (or others) in YAML for your domains. |
 | **state** | `proposed` (not in search/briefing) or `accepted` (durable team knowledge). |
 | **revision** | Increments on edit; accept/correct must target the current revision. |
 | **source** | Provenance label (ticket, meeting, `pi:…`, etc.) — data, not proof of truth. |

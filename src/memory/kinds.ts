@@ -38,6 +38,11 @@ kinds:
     label: Process / runbook
     default_workspace: team-ops
     briefing_default: false
+  technique:
+    label: Technique / TTP
+    description: Tools, procedures, tradecraft notes (short claims)
+    default_workspace: team-techniques
+    briefing_default: true
   preference:
     label: Explicit preference
     briefing_default: false
