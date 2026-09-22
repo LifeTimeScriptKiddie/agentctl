@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemoryServerForTest } from '../src/memory/serve.js';
 import { MemoryStore } from '../src/memory/store.js';
+import { addServeToken } from '../src/memory/serveTokens.js';
 
 describe('memory serve HTTP', () => {
   let server: ReturnType<typeof createMemoryServerForTest> | undefined;
@@ -26,19 +27,18 @@ describe('memory serve HTTP', () => {
     vi.unstubAllEnvs();
   });
 
-  // Identity headers are only trusted behind a serve token.
-  const TOKEN = 'serve-test-token';
-  const asAlice = {
-    'content-type': 'application/json',
-    authorization: `Bearer ${TOKEN}`,
-    'x-agentctl-user-id': 'alice@co',
-  };
+  // Identity comes from per-user tokens (security review S5).
+  let asAlice: Record<string, string> = {};
+  let asBob: Record<string, string> = {};
+  const bearer = (token: string) => ({ 'content-type': 'application/json', authorization: `Bearer ${token}` });
 
   async function start(): Promise<void> {
     home = mkdtempSync(join(tmpdir(), 'agentctl-serve-'));
     process.env.AGENTCTL_HOME = home;
     process.env.AGENTCTL_SERVE_ALLOW_ANON = '1';
     for (const name of ['AGENTCTL_USER_ID', 'AGENTCTL_GROUPS', 'AGENTCTL_CLEARANCE']) vi.stubEnv(name, undefined);
+    asAlice = bearer(addServeToken({ userId: 'alice@co', groups: ['memory-reviewers'] }).token);
+    asBob = bearer(addServeToken({ userId: 'bob@co' }).token);
     const store = await MemoryStore.open(undefined, { auth: null });
     store.save({
       workspace: 'team-atlas',
@@ -69,7 +69,6 @@ describe('memory serve HTTP', () => {
 
   it('POST /v1/context returns bundle', async () => {
     await start();
-    process.env.AGENTCTL_SERVE_TOKEN = TOKEN;
     const r = await fetch(`${base}/v1/context`, {
       method: 'POST',
       headers: asAlice,
@@ -90,7 +89,7 @@ describe('memory serve HTTP', () => {
     await start();
     const r = await fetch(`${base}/v1/turn`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: asAlice,
       body: JSON.stringify({
         workspace: 'team-atlas',
         query: 'Who owns rollback',
@@ -109,7 +108,7 @@ describe('memory serve HTTP', () => {
     await start();
     const r = await fetch(`${base}/v1/turn`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: asAlice,
       body: JSON.stringify({
         workspace: 'team-atlas',
         query: 'Who owns rollback',
@@ -132,7 +131,6 @@ describe('memory serve HTTP', () => {
 
   it('POST /v1/memory/write proposes via graph', async () => {
     await start();
-    process.env.AGENTCTL_SERVE_TOKEN = TOKEN;
     const r = await fetch(`${base}/v1/memory/write`, {
       method: 'POST',
       headers: asAlice,
@@ -153,7 +151,7 @@ describe('memory serve HTTP', () => {
     await start();
     await fetch(`${base}/v1/memory/write`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: asBob,
       body: JSON.stringify({
         mode: 'propose',
         workspace: 'team-atlas',
@@ -162,7 +160,7 @@ describe('memory serve HTTP', () => {
         key: 'review-key-1',
       }),
     });
-    const r = await fetch(`${base}/v1/memory/review?workspace=team-atlas`);
+    const r = await fetch(`${base}/v1/memory/review?workspace=team-atlas`, { headers: asAlice });
     expect(r.status).toBe(200);
     const j = await r.json() as { proposed: unknown[] };
     expect(j.proposed.length).toBeGreaterThan(0);
@@ -172,7 +170,7 @@ describe('memory serve HTTP', () => {
     await start();
     const w = await fetch(`${base}/v1/memory/write`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: asBob,
       body: JSON.stringify({
         mode: 'propose',
         workspace: 'team-atlas',
@@ -182,7 +180,7 @@ describe('memory serve HTTP', () => {
       }),
     });
     const proposed = await w.json() as { memory: { id: string; revision: number } };
-    process.env.AGENTCTL_SERVE_TOKEN = TOKEN;
+    process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS = 'memory-reviewers';
     const r = await fetch(`${base}/v1/memory/accept`, {
       method: 'POST',
       headers: asAlice,

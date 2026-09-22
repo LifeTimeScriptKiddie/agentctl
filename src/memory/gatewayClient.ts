@@ -2,6 +2,7 @@ import type { ContextBundle } from './contextBundle.js';
 import type { MemoryProvider } from './layaEvidence.js';
 import { MEMORY_PROVIDERS } from './layaEvidence.js';
 import { quoteUntrusted } from '../core/untrusted.js';
+import { readOwnerServeToken } from './serveTokens.js';
 
 export interface TurnResponse {
   request_id: string;
@@ -48,17 +49,23 @@ export function resetGatewayWarningForTest(): void {
   warnedInsecureGateway = false;
 }
 
-export function gatewayAuthHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  const token = process.env.AGENTCTL_GATEWAY_TOKEN?.trim();
-  if (token) headers.authorization = `Bearer ${token}`;
-  const userId = process.env.AGENTCTL_USER_ID?.trim();
-  if (userId) headers['x-agentctl-user-id'] = userId;
-  if (process.env.AGENTCTL_GROUPS !== undefined) {
-    headers['x-agentctl-groups'] = process.env.AGENTCTL_GROUPS;
+function isLoopbackGateway(gatewayUrl: string): boolean {
+  try {
+    return isLoopbackHostname(new URL(gatewayUrl).hostname);
+  } catch {
+    return false;
   }
-  const clearance = process.env.AGENTCTL_CLEARANCE?.trim();
-  if (clearance) headers['x-agentctl-clearance'] = clearance;
+}
+
+/**
+ * The server derives identity from the token alone. Token preference:
+ * AGENTCTL_GATEWAY_TOKEN, else the local owner token when the gateway is loopback.
+ */
+export function gatewayAuthHeaders(gatewayUrl?: string): Record<string, string> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const token = process.env.AGENTCTL_GATEWAY_TOKEN?.trim()
+    || (gatewayUrl && isLoopbackGateway(gatewayUrl) ? readOwnerServeToken() : null);
+  if (token) headers.authorization = `Bearer ${token}`;
   return headers;
 }
 
@@ -86,7 +93,7 @@ export async function postTurn(
   warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(`${gatewayUrl}/v1/turn`, {
     method: 'POST',
-    headers: gatewayAuthHeaders(),
+    headers: gatewayAuthHeaders(gatewayUrl),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -181,7 +188,7 @@ export async function getGatewayReview(
   warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(
     `${gatewayUrl}/v1/memory/review?workspace=${encodeURIComponent(workspace)}`,
-    { headers: gatewayAuthHeaders(), signal: AbortSignal.timeout(30_000) },
+    { headers: gatewayAuthHeaders(gatewayUrl), signal: AbortSignal.timeout(30_000) },
   );
   const json = await res.json() as { proposed?: unknown; error?: string };
   if (!res.ok) throw new Error(json.error ?? `gateway HTTP ${res.status}`);
@@ -195,7 +202,7 @@ export async function postGatewayWrite(
   warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(`${gatewayUrl}/v1/memory/write`, {
     method: 'POST',
-    headers: gatewayAuthHeaders(),
+    headers: gatewayAuthHeaders(gatewayUrl),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
@@ -218,7 +225,7 @@ export async function postGatewayAccept(
   warnIfInsecureGateway(gatewayUrl);
   const res = await fetch(`${gatewayUrl}/v1/memory/accept`, {
     method: 'POST',
-    headers: gatewayAuthHeaders(),
+    headers: gatewayAuthHeaders(gatewayUrl),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });

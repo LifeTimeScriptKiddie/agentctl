@@ -191,11 +191,21 @@ On **each client** (not on the VM writer):
 ```bash
 export AGENTCTL_GATEWAY_URL=https://memory.example.com   # or http://VM:8741 on lab LAN
 export AGENTCTL_BRIEFING_WORKSPACE=team-your-workspace
-export AGENTCTL_GATEWAY_TOKEN=…               # same value as AGENTCTL_SERVE_TOKEN on the VM
-export AGENTCTL_USER_ID=alice
-export AGENTCTL_GROUPS=eng,security          # optional
-export AGENTCTL_CLEARANCE=internal           # optional
+export AGENTCTL_GATEWAY_TOKEN=…               # your per-user token from `memory serve token add` on the VM
 ```
+
+The token is the caller's identity: the VM maps it to the user id, groups and
+clearance recorded when it was issued. Issue one per person on the VM:
+
+```bash
+agentctl memory serve token add --user alice --groups eng,security --clearance internal
+agentctl memory serve token list              # ids and identities, never secrets
+agentctl memory serve token revoke tok_…
+```
+
+`AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` on a client no
+longer affect gateway calls (they still set the identity of local, in-process
+`agentctl memory …` commands).
 
 1. Ask via gatekeeper-backed delegate:
    ```bash
@@ -206,7 +216,8 @@ export AGENTCTL_CLEARANCE=internal           # optional
    agentctl memory gateway write --workspace team-your-workspace \
      --text "Decision: …" --source "meeting 2026-09-22" --mode propose
    ```
-3. Operator accept on VM or via gateway:
+3. Operator accept on VM or via gateway (via gateway, the token must belong to a
+   group in `AGENTCTL_MEMORY_REVIEWER_GROUPS` and to someone other than the proposer):
    ```bash
    agentctl memory gateway review --workspace team-your-workspace
    agentctl memory gateway accept --workspace … --id … --revision … --human-approved
@@ -241,28 +252,48 @@ Details: **`dev/docs/SESSIONGRAPH-NIGHTLY.md`**.
 
 ### Security
 
-Memory serve trusts identity headers (`x-agentctl-user-id`, `x-agentctl-groups`,
-`x-agentctl-clearance`) only behind a bearer token:
+Memory serve takes the caller's identity from the bearer token only. Every
+route except `GET /health` requires `Authorization: Bearer <token>` (401
+`token_required` without one, 401 `unauthorized` for an unknown or revoked
+token). A request that sends `x-agentctl-user-id`, `x-agent-user-id`,
+`x-agentctl-groups` or `x-agentctl-clearance` gets 400
+`identity_headers_not_supported`.
 
-- **With `AGENTCTL_SERVE_TOKEN`:** every route except `GET /health` requires
-  `Authorization: Bearer <token>`, and the caller's identity comes from the
-  headers. Clients send the token by setting `AGENTCTL_GATEWAY_TOKEN` to the
-  same value.
-- **Without a token:** any request carrying an identity header gets 401
-  `token_required_for_identity_headers`. The identity is the server's own
-  `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE`. If none is
-  set, requests get 401 `identity_required` unless `AGENTCTL_SERVE_ALLOW_ANON=1`
-  (trusted single-user local development only). Unset `AGENTCTL_USER_ID` on
-  clients that talk to a token-less local server, or they will be refused.
+- **Per-user tokens (team deployments):** `agentctl memory serve token add`
+  writes `$AGENTCTL_HOME/serve-tokens.json` (0600). It stores only the sha256
+  of each token with its `userId`, `groups` and `clearance`; the secret is
+  printed once. Revocation takes effect on the next request.
+- **Legacy shared token:** `AGENTCTL_SERVE_TOKEN` still works, but everyone
+  holding it authenticates as the server owner (`AGENTCTL_USER_ID` /
+  `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` in the serve process env), or as
+  the anonymous identity if that is unset. Move team members to per-user tokens.
+- **No token configured (loopback):** on first start the server generates an
+  owner token in `$AGENTCTL_HOME/serve-token` (0600) and requires it. It maps
+  to the server owner identity. The agentctl client sends it automatically when
+  `AGENTCTL_GATEWAY_URL` is a loopback address and `AGENTCTL_GATEWAY_TOKEN` is
+  unset, so other local accounts can't read the owner's memories.
+- **`AGENTCTL_SERVE_ALLOW_ANON=1`:** only allowed on a loopback bind (the
+  server refuses to start otherwise). Requests without a token are then
+  anonymous: `{userId: "anonymous", groups: [], clearance: "public"}`. It no
+  longer means unfiltered access.
 
-`AGENTCTL_MEMORY_REVIEWER_GROUPS` restricts memory acceptance to callers in the
-listed groups. `POST /v1/memory/write` with `mode: "commit"` additionally
-requires that variable to be set and the caller to be in one of the groups
-(else 403 `reviewer_required`); `human_approved: true` in the body is not
-enough on its own. `AGENTCTL_SERVE_ALLOWED_ORIGINS` is a comma-separated origin
-allowlist, and `AGENTCTL_SERVE_MAX_BODY` sets the request-body limit in bytes
-(default 1 MiB). Non-loopback binds require `AGENTCTL_SERVE_TOKEN`. Clients
-warn once on stderr when `AGENTCTL_GATEWAY_URL` is plain `http:` to a
+`POST /v1/memory/accept` and `POST /v1/memory/write` with `mode: "commit"`
+both require `AGENTCTL_MEMORY_REVIEWER_GROUPS` to be set and the caller's token
+to carry one of those groups (else 403 `reviewer_required`);
+`human_approved: true` in the body is not enough on its own. A reviewer can't
+accept a memory they proposed (403 `self_accept_forbidden`); the proposer is
+recorded as `proposedBy` from the writer's token. Task checkpoints carry an
+owner (the `AGENTCTL_USER_ID` that set them) and groups
+(`memory checkpoint set --groups a,b`). Through the gatekeeper, only the owner
+or a group member with at least `internal` clearance and read access to every
+referenced decision sees a checkpoint. A checkpoint with neither owner nor
+groups (written before this change) is hidden from gateway callers until it is
+set again with `--groups` or by an identified operator.
+
+`AGENTCTL_SERVE_ALLOWED_ORIGINS` is a comma-separated origin allowlist, and
+`AGENTCTL_SERVE_MAX_BODY` sets the request-body limit in bytes (default 1 MiB).
+Non-loopback binds require at least one per-user token or `AGENTCTL_SERVE_TOKEN`.
+Clients warn once on stderr when `AGENTCTL_GATEWAY_URL` is plain `http:` to a
 non-loopback host; put TLS in front (Phase 3) so the token isn't sent in clear.
 
 Agent config (`agents.yaml`) can replace any lane's command, health probe and
@@ -297,9 +328,11 @@ and an empty MCP config, so user MCP connectors (mail, docs) are not loaded.
 | `AGENTCTL_HOME` | Memory VM | State root (DB, logs, exports) |
 | `AGENTCTL_GATEWAY_URL` | Thin clients | Base URL for `/v1/turn` |
 | `AGENTCTL_BRIEFING_WORKSPACE` | Clients | Workspace id for turns |
-| `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` | Clients | Auth headers (honored only when the VM sets `AGENTCTL_SERVE_TOKEN`) |
-| `AGENTCTL_GATEWAY_TOKEN` | Clients | Bearer token sent to the VM; must match `AGENTCTL_SERVE_TOKEN` |
-| `AGENTCTL_SERVE_TOKEN` | VM | Bearer token required on every non-health route |
+| `AGENTCTL_USER_ID` / `AGENTCTL_GROUPS` / `AGENTCTL_CLEARANCE` | VM / local CLI | Server owner identity (legacy and owner token) and identity of in-process `memory` commands; never sent to the gateway |
+| `AGENTCTL_GATEWAY_TOKEN` | Clients | Bearer token sent to the VM: a per-user token from `memory serve token add` (or the legacy `AGENTCTL_SERVE_TOKEN`) |
+| `AGENTCTL_SERVE_TOKEN` | VM | Legacy shared token; authenticates as the server owner identity |
+| `AGENTCTL_SERVE_ALLOW_ANON` | VM (loopback only) | `1` lets token-less requests in as anonymous with public clearance |
+| `AGENTCTL_MEMORY_REVIEWER_GROUPS` | VM | Groups allowed to accept or commit memories; unset means nobody can |
 | `AGENTCTL_MEMORY_BACKEND` | VM | `sqlite` (default) or `postgres` |
 | `AGENTCTL_MEMORY_DATABASE_URL` | VM | Postgres DSN |
 | `AGENTCTL_SESSIONGRAPH_ROOT` | VM (nightly) | Path to sessiongraph git checkout |

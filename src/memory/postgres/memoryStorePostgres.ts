@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   type AuthContext,
+  SelfAcceptForbiddenError,
   assertCanWriteScope,
   canReadCheckpoint,
   canReadMemory,
@@ -59,6 +60,7 @@ function decodeRow(row: Record<string, unknown>): Memory {
     allowedGroups: jsonField(row.allowed_groups ?? '[]') as string[],
     classification: classification.parse(row.classification ?? 'internal'),
     visibility: (row.visibility === 'private' ? 'private' : 'team') as Memory['visibility'],
+    proposedBy: row.proposed_by ? String(row.proposed_by) : null,
   };
 }
 
@@ -73,6 +75,8 @@ function decodeCheckpoint(row: Record<string, unknown>): TaskCheckpoint {
     decisionRefs: jsonField(row.decision_refs) as string[],
     source: String(row.source),
     updatedAt: Number(row.updated_at),
+    ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
+    allowedGroups: (jsonField(row.allowed_groups ?? '[]') as string[]) ?? [],
   };
 }
 
@@ -222,13 +226,13 @@ export class PostgresMemoryStore {
       await client.query(
         `INSERT INTO memories
           (id, workspace, revision, text, source, providers, state, updated_at, request_key, initial_input,
-           kind, owner_user_id, allowed_groups, classification, visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+           kind, owner_user_id, allowed_groups, classification, visibility, proposed_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
         [
           id, input.workspace, 1, input.text, input.source, JSON.stringify(input.providers),
           input.state, Date.now(), input.key, serialized,
           input.kind, input.ownerUserId ?? null, JSON.stringify(input.allowedGroups),
-          input.classification, input.visibility,
+          input.classification, input.visibility, this.auth?.userId ?? null,
         ],
       );
       await this.snapshot(client, id);
@@ -289,6 +293,9 @@ export class PostgresMemoryStore {
         throw new Error('Revision conflict: inspect the current memory before accepting.');
       }
       if (current.state !== 'proposed') throw new Error('Only proposed memories can be accepted.');
+      if (this.auth && current.proposedBy !== null && current.proposedBy === this.auth.userId) {
+        throw new SelfAcceptForbiddenError();
+      }
       await client.query(
         'UPDATE memories SET revision = revision + 1, state = $1, updated_at = $2 WHERE id = $3',
         ['accepted', Date.now(), opts.memoryId],
@@ -382,7 +389,7 @@ export class PostgresMemoryStore {
         const ref = await client.query('SELECT * FROM memories WHERE workspace = $1 AND id = $2', [workspace, id]);
         decisions.push(ref.rows[0] ? accessFields(decodeRow(ref.rows[0])) : null);
       }
-      return canReadCheckpoint(decisions, auth) ? checkpoint : null;
+      return canReadCheckpoint(checkpoint, decisions, auth) ? checkpoint : null;
     });
   }
 
@@ -455,21 +462,24 @@ export class PostgresMemoryStore {
 
   async setCheckpoint(raw: TaskCheckpointInput): Promise<TaskCheckpoint> {
     operatorOnly();
-    const { checkpointInputSchema } = await import('../store.js');
+    const { checkpointAcl, checkpointInputSchema } = await import('../store.js');
     const input = checkpointInputSchema.parse(raw);
     return this.transaction(async (client) => {
       const existing = await this.getCheckpoint(input.workspace);
+      const acl = checkpointAcl(input, this.auth, existing);
       if (!existing) {
         if (input.revision !== null && input.revision !== 0) {
           throw new Error('No checkpoint in this workspace; omit --revision or pass 0 to create one.');
         }
         await client.query(
           `INSERT INTO task_checkpoints
-            (workspace, revision, goal, state, blockers, next_action, decision_refs, source, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            (workspace, revision, goal, state, blockers, next_action, decision_refs, source, updated_at,
+             owner_user_id, allowed_groups)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             input.workspace, 1, input.goal, input.state, JSON.stringify(input.blockers),
             input.nextAction, JSON.stringify(input.decisionRefs), input.source, Date.now(),
+            acl.ownerUserId, JSON.stringify(acl.allowedGroups),
           ],
         );
         return (await this.getCheckpoint(input.workspace))!;
@@ -482,10 +492,12 @@ export class PostgresMemoryStore {
       }
       await client.query(
         `UPDATE task_checkpoints SET revision = revision + 1, goal = $1, state = $2, blockers = $3,
-          next_action = $4, decision_refs = $5, source = $6, updated_at = $7 WHERE workspace = $8`,
+          next_action = $4, decision_refs = $5, source = $6, updated_at = $7,
+          owner_user_id = $8, allowed_groups = $9 WHERE workspace = $10`,
         [
           input.goal, input.state, JSON.stringify(input.blockers), input.nextAction,
-          JSON.stringify(input.decisionRefs), input.source, Date.now(), input.workspace,
+          JSON.stringify(input.decisionRefs), input.source, Date.now(),
+          acl.ownerUserId, JSON.stringify(acl.allowedGroups), input.workspace,
         ],
       );
       return (await this.getCheckpoint(input.workspace))!;

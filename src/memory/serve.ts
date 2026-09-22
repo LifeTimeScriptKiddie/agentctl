@@ -1,11 +1,18 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { OpenMemoryStore } from './openMemoryStore.js';
 import { openMemoryStore } from './openMemoryStore.js';
-import type { AuthContext, Classification } from './authContext.js';
-import { loadAuthContext } from './authContext.js';
+import type { AuthContext } from './authContext.js';
+import { SelfAcceptForbiddenError, anonymousAuthContext, loadAuthContext } from './authContext.js';
+import {
+  ensureOwnerServeToken,
+  lookupServeToken,
+  readOwnerServeToken,
+  readServeTokens,
+  serveTokenMatches,
+} from './serveTokens.js';
 import { parseKindList } from './kinds.js';
 import { buildContextBundle, policyCheckBundle } from './contextBundle.js';
 import type { MemoryProvider } from './layaEvidence.js';
@@ -21,13 +28,17 @@ import { redact } from '../core/redact.js';
 import { ApprovalRequiredError, assertApproved } from '../approval.js';
 
 /**
- * Memory serve trusts identity headers only after a configured bearer token
- * authenticates the caller as a trusted gateway. Without AGENTCTL_SERVE_TOKEN,
- * requests carrying identity headers are refused and the identity is the
- * server's own (AGENTCTL_USER_ID / AGENTCTL_GROUPS / AGENTCTL_CLEARANCE). For
- * local single-user use, AGENTCTL_SERVE_ALLOW_ANON=1 permits anonymous access
- * when the server has no identity; do not use it on a shared or non-loopback
- * listener.
+ * Caller identity comes only from the bearer token, never from headers:
+ * - a per-user token from `memory serve token add` maps to that user's
+ *   AuthContext (serve-tokens.json stores only its sha256);
+ * - AGENTCTL_SERVE_TOKEN (legacy shared token) and the auto-generated owner
+ *   token in $AGENTCTL_HOME/serve-token map to the server owner's identity
+ *   (AGENTCTL_USER_ID / AGENTCTL_GROUPS / AGENTCTL_CLEARANCE), or to the
+ *   anonymous identity when that is unset;
+ * - with AGENTCTL_SERVE_ALLOW_ANON=1 on a loopback bind, a request without a
+ *   token is anonymous (public clearance, no groups).
+ * Requests carrying x-agentctl-user-id / -groups / -clearance are rejected.
+ * The handler never passes a null (unfiltered) auth context to a store.
  */
 const contextBodySchema = z.object({
   request_id: z.string().uuid().optional(),
@@ -50,7 +61,6 @@ const turnBodySchema = contextBodySchema.extend({
 });
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
-const classificationSchema = z.enum(['public', 'internal', 'confidential']);
 
 class BodyTooLargeError extends Error {
   constructor() {
@@ -124,17 +134,34 @@ function hasIdentityHeaders(req: IncomingMessage): boolean {
   return IDENTITY_HEADERS.some(name => req.headers[name] !== undefined);
 }
 
-function authFromHeaders(req: IncomingMessage): AuthContext | null {
-  const clearance = classificationSchema.safeParse(
-    req.headers['x-agentctl-clearance']?.toString() ?? 'internal',
-  );
-  if (!clearance.success) throw new Error('invalid_clearance');
-  const userId = req.headers['x-agentctl-user-id']?.toString().trim()
-    ?? req.headers['x-agent-user-id']?.toString().trim();
-  if (!userId) return null;
-  const groupsRaw = req.headers['x-agentctl-groups']?.toString() ?? '';
-  const groups = [...new Set(groupsRaw.split(',').map(g => g.trim()).filter(Boolean))].sort();
-  return { userId, groups, clearance: clearance.data as Classification };
+/** Owner identity for the legacy shared token and the owner token file. */
+function ownerAuthContext(): AuthContext {
+  return loadAuthContext() ?? anonymousAuthContext();
+}
+
+type Authentication =
+  | { ok: true; auth: AuthContext }
+  | { ok: false; status: number; error: string };
+
+function authenticate(req: IncomingMessage, boundHost: string): Authentication {
+  const authorization = req.headers.authorization?.toString();
+  if (authorization === undefined) {
+    if (process.env.AGENTCTL_SERVE_ALLOW_ANON === '1' && isLoopbackHost(boundHost)) {
+      return { ok: true, auth: anonymousAuthContext() };
+    }
+    return { ok: false, status: 401, error: 'token_required' };
+  }
+  const presented = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+  if (!presented) return { ok: false, status: 401, error: 'unauthorized' };
+  const perUser = lookupServeToken(presented);
+  // An empty AGENTCTL_SERVE_TOKEN is treated as unset.
+  const legacy = process.env.AGENTCTL_SERVE_TOKEN || undefined;
+  const owner = readOwnerServeToken();
+  const isLegacy = legacy !== undefined && serveTokenMatches(presented, legacy);
+  const isOwner = owner !== null && serveTokenMatches(presented, owner);
+  if (perUser) return { ok: true, auth: perUser };
+  if (isLegacy || isOwner) return { ok: true, auth: ownerAuthContext() };
+  return { ok: false, status: 401, error: 'unauthorized' };
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -157,19 +184,17 @@ function configuredOrigins(): string[] {
     .filter(Boolean);
 }
 
-function hasValidBearerToken(req: IncomingMessage, expected: string): boolean {
-  const authorization = req.headers.authorization?.toString() ?? '';
-  if (!authorization.startsWith('Bearer ')) return false;
-  const actual = Buffer.from(authorization.slice('Bearer '.length));
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
-
 function reviewerGroups(): string[] {
   return (process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS ?? '')
     .split(',')
     .map(group => group.trim())
     .filter(Boolean);
+}
+
+/** Commit and accept both need configured reviewer groups and membership in one. */
+function isReviewer(auth: AuthContext): boolean {
+  const required = reviewerGroups();
+  return required.length > 0 && required.some(group => auth.groups.includes(group));
 }
 
 /**
@@ -262,7 +287,7 @@ export async function closeServePostgresForTest(): Promise<void> {
 }
 
 async function withStore<T>(
-  auth: AuthContext | null,
+  auth: AuthContext,
   fn: (store: OpenMemoryStore) => Promise<T> | T,
 ): Promise<T> {
   if (resolveMemoryBackend() === 'postgres') {
@@ -295,35 +320,17 @@ export async function handleMemoryHttpRequest(
     return;
   }
 
-  // An empty token is treated as unset so `Bearer ` can never match it.
-  const configuredToken = process.env.AGENTCTL_SERVE_TOKEN || undefined;
-  if (configuredToken !== undefined && !hasValidBearerToken(req, configuredToken)) {
-    json(res, 401, { error: 'unauthorized' });
+  if (hasIdentityHeaders(req)) {
+    json(res, 400, { error: 'identity_headers_not_supported' });
     return;
   }
 
-  let auth: AuthContext | null;
-  if (configuredToken === undefined) {
-    if (hasIdentityHeaders(req)) {
-      json(res, 401, { error: 'token_required_for_identity_headers' });
-      return;
-    }
-    auth = loadAuthContext();
-  } else {
-    try {
-      auth = authFromHeaders(req);
-    } catch (error) {
-      if (error instanceof Error && error.message === 'invalid_clearance') {
-        json(res, 400, { error: 'invalid_clearance' });
-        return;
-      }
-      throw error;
-    }
-  }
-  if (!auth && process.env.AGENTCTL_SERVE_ALLOW_ANON !== '1') {
-    json(res, 401, { error: 'identity_required' });
+  const authn = authenticate(req, boundHost);
+  if (!authn.ok) {
+    json(res, authn.status, { error: authn.error });
     return;
   }
+  const auth = authn.auth;
 
   const origin = req.headers.origin?.toString();
   if (origin && !configuredOrigins().includes(origin)) {
@@ -342,13 +349,13 @@ export async function handleMemoryHttpRequest(
     auditEvent({
       route: '/v1/memory/review',
       request_id: requestId,
-      user_id: auth?.userId ?? null,
+      user_id: auth.userId,
       workspace,
       count: items.length,
     });
     json(res, 200, {
       request_id: requestId,
-      auth_applied: auth !== null,
+      auth_applied: true,
       workspace,
       proposed: items.map(m => ({
         id: m.id,
@@ -356,6 +363,7 @@ export async function handleMemoryHttpRequest(
         text: m.text,
         source: m.source,
         kind: m.kind,
+        proposed_by: m.proposedBy,
         updated_at: m.updatedAt,
       })),
     });
@@ -429,14 +437,14 @@ export async function handleMemoryHttpRequest(
       auditEvent({
         route: '/v1/context',
         request_id: requestId,
-        user_id: auth?.userId ?? null,
+        user_id: auth.userId,
         workspace: input.workspace,
         terminal: retrieval.terminal,
         item_count: bundle.items.length,
       });
       return {
         status: 200 as const,
-        body: { request_id: requestId, auth_applied: auth !== null, bundle },
+        body: { request_id: requestId, auth_applied: true, bundle },
       };
     });
     json(res, result.status, result.body);
@@ -479,7 +487,7 @@ export async function handleMemoryHttpRequest(
         auditEvent({
           route: '/v1/turn',
           request_id: requestId,
-          user_id: auth?.userId ?? null,
+          user_id: auth.userId,
           workspace: input.workspace,
           status: 'abstain',
           terminal: retrieval.terminal,
@@ -512,7 +520,7 @@ export async function handleMemoryHttpRequest(
       auditEvent({
         route: '/v1/turn',
         request_id: requestId,
-        user_id: auth?.userId ?? null,
+        user_id: auth.userId,
         workspace: input.workspace,
         status: 'context_ready',
         item_count: bundle.items.length,
@@ -607,8 +615,15 @@ export async function handleMemoryHttpRequest(
       json(res, 403, { error: 'human_approved_required', request_id: requestId });
       return;
     }
-    const requiredGroups = reviewerGroups();
-    if (!auth || (requiredGroups.length > 0 && !requiredGroups.some(group => auth.groups.includes(group)))) {
+    if (!isReviewer(auth)) {
+      auditEvent({
+        route: '/v1/memory/accept',
+        request_id: requestId,
+        user_id: auth.userId,
+        workspace: parsed.data.workspace,
+        memory_id: parsed.data.memory_id,
+        status: 'reviewer_required',
+      });
       json(res, 403, { error: 'reviewer_required', request_id: requestId });
       return;
     }
@@ -624,13 +639,25 @@ export async function handleMemoryHttpRequest(
       auditEvent({
         route: '/v1/memory/accept',
         request_id: requestId,
-        user_id: auth?.userId ?? null,
+        user_id: auth.userId,
         workspace: parsed.data.workspace,
         memory_id: memory.id,
         revision: memory.revision,
       });
-      json(res, 200, { request_id: requestId, auth_applied: auth !== null, memory });
+      json(res, 200, { request_id: requestId, auth_applied: true, memory });
     } catch (e) {
+      if (e instanceof SelfAcceptForbiddenError) {
+        auditEvent({
+          route: '/v1/memory/accept',
+          request_id: requestId,
+          user_id: auth.userId,
+          workspace: parsed.data.workspace,
+          memory_id: parsed.data.memory_id,
+          status: 'self_accept_forbidden',
+        });
+        json(res, 403, { error: 'self_accept_forbidden', request_id: requestId });
+        return;
+      }
       internalError(res, '/v1/memory/accept', requestId, e, 400);
     }
     return;
@@ -645,12 +672,11 @@ export async function handleMemoryHttpRequest(
     // Commit writes an accepted memory directly, so the body's human_approved
     // alone is not enough: the caller must be a configured reviewer.
     if (parsed.data.mode === 'commit') {
-      const requiredGroups = reviewerGroups();
-      if (!auth || requiredGroups.length === 0 || !requiredGroups.some(group => auth.groups.includes(group))) {
+      if (!isReviewer(auth)) {
         auditEvent({
           route: '/v1/memory/write',
           request_id: requestId,
-          user_id: auth?.userId ?? null,
+          user_id: auth.userId,
           workspace: parsed.data.workspace,
           mode: parsed.data.mode,
           status: 'reviewer_required',
@@ -664,7 +690,7 @@ export async function handleMemoryHttpRequest(
       auditEvent({
         route: '/v1/memory/write',
         request_id: requestId,
-        user_id: auth?.userId ?? null,
+        user_id: auth.userId,
         workspace: parsed.data.workspace,
         mode: parsed.data.mode,
         status: outcome.status,
@@ -675,7 +701,7 @@ export async function handleMemoryHttpRequest(
         outcome.status === 'rejected' ? 400
           : outcome.status === 'review_required' ? 403
             : 200;
-      json(res, httpStatus, { request_id: requestId, auth_applied: auth !== null, ...outcome });
+      json(res, httpStatus, { request_id: requestId, auth_applied: true, ...outcome });
     } catch (e) {
       internalError(res, '/v1/memory/write', requestId, e);
     }
@@ -695,9 +721,28 @@ export async function handleMemoryHttpRequest(
   });
 }
 
-export async function startMemoryServer(opts: { host: string; port: number }): Promise<void> {
-  if (!isLoopbackHost(opts.host) && !process.env.AGENTCTL_SERVE_TOKEN) {
-    throw new Error('AGENTCTL_SERVE_TOKEN is required when binding memory serve off loopback');
+export async function startMemoryServer(opts: { host: string; port: number }): Promise<Server> {
+  const loopback = isLoopbackHost(opts.host);
+  if (!loopback && process.env.AGENTCTL_SERVE_ALLOW_ANON === '1') {
+    throw new Error('AGENTCTL_SERVE_ALLOW_ANON=1 is only allowed when memory serve binds to loopback');
+  }
+  const perUserTokens = readServeTokens().tokens.length;
+  if (!loopback && !process.env.AGENTCTL_SERVE_TOKEN && perUserTokens === 0) {
+    throw new Error(
+      'Binding memory serve off loopback requires per-user tokens (agentctl memory serve token add) '
+        + 'or AGENTCTL_SERVE_TOKEN',
+    );
+  }
+  if (loopback) {
+    const owner = ensureOwnerServeToken();
+    if (owner?.created) {
+      process.stderr.write(`agentctl memory serve: generated owner token at ${owner.path} (0600)\n`);
+    }
+  }
+  if (!loadAuthContext()) {
+    process.stderr.write(
+      'agentctl memory serve: AGENTCTL_USER_ID is unset, so owner-token callers are anonymous (public clearance only)\n',
+    );
   }
   const { warmLayaIfConfigured } = await import('./layaWarm.js');
   const warm = await warmLayaIfConfigured();
@@ -709,7 +754,7 @@ export async function startMemoryServer(opts: { host: string; port: number }): P
   if (resolveMemoryBackend() === 'postgres') await servePostgres();
   const server = memoryServer(opts.host);
   return new Promise((resolve, reject) => {
-    server.listen(opts.port, opts.host, () => resolve());
+    server.listen(opts.port, opts.host, () => resolve(server));
     server.on('error', reject);
   });
 }

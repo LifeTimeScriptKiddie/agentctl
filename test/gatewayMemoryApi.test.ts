@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   getGatewayReview,
   postGatewayAccept,
@@ -13,14 +16,29 @@ describe('gateway memory HTTP client', () => {
     vi.restoreAllMocks();
   });
 
-  it('gatewayAuthHeaders sends team identity', () => {
+  it('gatewayAuthHeaders never sends identity headers (the server derives identity from the token)', () => {
+    vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-gw-headers-')));
     vi.stubEnv('AGENTCTL_USER_ID', 'alice@co');
     vi.stubEnv('AGENTCTL_GROUPS', 'sec,eng');
     vi.stubEnv('AGENTCTL_CLEARANCE', 'internal');
-    const h = gatewayAuthHeaders();
-    expect(h['x-agentctl-user-id']).toBe('alice@co');
-    expect(h['x-agentctl-groups']).toBe('sec,eng');
-    expect(h['x-agentctl-clearance']).toBe('internal');
+    vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', 'gw-secret');
+    expect(gatewayAuthHeaders('http://127.0.0.1:8741')).toEqual({
+      'content-type': 'application/json',
+      authorization: 'Bearer gw-secret',
+    });
+  });
+
+  it('gatewayAuthHeaders falls back to the local owner token only for a loopback gateway', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-gw-owner-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', undefined);
+    expect(gatewayAuthHeaders('http://127.0.0.1:8741').authorization).toBeUndefined();
+    writeFileSync(join(home, 'serve-token'), 'owner-secret\n', { mode: 0o600 });
+    expect(gatewayAuthHeaders('http://127.0.0.1:8741').authorization).toBe('Bearer owner-secret');
+    expect(gatewayAuthHeaders('http://[::1]:8741').authorization).toBe('Bearer owner-secret');
+    expect(gatewayAuthHeaders('http://memory.example.com:8741').authorization).toBeUndefined();
+    expect(gatewayAuthHeaders('https://127.0.0.1.example.com').authorization).toBeUndefined();
+    expect(gatewayAuthHeaders('not a url').authorization).toBeUndefined();
   });
 
   it('gatewayAuthHeaders sends the gateway bearer token only when set', () => {

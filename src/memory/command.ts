@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';
 import { runMemoryPilot } from './pilot.js';
 import { BOOTSTRAP_CHECKPOINT, DEFAULT_RESUME_WORKSPACE } from './briefingPrompt.js';
@@ -255,12 +256,16 @@ export function registerMemoryCommands(program: Command): void {
     .requiredOption('--source <reference>').option('--blockers <items>', 'comma-separated', '')
     .option('--decisions <ids>', 'comma-separated approved memory ids', '')
     .option('--revision <n>', 'required after the first write; use 0 to create', '')
+    .option('--groups <list>', 'comma-separated groups that may read this checkpoint via memory serve (owner is AGENTCTL_USER_ID)')
     .action(async o => run(s => s.setCheckpoint({
       workspace: o.workspace, goal: o.goal, state: o.state, nextAction: o.nextAction,
       source: o.source,
       blockers: o.blockers ? o.blockers.split(',').map((v: string) => v.trim()).filter(Boolean) : [],
       decisionRefs: o.decisions ? o.decisions.split(',').map((v: string) => v.trim()).filter(Boolean) : [],
       revision: o.revision === '' || o.revision === undefined ? null : Number(o.revision),
+      allowedGroups: o.groups === undefined
+        ? undefined
+        : o.groups.split(',').map((v: string) => v.trim()).filter(Boolean),
     })));
   const briefing = memory.command('briefing').requiredOption('--workspace <id>').option('--provider <name>', 'destination or local', 'local')
     .option('--max-bytes <n>', 'UTF-8 byte ceiling for the full briefing packet', '8000')
@@ -427,8 +432,54 @@ export function registerMemoryCommands(program: Command): void {
         process.exitCode = 1;
       }
     });
-  memory.command('serve')
-    .description('HTTP Memory Gatekeeper (POST /v1/context, POST /v1/turn) — long-lived; Ctrl+C to stop')
+  const serve = memory.command('serve')
+    .description('HTTP Memory Gatekeeper (POST /v1/context, POST /v1/turn) — long-lived; Ctrl+C to stop');
+  const tokenCommand = async (fn: () => unknown) => {
+    try {
+      if (Number(process.env.AGENTCTL_WORKER_DEPTH ?? 0) > 0) {
+        throw new Error('Serve tokens require the operator; workers cannot issue or revoke them.');
+      }
+      console.log(JSON.stringify(await fn(), null, 2));
+    } catch (e) {
+      console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+      process.exitCode = 1;
+    }
+  };
+  const token = serve.command('token')
+    .description('per-user bearer tokens for memory serve ($AGENTCTL_HOME/serve-tokens.json, sha256 only)');
+  token.command('add')
+    .description('issue a token for one user; the secret is printed once')
+    .requiredOption('--user <id>', 'user id the token authenticates as')
+    .option('--groups <list>', 'comma-separated groups', '')
+    .option('--clearance <level>', 'public | internal | confidential', 'internal')
+    .action(async o => tokenCommand(async () => {
+      const { addServeToken } = await import('./serveTokens.js');
+      const clearance = z.enum(['public', 'internal', 'confidential']).parse(o.clearance);
+      const { token: secret, entry } = addServeToken({
+        userId: o.user,
+        groups: o.groups ? o.groups.split(',') : [],
+        clearance,
+      });
+      return {
+        ...entry,
+        token: secret,
+        note: 'Shown once. The client sets AGENTCTL_GATEWAY_TOKEN to this value.',
+      };
+    }));
+  token.command('list')
+    .description('list issued tokens (no secrets)')
+    .action(async () => tokenCommand(async () => {
+      const { listServeTokens } = await import('./serveTokens.js');
+      return { tokens: listServeTokens() };
+    }));
+  token.command('revoke')
+    .argument('<id>', 'token id from `token list`')
+    .action(async id => tokenCommand(async () => {
+      const { revokeServeToken } = await import('./serveTokens.js');
+      if (!revokeServeToken(id)) throw new Error(`No serve token with id ${id}.`);
+      return { revoked: id };
+    }));
+  serve
     .option('--host <addr>', 'bind address', process.env.AGENTCTL_SERVE_HOST ?? '127.0.0.1')
     .option('--port <n>', 'port', process.env.AGENTCTL_SERVE_PORT ?? '8741')
     .action(async o => {

@@ -35,12 +35,12 @@ Memory and resume: `/agentctl briefing`, checkpoint commands, and `memory-test` 
 ```sh
 export AGENTCTL_GATEWAY_URL=http://memory-host:8741
 export AGENTCTL_BRIEFING_WORKSPACE=team-atlas
-export AGENTCTL_USER_ID=alice
+export AGENTCTL_GATEWAY_TOKEN=…   # per-user token issued on the VM
 agentctl delegate "What did we decide about enrollment?"
 # equivalent: agentctl delegate --briefing-workspace team-atlas "…"
 ```
 
-Auth (team): set **`AGENTCTL_USER_ID`**, **`AGENTCTL_GROUPS`**, **`AGENTCTL_CLEARANCE`** on the client (sent as HTTP headers on `/v1/turn`) or pass **`--as-user` / `--groups` / `--clearance`** on memory subcommands. Without `AGENTCTL_USER_ID`, auth trim is off (single-user dev).
+Auth (team): the gatekeeper derives identity from the bearer token alone. The VM operator issues each person a token with `agentctl memory serve token add --user <id> [--groups a,b] [--clearance internal]`; set it as **`AGENTCTL_GATEWAY_TOKEN`** on that person's laptop or Pi host. Pi's `/agentctl` commands run the bundled CLI, so they pick up the same variable. The client sends no identity headers, and the server rejects them (400 `identity_headers_not_supported`). Against a gatekeeper on the same machine (`AGENTCTL_GATEWAY_URL` on loopback) with no token configured, the client sends the owner token from `$AGENTCTL_HOME/serve-token` automatically. **`AGENTCTL_USER_ID`**, **`AGENTCTL_GROUPS`**, **`AGENTCTL_CLEARANCE`** and **`--as-user` / `--groups` / `--clearance`** apply only to in-process memory subcommands against the local store; without `AGENTCTL_USER_ID`, auth trim is off there (single-user dev).
 
 **HTTP gatekeeper:** `agentctl memory serve` exposes:
 
@@ -53,7 +53,7 @@ Auth (team): set **`AGENTCTL_USER_ID`**, **`AGENTCTL_GROUPS`**, **`AGENTCTL_CLEA
 | `POST /v1/memory/write` | Propose or commit via write graph (`mode: propose\|commit`) |
 | `POST /v1/memory/accept` | Accept a proposed memory (`human_approved: true`) |
 
-Same auth via headers `x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`. See [docs/TURN-GRAPH.md](docs/TURN-GRAPH.md).
+Every route except `/health` requires `Authorization: Bearer <token>`; identity headers (`x-agentctl-user-id`, `x-agentctl-groups`, `x-agentctl-clearance`) are rejected. Accept and commit need a token in `AGENTCTL_MEMORY_REVIEWER_GROUPS`, and the proposer of a memory cannot accept it. See [docs/TURN-GRAPH.md](docs/TURN-GRAPH.md) and the security notes in [docs/STACK-SETUP.md](docs/STACK-SETUP.md).
 
 CLI against a remote gatekeeper (no local SQLite on the client):
 

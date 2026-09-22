@@ -7,6 +7,7 @@ import { agentctlHome } from '../core/agentHome.js';
 import {
   type AuthContext,
   type Classification,
+  SelfAcceptForbiddenError,
   assertCanWriteScope,
   canReadCheckpoint,
   canReadMemory,
@@ -49,10 +50,13 @@ export interface Memory {
   providers: string[]; state: 'proposed' | 'accepted' | 'forgotten'; updatedAt: number;
   kind: string; ownerUserId: string | null; allowedGroups: string[];
   classification: Classification; visibility: 'team' | 'private';
+  /** User id of the auth context that wrote the memory; null for legacy rows or no-auth CLI writes. */
+  proposedBy: string | null;
 }
 export interface TaskCheckpoint {
   workspace: string; revision: number; goal: string; state: string; blockers: string[];
   nextAction: string; decisionRefs: string[]; source: string; updatedAt: number;
+  ownerUserId: string | null; allowedGroups: string[];
 }
 const checkpointInputSchema = z.object({
   workspace: label,
@@ -63,7 +67,23 @@ const checkpointInputSchema = z.object({
   nextAction: z.string().trim().min(1).max(20000),
   decisionRefs: z.array(z.string().uuid()).max(32).default([]),
   source: z.string().trim().min(1).max(2000),
+  /** Groups that may read the checkpoint; omitted on update keeps the current groups. */
+  allowedGroups: z.array(label).max(32).optional(),
 });
+
+/** Owner comes from the setter's auth context (kept when the setter has none); groups from the input. */
+export function checkpointAcl(
+  input: { allowedGroups?: string[] },
+  auth: AuthContext | null,
+  existing: TaskCheckpoint | null,
+): { ownerUserId: string | null; allowedGroups: string[] } {
+  return {
+    ownerUserId: auth?.userId ?? existing?.ownerUserId ?? null,
+    allowedGroups: input.allowedGroups
+      ? [...new Set(input.allowedGroups)].sort()
+      : existing?.allowedGroups ?? [],
+  };
+}
 export type TaskCheckpointInput = z.input<typeof checkpointInputSchema>;
 export { checkpointInputSchema };
 
@@ -82,6 +102,8 @@ function decodeCheckpoint(row: Row): TaskCheckpoint {
     state: String(row.state), blockers: JSON.parse(String(row.blockers)),
     nextAction: String(row.next_action), decisionRefs: JSON.parse(String(row.decision_refs)),
     source: String(row.source), updatedAt: Number(row.updated_at),
+    ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
+    allowedGroups: JSON.parse(String(row.allowed_groups ?? '[]')),
   };
 }
 type Row = Record<string, unknown>;
@@ -95,6 +117,7 @@ function decode(row: Row): Memory {
     allowedGroups: JSON.parse(String(row.allowed_groups ?? '[]')),
     classification: classification.parse(row.classification ?? 'internal'),
     visibility: (row.visibility === 'private' ? 'private' : 'team') as Memory['visibility'],
+    proposedBy: row.proposed_by ? String(row.proposed_by) : null,
   };
 }
 function accessFields(memory: Memory) {
@@ -135,7 +158,7 @@ export class MemoryStore {
       if (path !== ':memory:') chmodSync(path, 0o600);
       db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
       const version = Number(db.prepare('PRAGMA user_version').get()?.user_version);
-      if (version > 3) throw new Error('Memory schema is newer than this agentctl version.');
+      if (version > 4) throw new Error('Memory schema is newer than this agentctl version.');
       db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS memories (
           id TEXT PRIMARY KEY, workspace TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -165,6 +188,20 @@ export class MemoryStore {
         if (!names.has('classification')) db.exec(`ALTER TABLE memories ADD COLUMN classification TEXT NOT NULL DEFAULT 'internal'`);
         if (!names.has('visibility')) db.exec(`ALTER TABLE memories ADD COLUMN visibility TEXT NOT NULL DEFAULT 'team'`);
         db.exec('PRAGMA user_version=3;');
+      }
+      if (version < 4) {
+        const memoryCols = new Set(
+          (db.prepare(`SELECT name FROM pragma_table_info('memories')`).all() as Row[]).map(c => String(c.name)),
+        );
+        if (!memoryCols.has('proposed_by')) db.exec(`ALTER TABLE memories ADD COLUMN proposed_by TEXT`);
+        const checkpointCols = new Set(
+          (db.prepare(`SELECT name FROM pragma_table_info('task_checkpoints')`).all() as Row[]).map(c => String(c.name)),
+        );
+        if (!checkpointCols.has('owner_user_id')) db.exec(`ALTER TABLE task_checkpoints ADD COLUMN owner_user_id TEXT`);
+        if (!checkpointCols.has('allowed_groups')) {
+          db.exec(`ALTER TABLE task_checkpoints ADD COLUMN allowed_groups TEXT NOT NULL DEFAULT '[]'`);
+        }
+        db.exec('PRAGMA user_version=4;');
       }
       db.exec('COMMIT;');
       return new MemoryStore(db, auth);
@@ -207,15 +244,19 @@ export class MemoryStore {
         return decode(existing);
       }
       const id = randomUUID();
-      this.db.prepare(`INSERT INTO memories
-        (id,workspace,revision,text,source,providers,state,updated_at,request_key,initial_input,
-         kind,owner_user_id,allowed_groups,classification,visibility)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        id,input.workspace,1,input.text,input.source,JSON.stringify(input.providers),input.state,Date.now(),input.key,serialized,
-        input.kind,input.ownerUserId ?? null,JSON.stringify(input.allowedGroups),input.classification,input.visibility);
-      this.snapshot(id);
+      this.insertMemory(id, input, serialized);
       return this.inspect(input.workspace,id)!;
     });
+  }
+  private insertMemory(id: string, input: z.output<typeof inputSchema>, serialized: string): void {
+    this.db.prepare(`INSERT INTO memories
+      (id,workspace,revision,text,source,providers,state,updated_at,request_key,initial_input,
+       kind,owner_user_id,allowed_groups,classification,visibility,proposed_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id,input.workspace,1,input.text,input.source,JSON.stringify(input.providers),input.state,Date.now(),input.key,serialized,
+      input.kind,input.ownerUserId ?? null,JSON.stringify(input.allowedGroups),input.classification,input.visibility,
+      this.auth?.userId ?? null);
+    this.snapshot(id);
   }
   inspect(workspace: string, id: string): Memory | null {
     operatorOnly();
@@ -435,13 +476,7 @@ export class MemoryStore {
         return decode(existing);
       }
       const id = randomUUID();
-      this.db.prepare(`INSERT INTO memories
-        (id,workspace,revision,text,source,providers,state,updated_at,request_key,initial_input,
-         kind,owner_user_id,allowed_groups,classification,visibility)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        id,input.workspace,1,input.text,input.source,JSON.stringify(input.providers),input.state,Date.now(),input.key,serialized,
-        input.kind,input.ownerUserId ?? null,JSON.stringify(input.allowedGroups),input.classification,input.visibility);
-      this.snapshot(id);
+      this.insertMemory(id, input, serialized);
       return this.inspect(input.workspace,id)!;
     });
   }
@@ -470,6 +505,9 @@ export class MemoryStore {
         throw new Error('Revision conflict: inspect the current memory before accepting.');
       }
       if (current.state !== 'proposed') throw new Error('Only proposed memories can be accepted.');
+      if (this.auth && current.proposedBy !== null && current.proposedBy === this.auth.userId) {
+        throw new SelfAcceptForbiddenError();
+      }
       this.db.prepare('UPDATE memories SET revision=revision+1,state=?,updated_at=? WHERE id=?').run(
         'accepted', Date.now(), opts.memoryId,
       );
@@ -488,7 +526,7 @@ export class MemoryStore {
       const ref = this.db.prepare('SELECT * FROM memories WHERE workspace=? AND id=?').get(workspace, id);
       return ref ? accessFields(decode(ref)) : null;
     });
-    return canReadCheckpoint(decisions, auth) ? checkpoint : null;
+    return canReadCheckpoint(checkpoint, decisions, auth) ? checkpoint : null;
   }
   /** Provisional task state; not an approved memory. Revision 0 creates; otherwise compare-and-swap. */
   setCheckpoint(raw: TaskCheckpointInput): TaskCheckpoint {
@@ -496,15 +534,18 @@ export class MemoryStore {
     const input = checkpointInputSchema.parse(raw);
     return this.transaction(() => {
       const existing = this.getCheckpoint(input.workspace);
+      const acl = checkpointAcl(input, this.auth, existing);
       if (!existing) {
         if (input.revision !== null && input.revision !== 0) {
           throw new Error('No checkpoint in this workspace; omit --revision or pass 0 to create one.');
         }
         this.db.prepare(`INSERT INTO task_checkpoints
-          (workspace,revision,goal,state,blockers,next_action,decision_refs,source,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?)`).run(
+          (workspace,revision,goal,state,blockers,next_action,decision_refs,source,updated_at,
+           owner_user_id,allowed_groups)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
           input.workspace, 1, input.goal, input.state, JSON.stringify(input.blockers),
-          input.nextAction, JSON.stringify(input.decisionRefs), input.source, Date.now());
+          input.nextAction, JSON.stringify(input.decisionRefs), input.source, Date.now(),
+          acl.ownerUserId, JSON.stringify(acl.allowedGroups));
         return this.getCheckpoint(input.workspace)!;
       }
       if (input.revision === null || input.revision === 0) {
@@ -514,9 +555,10 @@ export class MemoryStore {
         throw new Error('Revision conflict: inspect the current checkpoint before changing it.');
       }
       this.db.prepare(`UPDATE task_checkpoints SET revision=revision+1,goal=?,state=?,blockers=?,
-        next_action=?,decision_refs=?,source=?,updated_at=? WHERE workspace=?`).run(
+        next_action=?,decision_refs=?,source=?,updated_at=?,owner_user_id=?,allowed_groups=? WHERE workspace=?`).run(
         input.goal, input.state, JSON.stringify(input.blockers), input.nextAction,
-        JSON.stringify(input.decisionRefs), input.source, Date.now(), input.workspace);
+        JSON.stringify(input.decisionRefs), input.source, Date.now(),
+        acl.ownerUserId, JSON.stringify(acl.allowedGroups), input.workspace);
       return this.getCheckpoint(input.workspace)!;
     });
   }
