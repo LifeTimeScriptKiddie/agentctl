@@ -25,6 +25,14 @@ const preferencesSchema = z.object({
     agent: z.string().trim().min(1),
     model: z.string().trim().min(1).nullable(),
   }),
+  /**
+   * Stronger/expensive orchestrator for hard jobs (`orchestrate --backup`).
+   * Optional — omit if unused.
+   */
+  orchestratorBackup: z.object({
+    agent: z.string().trim().min(1),
+    model: z.string().trim().min(1).nullable(),
+  }).nullable().optional(),
   /** Preferred default worker model per agent name. */
   agents: z.record(z.string(), agentPrefSchema).default({}),
   /** Cost/quality bias for deterministic routing when no --model is given. */
@@ -94,4 +102,13 @@ export function preferredOrchestrator(
     agent: prefs.orchestrator.agent,
     model: prefs.orchestrator.model ?? fallback.model,
   };
+}
+
+/** Stronger backup orchestrator from prefs (null if unset). */
+export function preferredOrchestratorBackup(
+  prefs: Preferences | null,
+): { agent: string; model: string | null } | null {
+  const b = prefs?.orchestratorBackup;
+  if (!b?.agent) return null;
+  return { agent: b.agent, model: b.model ?? null };
 }

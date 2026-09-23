@@ -72,11 +72,21 @@ describe('ReplSession', () => {
   it('casual greetings bypass orchestration for a fast direct reply', async () => {
     const spy = vi.spyOn(commands, 'runOrchestrateGoal');
     runMock.mockResolvedValue(ok('Hello! How can I help?'));
-    const s = session({ orchMode: true });
+    const s = session({ orchMode: true, defaultAgent: 'codex' });
     const r = await s.handle('hi');
     expect(spy).not.toHaveBeenCalled();
     expect(r.outputs).toEqual(['Hello! How can I help?']);
     expect(s.ledger.flowHops.some((h) => h.to.startsWith('codex'))).toBe(true);
+  });
+
+  it('/switch is honored for casual greetings (not hardcoded to codex)', async () => {
+    runMock.mockResolvedValue(ok('hey from cursor'));
+    const s = session({ orchMode: true, defaultAgent: 'codex' });
+    await s.handle('/switch cursor');
+    const r = await s.handle('hi');
+    expect(r.outputs).toEqual(['hey from cursor']);
+    expect(s.currentAgent).toBe('cursor');
+    expect(runMock).toHaveBeenCalled();
   });
 
   it('/model <agent> <model> makes later calls use that model', async () => {
@@ -167,9 +177,23 @@ describe('ReplSession', () => {
 
   it('/switch changes the current agent; unknown is rejected', async () => {
     const s = session();
-    expect((await s.handle('/switch claude')).outputs[0]).toContain('switched to claude');
+    expect((await s.handle('/switch claude')).outputs[0]).toMatch(/direct agent → claude/);
     expect(s.currentAgent).toBe('claude');
     expect((await s.handle('/switch nope')).outputs[0]).toMatch(/unknown agent/);
+  });
+
+  it('/clear and /new wipe transcript and native resume ids', async () => {
+    runMock.mockResolvedValue(ok('ok'));
+    const cleared: string[] = [];
+    const s = session({ defaultAgent: 'codex', orchMode: false });
+    s.attachUI({ onClear: () => cleared.push('cleared'), onSystem: () => {} });
+    await s.handle('remember this');
+    expect(s.buildPrompt('codex', 'x')).toContain('remember this');
+    const r = await s.handle('/new');
+    expect(cleared).toEqual(['cleared']);
+    expect(r.outputs[0]).toMatch(/New chat/);
+    expect(s.buildPrompt('codex', 'next')).not.toContain('remember this');
+    expect(s.nativeIdFor('codex')).toBeNull();
   });
 
   it('/exit signals exit', async () => {

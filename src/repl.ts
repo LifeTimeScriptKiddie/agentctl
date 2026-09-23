@@ -9,7 +9,9 @@ import { formatOrchestrationForChat } from './core/orchestrateRuntime.js';
 import {
   DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL,
   resolveDefaultOrchestrator,
+  resolveBackupOrchestrator,
 } from './core/orchestrateRoster.js';
+import { loadPreferences } from './core/preferences.js';
 import { color, agentColor } from './util/colors.js';
 import { formatStatus, type AgentStatus } from './status.js';
 import type { SessionRecord } from './schema/session.js';
@@ -29,10 +31,12 @@ const HELP = [
   '  /model               show each agent’s current model',
   '  /model <agent> <m>   set an agent’s model for this session',
   '  /search <query>      web research via agy (Comet fallback; recorded)',
-  '  /switch <agent>      change the direct-mode agent',
+  '  /switch <agent>      change the direct-mode agent (hi/@/ /direct use this)',
+  '  /orch off            plain messages go to the direct agent (no plan loop)',
   '  /all <message>       fan out to every agent (not recorded)',
   '  /status | /agents    show agent status (availability · model · memory)',
   "  /reset [agent]       clear history, or remove one agent's responses",
+  '  /clear | /new        start fresh (transcript, UI, native resume ids)',
   '  /noauto | /auto      turn search auto-routing off / on',
   '  /help                this help',
   '  /exit                quit',
@@ -89,6 +93,8 @@ export interface ReplUIHooks {
   onUser?: (text: string) => void;
   onAssistant?: (agent: string, text: string) => void;
   onSystem?: (text: string) => void;
+  /** Full visual + session clear (/clear · /new · /reset). */
+  onClear?: () => void;
   onOrchStart?: () => void;
   onOrchCall?: (phase: OrchCallPhase) => void;
   onOrchStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
@@ -166,16 +172,31 @@ export class ReplSession {
       for (const [agent, id] of Object.entries(opts.session.native)) this.native.set(agent, id);
     }
     const names = registry.names();
+    const prefs = loadPreferences();
+    const fromPrefs = prefs?.orchestrator?.agent && registry.has(prefs.orchestrator.agent)
+      && prefs.orchestrator.agent !== 'dry_run'
+      ? prefs.orchestrator.agent
+      : null;
     this.current =
       opts.defaultAgent && registry.has(opts.defaultAgent)
         ? opts.defaultAgent
-        : names.includes('codex')
-          ? 'codex'
-          : names.includes('claude')
-            ? 'claude'
-            : (names.find((n) => n !== 'dry_run') ?? names[0] ?? 'codex');
+        : fromPrefs
+          ?? (names.includes('cursor')
+            ? 'cursor'
+            : names.includes('codex')
+              ? 'codex'
+              : names.includes('claude')
+                ? 'claude'
+                : (names.find((n) => n !== 'dry_run') ?? names[0] ?? 'codex'));
     if (this.current === 'codex' && !this.models.has('codex')) {
       this.models.set('codex', DEFAULT_ORCHESTRATOR_MODEL);
+    }
+    // Seed model from prefs when present.
+    if (prefs?.orchestrator?.agent === this.current && prefs.orchestrator.model) {
+      this.models.set(this.current, prefs.orchestrator.model);
+    } else {
+      const preferred = prefs?.agents?.[this.current]?.defaultModel;
+      if (preferred) this.models.set(this.current, preferred);
     }
   }
 
@@ -537,7 +558,16 @@ export class ReplSession {
     }
     if (s === '/orch' || s === '/orch on') {
       this.orchMode = true;
-      return { outputs: ['orchestrator mode ON (codex sol plans + routes agents)'] };
+      const orch = resolveDefaultOrchestrator();
+      const backup = resolveBackupOrchestrator();
+      const backupNote = backup
+        ? `; backup ${backup.agent}/${backup.model ?? '?'} via orchestrate --backup`
+        : '';
+      return {
+        outputs: [
+          `orchestrator mode ON (${orch.agent}/${orch.model ?? '?'} plans + routes agents${backupNote})`,
+        ],
+      };
     }
     if (s === '/orch off' || s === '/noorch') {
       this.orchMode = false;
@@ -559,9 +589,20 @@ export class ReplSession {
     }
     if (s.startsWith('/switch')) {
       const a = s.split(/\s+/)[1];
-      if (!a || !this.registry.has(a)) return { outputs: [`unknown agent '${a ?? ''}'`] };
+      if (!a || !this.registry.has(a)) {
+        const known = this.registry.names().filter((n) => n !== 'dry_run').join(', ');
+        return { outputs: [`unknown agent '${a ?? ''}'. Try: /switch <agent>  (${known})`] };
+      }
       this.current = a;
-      return { outputs: [`switched to ${a} (use /direct to bypass orchestrator)`] };
+      if (this.orchMode) {
+        return {
+          outputs: [
+            `direct agent → ${a}. Plain messages still orchestrate while /orch is on.`,
+            `Use /orch off  then chat, or  /direct …  or  @${a} …`,
+          ],
+        };
+      }
+      return { outputs: [`direct agent → ${a}`] };
     }
     if (s === '/model' || s.startsWith('/model ')) {
       const [, agent, model] = s.split(/\s+/);
@@ -587,17 +628,25 @@ export class ReplSession {
           : '';
       return { outputs: [`${agent}: model set to ${model}${warn}`] };
     }
-    if (s.startsWith('/reset')) {
-      const a = s.split(/\s+/)[1];
+    if (s === '/clear' || s === '/new' || s.startsWith('/reset')) {
+      const a = s.startsWith('/reset') ? s.split(/\s+/)[1] : undefined;
       if (a) {
+        if (!this.registry.has(a)) return { outputs: [`unknown agent '${a}'`] };
         const kept = this.transcript.filter((t) => t.role === 'user' || t.agent !== a);
         this.transcript.length = 0;
         this.transcript.push(...kept);
-        return { outputs: [`reset ${a}`] };
+        this.native.delete(a);
+        this.ui.onSystem?.(`reset ${a}`);
+        return { outputs: this.uiMode ? [] : [`reset ${a}`] };
       }
       this.transcript.length = 0;
       this.ledger.reset();
-      return { outputs: ['reset all transcripts'] };
+      this.native.clear();
+      this.ui.onClear?.();
+      const note = 'New chat — transcript cleared. Direct agent: '
+        + `${this.current}. /help for commands.`;
+      this.ui.onSystem?.(note);
+      return { outputs: this.uiMode ? [] : [note] };
     }
     if (s.startsWith('/all ')) {
       const msg = s.slice(5).trim();
@@ -649,9 +698,8 @@ export class ReplSession {
     }
 
     if (this.orchMode && isCasualChat(s)) {
-      const agent = this.registry.has('codex') ? 'codex' : this.current;
-      const model = agent === 'codex' ? 'gpt-5.6-luna' : null;
-      const text = await this.send(agent, s, model);
+      // Honor /switch — do not hardcode codex for greetings.
+      const text = await this.send(this.current, s);
       return { outputs: this.outs([text]) };
     }
 

@@ -320,7 +320,8 @@ describe('delegation approval boundaries', () => {
     const blocked = await runOrchestrateGoal(registry, {
       goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', noSynth: true, approve: false,
     });
-    expect(blocked.status).toBe('blocked');
+    expect(blocked.status).toBe('failed');
+    expect(blocked.outcomes[0]?.note).toMatch(/canPublish/);
     expect(invoke).toHaveBeenCalledTimes(1);
 
     const approved = await runOrchestrateGoal(registry, {
@@ -363,7 +364,8 @@ describe('delegation approval boundaries', () => {
     const blocked = await runOrchestrateGoal(registry, {
       goal: 'lint', timeoutSeconds: 5, orchestrator: 'dry_run', noSynth: true, approve: false,
     });
-    expect(blocked.status).toBe('blocked');
+    expect(blocked.status).toBe('failed');
+    expect(blocked.outcomes[0]?.note).toMatch(/codex_write.*unavailable/i);
     expect(writer).not.toHaveBeenCalled();
 
     const approved = await runOrchestrateGoal(registry, {
@@ -371,6 +373,34 @@ describe('delegation approval boundaries', () => {
     });
     expect(approved.status).toBe('done');
     expect(writer).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes a harmless read-only chat question without approval (no write workers in pool)', async () => {
+    const registry = AdapterRegistry.fromPackaged();
+    const plan = JSON.stringify({
+      goal: 'file access',
+      steps: [{
+        id: 's1',
+        instruction: 'Explain whether agentctl workers can read local files in this repo (read-only).',
+        type: 'reason',
+        needs: [],
+        acceptance: 'Clear accurate answer',
+        dependsOn: [],
+        agent: 'dry_run',
+        model: null,
+      }],
+    });
+    scriptedWorker(registry.get('dry_run'), plan, () => 'Yes — read-only lanes can inspect the workspace.');
+    const res = await runOrchestrateGoal(registry, {
+      goal: 'can you access local files in this project?',
+      timeoutSeconds: 5,
+      orchestrator: 'dry_run',
+      noSynth: true,
+      approve: false,
+    });
+    expect(res.status).toBe('done');
+    expect(res.outcomes[0]).toMatchObject({ id: 's1', ok: true, note: 'verified' });
+    expect(res.outcomes[0]?.note).not.toBe('blocked by approval gate');
   });
 
   it('blocks a step whose injected dependency output contains git -C . push', async () => {

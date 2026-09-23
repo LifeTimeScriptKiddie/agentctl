@@ -520,6 +520,7 @@ export function buildPlannerPrompt(
   routingRules: string = readPlannerRoutingRules(),
   /** Untrusted background (e.g. a chat transcript); quoted, never part of the goal. */
   context?: string,
+  opts: { readOnlyWorkers?: boolean } = {},
 ): string {
   return [
     'You are the ORCHESTRATOR in a multi-agent system. Decompose the goal into a short,',
@@ -543,6 +544,12 @@ export function buildPlannerPrompt(
     '- type is a hint for fallback routing only — your agent/model choice wins.',
     '- needs are hard capability requirements. Use ["canRunShell"] for command execution.',
     '  Use ["canAccessNetwork"] for web/current facts and ["canModifyRepo"] for file edits.',
+    ...(opts.readOnlyWorkers
+      ? [
+        '- This run is read-only: only non-write workers appear in the roster. Use cursor/codex/claude',
+        '  for repo reading and Q&A; comet for web. Do not plan file edits, shell, or publish steps.',
+      ]
+      : []),
     '- Canonical needs: canReadFiles, canWriteFiles, canRunShell, canAccessNetwork,',
     '  canUseBrowser, canModifyRepo, canPublish. Do not shorten or rename these.',
     '- dependsOn: only when a step consumes an earlier step\'s output.',

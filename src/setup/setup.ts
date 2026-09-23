@@ -5,8 +5,10 @@ import { createInterface } from 'node:readline';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import {
   DEFAULT_ORCHESTRATOR_AGENT,
+  DEFAULT_ORCHESTRATOR_ECONOMY_MODEL,
   DEFAULT_ORCHESTRATOR_MODEL,
 } from '../core/orchestrateRoster.js';
+import { looksLikeEphemeralAgentctlHome } from '../core/agentHome.js';
 import {
   type CostTier,
   type Preferences,
@@ -32,7 +34,7 @@ export interface SetupPlan {
   probes: AgentProbe[];
 }
 
-const ORCH_CANDIDATES = ['codex', 'claude', 'cursor', 'pi'] as const;
+const ORCH_CANDIDATES = ['cursor', 'codex', 'claude', 'pi'] as const;
 
 /** Economy worker defaults when the agent is available. */
 const ECONOMY_MODELS: Record<string, string> = {
@@ -46,14 +48,15 @@ const ECONOMY_MODELS: Record<string, string> = {
 /** Stronger planning models when the user picks balanced/frontier. */
 const ORCH_MODELS: Record<string, Partial<Record<CostTier, string>>> = {
   codex: {
-    economy: 'gpt-5.6-sol',
-    balanced: 'gpt-6-astra',
+    // balanced daily default is sol (cheaper); astra is the backup/frontier
+    economy: 'gpt-5.6-luna',
+    balanced: 'gpt-5.6-sol',
     frontier: 'gpt-6-astra',
   },
   claude: {
     economy: 'sonnet',
-    balanced: 'opus',
-    frontier: 'fable',
+    balanced: 'sonnet',
+    frontier: 'opus',
   },
   cursor: {
     economy: 'composer-2.5',
@@ -65,6 +68,14 @@ const ORCH_MODELS: Record<string, Partial<Record<CostTier, string>>> = {
     balanced: 'openai-codex/gpt-5.6-sol',
     frontier: 'openai-codex/gpt-6-astra',
   },
+};
+
+/** Expensive backup models (used via `orchestrate --backup`). */
+const ORCH_BACKUP_MODELS: Record<string, string> = {
+  codex: 'gpt-6-astra',
+  claude: 'opus',
+  cursor: 'claude-opus-5-thinking-high',
+  pi: 'openai-codex/gpt-6-astra',
 };
 
 export async function probeAgents(registry: AdapterRegistry): Promise<AgentProbe[]> {
@@ -99,7 +110,38 @@ function pickOrchestrator(probes: AgentProbe[], tier: CostTier): { agent: string
     return { agent: name, model };
   }
   // Fall back to packaged defaults even if the probe failed (user may fix PATH later).
-  return { agent: DEFAULT_ORCHESTRATOR_AGENT, model: DEFAULT_ORCHESTRATOR_MODEL };
+  return {
+    agent: DEFAULT_ORCHESTRATOR_AGENT,
+    model: tier === 'frontier' ? DEFAULT_ORCHESTRATOR_MODEL : DEFAULT_ORCHESTRATOR_ECONOMY_MODEL,
+  };
+}
+
+function pickOrchestratorBackup(
+  probes: AgentProbe[],
+  primary: { agent: string; model: string | null },
+): { agent: string; model: string | null } | null {
+  const available = new Map(probes.filter((p) => p.available).map((p) => [p.name, p]));
+  // Prefer a *different* agent for backup (codex/astra is the intended expensive path).
+  const backupOrder = ['codex', 'claude', 'cursor', 'pi'] as const;
+  for (const name of backupOrder) {
+    if (name === primary.agent) continue;
+    const probe = available.get(name);
+    const preferred = ORCH_BACKUP_MODELS[name];
+    if (!probe || !preferred) continue;
+    const model = pickFromOptions(probe.models, preferred, probe.defaultModel);
+    if (model) return { agent: name, model };
+  }
+  // Same-agent stronger model only if no other backup lane exists.
+  const same = available.get(primary.agent);
+  const sameBackup = ORCH_BACKUP_MODELS[primary.agent];
+  if (same && sameBackup && sameBackup !== primary.model) {
+    const model = pickFromOptions(same.models, sameBackup, null);
+    if (model && model !== primary.model) return { agent: primary.agent, model };
+  }
+  if (sameBackup && sameBackup !== primary.model) {
+    return { agent: primary.agent, model: sameBackup };
+  }
+  return null;
 }
 
 function workerModel(probe: AgentProbe, tier: CostTier): string | null {
@@ -123,6 +165,7 @@ export function planAutoSetup(
 ): SetupPlan {
   const tier = opts.tier ?? 'balanced';
   const orch = pickOrchestrator(probes, tier);
+  const backup = tier === 'frontier' ? null : pickOrchestratorBackup(probes, orch);
   const agents: Preferences['agents'] = {};
   const summary: string[] = [];
 
@@ -140,6 +183,13 @@ export function planAutoSetup(
   summary.unshift(
     `orchestrator: ${orch.agent}${orch.model ? ` / ${orch.model}` : ''} (tier=${tier})`,
   );
+  if (backup) {
+    summary.splice(
+      1,
+      0,
+      `orchestrator backup: ${backup.agent}${backup.model ? ` / ${backup.model}` : ''} (use: orchestrate --backup)`,
+    );
+  }
 
   const availableCount = probes.filter((p) => p.available).length;
   if (availableCount === 0) {
@@ -154,6 +204,7 @@ export function planAutoSetup(
       updatedAt: new Date().toISOString(),
       source: opts.source ?? 'auto',
       orchestrator: orch,
+      orchestratorBackup: backup,
       agents,
       tier,
     },
@@ -240,6 +291,32 @@ export async function runInteractiveSetup(
     const orchModelIdx = await pickIndex(rl, 'Model', orchModelChoices, orchModelDefault >= 0 ? orchModelDefault : 0);
     const orchModel = orchModelChoices[orchModelIdx] ?? preferredOrchModel;
 
+    const suggestedBackup = pickOrchestratorBackup(probes, { agent: orchAgent, model: orchModel });
+    let orchestratorBackup: Preferences['orchestratorBackup'] = suggestedBackup;
+    if (suggestedBackup) {
+      process.stderr.write(
+        `\nBackup orchestrator (expensive; use with \`orchestrate --backup\`):\n`
+          + `  suggested: ${suggestedBackup.agent} / ${suggestedBackup.model}\n`,
+      );
+      const keep = await ask(rl, 'Keep backup? [Y/n/none]: ');
+      if (/^n/i.test(keep)) {
+        // pick different
+        const backupAgents = uniqueOrch;
+        const bAgentIdx = await pickIndex(rl, 'Backup agent', backupAgents, Math.max(0, backupAgents.indexOf(suggestedBackup.agent)));
+        const bAgent = backupAgents[bAgentIdx] ?? suggestedBackup.agent;
+        const bProbe = probes.find((p) => p.name === bAgent);
+        const bModels = bProbe?.models.length
+          ? bProbe.models
+          : [ORCH_BACKUP_MODELS[bAgent] ?? suggestedBackup.model].filter(Boolean) as string[];
+        const bPreferred = ORCH_BACKUP_MODELS[bAgent] ?? suggestedBackup.model;
+        const bDef = Math.max(0, bModels.indexOf(bPreferred ?? ''));
+        const bModelIdx = await pickIndex(rl, 'Backup model', bModels, bDef >= 0 ? bDef : 0);
+        orchestratorBackup = { agent: bAgent, model: bModels[bModelIdx] ?? bPreferred };
+      } else if (/^none$/i.test(keep)) {
+        orchestratorBackup = null;
+      }
+    }
+
     const agents: Preferences['agents'] = { ...auto.preferences.agents };
     for (const probe of available) {
       if (probe.name === orchAgent) {
@@ -269,12 +346,16 @@ export async function runInteractiveSetup(
       updatedAt: new Date().toISOString(),
       source: 'interactive',
       orchestrator: { agent: orchAgent, model: orchModel },
+      orchestratorBackup,
       agents,
       tier,
     };
 
     const summary = [
       `orchestrator: ${orchAgent}${orchModel ? ` / ${orchModel}` : ''} (tier=${tier})`,
+      ...(orchestratorBackup
+        ? [`orchestrator backup: ${orchestratorBackup.agent}${orchestratorBackup.model ? ` / ${orchestratorBackup.model}` : ''} (use: orchestrate --backup)`]
+        : []),
       ...probes.map((p) => {
         const a = agents[p.name];
         const status = p.available ? 'available' : 'unavailable';
@@ -291,10 +372,22 @@ export async function runInteractiveSetup(
 export function formatSetupShow(registry: AdapterRegistry, probes: AgentProbe[]): string[] {
   const prefs = loadPreferences();
   const lines: string[] = [];
-  lines.push(`preferences: ${preferencesPath()}${prefs ? '' : ' (missing — run agentctl setup)'}`);
-  if (prefs) {
+  if (looksLikeEphemeralAgentctlHome()) {
+    lines.push(
+      `warning: AGENTCTL_HOME=${process.env.AGENTCTL_HOME} looks like a leftover test directory — `
+        + 'unset AGENTCTL_HOME to use ~/.agentctl',
+    );
+  }
+  lines.push(`preferences: ${preferencesPath()}${prefs ? '' : ' (missing — run agentctl setup)'}`);  if (prefs) {
     lines.push(`  source: ${prefs.source}  updated: ${prefs.updatedAt}  tier: ${prefs.tier}`);
     lines.push(`  orchestrator: ${prefs.orchestrator.agent}${prefs.orchestrator.model ? ` / ${prefs.orchestrator.model}` : ''}`);
+    if (prefs.orchestratorBackup?.agent) {
+      lines.push(
+        `  backup: ${prefs.orchestratorBackup.agent}`
+          + `${prefs.orchestratorBackup.model ? ` / ${prefs.orchestratorBackup.model}` : ''}`
+          + '  (orchestrate --backup)',
+      );
+    }
   } else {
     const fallback = preferredOrchestrator(null, {
       agent: DEFAULT_ORCHESTRATOR_AGENT,

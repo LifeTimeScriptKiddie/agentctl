@@ -2,6 +2,15 @@
 
 Follow the parent ~/code/AGENTS.md operating procedures and the current user request.
 
+## How to call agentctl (do not reimplement)
+
+| Client | Invoke |
+|--------|--------|
+| **Pi** | `/agentctl …` (slash extension) |
+| **Cursor / Claude / Codex** | Load skill **`~/code/skillz/ai-agents/agentctl/SKILL.md`**, then shell out to `agentctl` |
+
+One story: the IDE agent owns intent and approval; **agentctl is the only sub-agent runner**. Never nest `agentctl` when `AGENTCTL_WORKER_DEPTH` ≥ 1. Prefer `delegate --dry-route` / `orchestrate --dry-plan` before spending quota. Details: [docs/CURSOR-INVOCATION.md](docs/CURSOR-INVOCATION.md), [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
 ## Laya (optional local evidence gate)
 
 Team memory can use **local [Laya](https://pypi.org/project/laya/)** for optional System-1 evidence selection after ACL-filtered FTS.

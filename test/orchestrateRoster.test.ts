@@ -1,10 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  buildAgentRoster, formatRosterForPlanner,
+  buildAgentRoster, formatRosterForPlanner, orchestrationWorkerNames,
   DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL, resolveOrchestratorModel,
+  resolveBackupOrchestrator, resolveDefaultOrchestrator,
 } from '../src/core/orchestrateRoster.js';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 import { buildPlannerPrompt } from '../src/core/orchestrator.js';
+import { planAutoSetup, type AgentProbe } from '../src/setup/setup.js';
+import { savePreferences } from '../src/core/preferences.js';
+
+afterEach(() => {
+  const home = process.env.AGENTCTL_HOME;
+  vi.unstubAllEnvs();
+  if (home?.includes('agentctl-orch-')) rmSync(home, { recursive: true, force: true });
+});
 
 describe('orchestrateRoster', () => {
   it('defaults to codex gpt-6-astra as orchestrator', () => {
@@ -25,6 +37,8 @@ describe('orchestrateRoster', () => {
   });
 
   it('uses the selected backend default instead of leaking the Codex model', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-orch-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
     const reg = AdapterRegistry.fromPackaged();
     expect(resolveOrchestratorModel(reg, 'codex')).toBe('gpt-6-astra');
     expect(resolveOrchestratorModel(reg, 'claude')).toBeNull();
@@ -32,13 +46,46 @@ describe('orchestrateRoster', () => {
     expect(resolveOrchestratorModel(reg, 'claude', 'opus')).toBe('opus');
   });
 
+  it('resolves orchestratorBackup from setup prefs', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-orch-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    const probes: AgentProbe[] = [
+      {
+        name: 'codex', available: true, detail: 'ok',
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'],
+        defaultModel: 'gpt-5.6-luna', optional: false,
+      },
+      {
+        name: 'cursor', available: true, detail: 'ok',
+        models: ['composer-2.5', 'claude-opus-5-thinking-high'],
+        defaultModel: 'composer-2.5', optional: false,
+      },
+    ];
+    savePreferences(planAutoSetup(probes, { tier: 'balanced' }).preferences, home);
+    expect(resolveDefaultOrchestrator()).toEqual({ agent: 'cursor', model: 'composer-2.5' });
+    expect(resolveBackupOrchestrator()).toEqual({ agent: 'codex', model: 'gpt-6-astra' });
+  });
+
   it('packages Pi with the authenticated OpenAI-Codex provider', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-orch-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
     const reg = AdapterRegistry.fromPackaged();
     const pi = reg.getPreset('pi');
     expect(pi?.family).toBe('subprocess');
     expect(pi?.models?.default).toBe('openai-codex/gpt-5.6-luna');
     expect(pi?.models?.options).toContain('openai-codex/gpt-6-astra');
     expect(resolveOrchestratorModel(reg, 'pi')).toBe('openai-codex/gpt-5.6-luna');
+  });
+
+  it('excludes write-capable workers from orchestration when not approved', () => {
+    const reg = AdapterRegistry.fromPackaged();
+    const all = reg.names();
+    const readOnly = orchestrationWorkerNames(reg, all, false);
+    expect(readOnly).toContain('cursor');
+    expect(readOnly).toContain('codex');
+    expect(readOnly).not.toContain('codex_write');
+    expect(readOnly).not.toContain('agy');
+    expect(orchestrationWorkerNames(reg, all, true)).toEqual(all);
   });
 
   it('planner prompt embeds the agent roster', () => {

@@ -39,6 +39,13 @@ export class TranscriptBuffer {
     return this.messageIndex;
   }
 
+  /** Wipe all lines and message index (chat /clear · /new). */
+  clear(): void {
+    this.lines = [];
+    this.messageIndex = [];
+    this.nextId = 1;
+  }
+
   lineAt(index: number): string {
     return this.lines[index] ?? '';
   }

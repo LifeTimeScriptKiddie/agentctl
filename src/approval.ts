@@ -115,20 +115,34 @@ export function gatedCapability(caps: Partial<AdapterCapabilities> | null | unde
   return GATED_CAPABILITIES.find((cap) => caps?.[cap]) ?? null;
 }
 
+/** Step types / needs that imply repo writes, shell, or other gated worker lanes. */
+export function stepRequiresWriteApproval(step: {
+  needs: readonly string[];
+  type?: string;
+}): boolean {
+  if (step.type === 'shell' || step.type === 'code') return true;
+  return step.needs.some((n) => (GATED_CAPABILITIES as readonly string[]).includes(n));
+}
+
 /**
  * Orchestration step gate. Returns why the step needs --approve, or null:
- * a destructive pattern in the prompt actually dispatched, or a gated
- * capability in the planner's needs or the routed agent's capabilities.
+ * a destructive pattern in the prompt actually dispatched, a gated capability
+ * in the planner's needs, or a gated routed agent when the step is a write/shell
+ * task (reason/search Q&A must not block solely because a write lane exists).
  */
 export function stepApprovalBlock(
-  step: { needs: readonly string[] },
+  step: { needs: readonly string[]; type?: string },
   routedAgentCaps: Partial<AdapterCapabilities> | null | undefined,
   composedPrompt: string,
 ): string | null {
   const hit = findDestructive(composedPrompt);
   if (hit) return hit;
   for (const cap of GATED_CAPABILITIES) {
-    if (step.needs.includes(cap) || routedAgentCaps?.[cap]) return `capability:${cap}`;
+    if (step.needs.includes(cap)) return `capability:${cap}`;
+  }
+  if (!stepRequiresWriteApproval(step)) return null;
+  for (const cap of GATED_CAPABILITIES) {
+    if (routedAgentCaps?.[cap]) return `capability:${cap}`;
   }
   return null;
 }

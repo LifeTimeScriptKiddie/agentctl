@@ -1,7 +1,8 @@
 import type { AdapterRegistry } from '../adapters/registry.js';
 import type { HealthStatus } from '../adapters/protocol.js';
 import type { AdapterCapabilities } from '../schema/capabilities.js';
-import { loadPreferences, preferredModel, preferredOrchestrator } from './preferences.js';
+import { gatedCapability } from '../approval.js';
+import { loadPreferences, preferredModel, preferredOrchestrator, preferredOrchestratorBackup } from './preferences.js';
 
 export interface RosterAgent {
   name: string;
@@ -13,9 +14,14 @@ export interface RosterAgent {
   defaultEffort: string | null;
 }
 
-/** Packaged default orchestrator: Astra via the codex CLI (plan / verify / synth). */
+/**
+ * Packaged fallback when no preferences exist.
+ * Daily `agentctl setup --auto` writes a cheaper primary (sol) + astra backup.
+ */
 export const DEFAULT_ORCHESTRATOR_AGENT = 'codex';
 export const DEFAULT_ORCHESTRATOR_MODEL = 'gpt-6-astra';
+/** Cheaper daily default written by setup (balanced/economy). */
+export const DEFAULT_ORCHESTRATOR_ECONOMY_MODEL = 'gpt-5.6-sol';
 
 /** Effective orchestrator after user preferences (from `agentctl setup`). */
 export function resolveDefaultOrchestrator(): { agent: string; model: string | null } {
@@ -23,6 +29,11 @@ export function resolveDefaultOrchestrator(): { agent: string; model: string | n
     agent: DEFAULT_ORCHESTRATOR_AGENT,
     model: DEFAULT_ORCHESTRATOR_MODEL,
   });
+}
+
+/** Stronger/expensive backup from prefs (`orchestrate --backup`). */
+export function resolveBackupOrchestrator(): { agent: string; model: string | null } | null {
+  return preferredOrchestratorBackup(loadPreferences());
 }
 
 /**
@@ -40,6 +51,9 @@ export function resolveOrchestratorModel(
   const prefs = loadPreferences();
   if (prefs?.orchestrator.agent === agent && prefs.orchestrator.model) {
     return prefs.orchestrator.model;
+  }
+  if (prefs?.orchestratorBackup?.agent === agent && prefs.orchestratorBackup.model) {
+    return prefs.orchestratorBackup.model;
   }
   const preferred = preferredModel(prefs, agent);
   if (preferred) return preferred;
@@ -82,6 +96,16 @@ export function buildAgentRoster(
 }
 
 /** Compact roster text for whichever configured backend is the orchestrator. */
+/** Worker pool for orchestration: without --approve, hide shell/write/publish lanes from routing. */
+export function orchestrationWorkerNames(
+  registry: AdapterRegistry,
+  enabledNames: string[],
+  approve: boolean,
+): string[] {
+  if (approve) return enabledNames;
+  return enabledNames.filter((name) => !gatedCapability(registry.get(name).capabilities()));
+}
+
 export function formatRosterForPlanner(roster: RosterAgent[]): string {
   const lines = roster.map((a) => {
     const caps = Object.entries(a.capabilities)

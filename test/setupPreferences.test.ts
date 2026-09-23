@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   loadPreferences,
@@ -9,6 +9,7 @@ import {
   preferredModel,
   preferredOrchestrator,
 } from '../src/core/preferences.js';
+import { looksLikeEphemeralAgentctlHome } from '../src/core/agentHome.js';
 import { planAutoSetup, type AgentProbe } from '../src/setup/setup.js';
 import {
   resolveDefaultOrchestrator,
@@ -61,19 +62,25 @@ const probes: AgentProbe[] = [
 describe('agentctl setup preferences', () => {
   it('auto-optimizes orchestrator and worker models from available agents', () => {
     const plan = planAutoSetup(probes, { tier: 'balanced' });
-    expect(plan.preferences.orchestrator.agent).toBe('codex');
-    expect(plan.preferences.orchestrator.model).toBe('gpt-6-astra');
+    expect(plan.preferences.orchestrator.agent).toBe('cursor');
+    expect(plan.preferences.orchestrator.model).toBe('composer-2.5');
+    expect(plan.preferences.orchestratorBackup).toEqual({
+      agent: 'codex',
+      model: 'gpt-6-astra',
+    });
     expect(plan.preferences.agents.cursor?.defaultModel).toBe('composer-2.5');
     expect(plan.preferences.agents.claude?.enabled).toBe(false);
-    expect(plan.summary[0]).toMatch(/orchestrator: codex/);
+    expect(plan.summary[0]).toMatch(/orchestrator: cursor/);
+    expect(plan.summary[1]).toMatch(/orchestrator backup:.*gpt-6-astra/);
   });
 
-  it('falls back to cursor when codex is missing', () => {
-    const noCodex = probes.map((p) => (
-      p.name === 'codex' ? { ...p, available: false } : p
+  it('falls back to codex when cursor is missing', () => {
+    const noCursor = probes.map((p) => (
+      p.name === 'cursor' ? { ...p, available: false } : p
     ));
-    const plan = planAutoSetup(noCodex, { tier: 'balanced' });
-    expect(plan.preferences.orchestrator.agent).toBe('cursor');
+    const plan = planAutoSetup(noCursor, { tier: 'balanced' });
+    expect(plan.preferences.orchestrator.agent).toBe('codex');
+    expect(plan.preferences.orchestrator.model).toBe('gpt-5.6-sol');
   });
 
   it('persists preferences and feeds resolve* helpers', () => {
@@ -87,17 +94,25 @@ describe('agentctl setup preferences', () => {
     expect(preferredOrchestrator(plan.preferences, {
       agent: DEFAULT_ORCHESTRATOR_AGENT,
       model: DEFAULT_ORCHESTRATOR_MODEL,
-    }).agent).toBe('codex');
+    }).agent).toBe('cursor');
 
-    expect(resolveDefaultOrchestrator().agent).toBe('codex');
-    expect(resolveDefaultOrchestrator().model).toBe('gpt-5.6-sol'); // economy orch for codex
+    expect(resolveDefaultOrchestrator().agent).toBe('cursor');
+    expect(resolveDefaultOrchestrator().model).toBe('composer-2.5');
 
     const reg = AdapterRegistry.fromPackaged();
-    expect(resolveOrchestratorModel(reg, 'codex')).toBe('gpt-5.6-sol');
+    expect(resolveOrchestratorModel(reg, 'cursor')).toBe('composer-2.5');
     expect(resolveWorkerModel(reg, 'cursor')).toBe('composer-2.5');
     expect(resolveWorkerModel(reg, 'cursor', 'explicit-model')).toBe('explicit-model');
 
     expect(resetPreferences(home)).toBe(true);
     expect(loadPreferences(home)).toBeNull();
+  });
+
+  it('detects leftover test AGENTCTL_HOME paths', () => {
+    vi.stubEnv('AGENTCTL_HOME', '/tmp/agentctl-setup-test-Zmeg46');
+    expect(looksLikeEphemeralAgentctlHome()).toBe(true);
+    vi.stubEnv('AGENTCTL_HOME', join(homedir(), '.agentctl'));
+    // AGENTCTL_HOME still set, but path is the real home — not ephemeral
+    expect(looksLikeEphemeralAgentctlHome()).toBe(false);
   });
 });

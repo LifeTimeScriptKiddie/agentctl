@@ -1,10 +1,11 @@
 # Model routing
 
-User policy updated 2026-09-21. Provider and caller are independent: Codex, Claude, Cursor, Pi and the terminal all invoke the same agentctl CLI. Preserve the caller's authority over intent and approval.
+User policy updated 2026-09-23. Provider and caller are independent: Codex, Claude, Cursor, Pi and the terminal all invoke the same agentctl CLI. Preserve the caller's authority over intent and approval.
 
 | Job | Preferred lane/model | Fallback or escalation |
 | --- | --- | --- |
-| Plan / verify / synthesize | codex / gpt-6-astra | Explicit orchestrator override only |
+| Plan / verify / synthesize (daily) | cursor / composer-2.5 | `orchestrate --backup` → codex / gpt-6-astra |
+| Plan / verify / synthesize (hard) | codex / gpt-6-astra | Explicit `--orchestrator` / `--orchestrator-model` |
 | Routine analysis, code reading, summaries, extraction | cursor / composer-2.5 | Stronger Cursor model when justified |
 | Cyber triage / initial analysis | cursor / composer-2.5 | codex / gpt-daybreak-blue-latest |
 | Independent cyber validation | codex / gpt-daybreak-blue-latest | Report unavailable access; do not claim validation occurred |
@@ -19,7 +20,7 @@ Role priority for mixed requests: planning, deep review, cyber, prose, ordinary 
 
 ## Model access
 
-After install, run **`agentctl setup`** (interactive) or **`agentctl setup --auto`** so agentctl probes which CLIs are on PATH and writes `~/.agentctl/preferences.yaml` (orchestrator + per-agent default models + cost tier). `agentctl status` nudges you once if preferences are missing. Explicit `--to` / `--model` / `--orchestrator` always win.
+After install, run **`agentctl setup`** (interactive) or **`agentctl setup --auto`** so agentctl probes which CLIs are on PATH and writes `~/.agentctl/preferences.yaml` (orchestrator + optional `orchestratorBackup` + per-agent default models + cost tier). `agentctl status` nudges you once if preferences are missing. Explicit `--to` / `--model` / `--orchestrator` always win; `--backup` selects the saved backup orchestrator.
 
 `agentctl agents` shows the curated planner roster. `cursor-agent models` shows the live Cursor catalog. Explicit `--model <id>` is passed through, including IDs outside the curated roster; provider access still governs acceptance. Claude aliases include sonnet, opus, haiku and fable. Codex includes Luna, Terra, Sol, Astra and Daybreak Blue. Fable through Cursor remains excluded from automatic planning because the catalog labels it NO ZDR; use native Claude for that tier. No billing settings are changed.
 
@@ -28,7 +29,7 @@ Prefer Composer for the Cursor Models allowance. Third-party models in Cursor us
 ## Planner rules
 
 <!-- PLANNER_RULES_START -->
-Use only available lanes and advertised models from the live roster. Keep plans to 2–6 useful steps. Each step must include agent and model. Do not change the externally selected plan/verify/synthesis backend: default codex / gpt-6-astra.
+Use only available lanes and advertised models from the live roster. Keep plans to 2–6 useful steps. Each step must include agent and model. Do not change the externally selected plan/verify/synthesis backend: default cursor / composer-2.5 (backup codex / gpt-6-astra via --backup).
 - Prefer cursor / composer-2.5 for read-only repo analysis, ordinary review, summaries, translation and extraction. Use stronger Cursor models only when the task warrants them.
 - Writing and prose drafting: claude / sonnet. Deep review: claude / opus. If native Claude is unavailable, use the corresponding advertised Cursor Claude model.
 - Authorized cybersecurity analysis: cursor / composer-2.5 for initial triage, followed by independent codex / gpt-daybreak-blue-latest validation when the goal asks for assessed findings. Do not treat one worker's output as independent validation. If Daybreak fails or lacks access, report the gap rather than silently claiming equivalent validation.
@@ -38,9 +39,4 @@ Use only available lanes and advertised models from the live roster. Keep plans 
 - Capability keys: canReadFiles, canWriteFiles, canRunShell, canAccessNetwork, canUseBrowser, canModifyRepo, canPublish.
 - Preserve explicit model choices. No recursive worker delegation: workers return results to this controller. Pi is a read-only optional worker, never the orchestrator.
 - Escalate only after failed verification within retry/step budgets. Unknown cost is unknown, not zero. Budget flags cannot guarantee monetary caps where a provider omits usage.
-- The invoking client owns approval. Ambiguous routing requires a human choice; never use an LLM tiebreak. Security, web and repository-changing orchestration requires explicit user go. Destructive/outward actions require named approval.
 <!-- PLANNER_RULES_END -->
-
-## Invocation
-
-See [INTEGRATIONS.md](INTEGRATIONS.md) for all clients, explicit model calls and standalone usage.
