@@ -33,7 +33,19 @@ const SCROLL_KEY_NAMES = [
 const PASTE_KEY_NAMES = ['C-v', 'M-v', 'S-insert'];
 const COPY_INPUT_KEY_NAMES = ['C-insert'];
 const COPY_REPLY_KEY_NAMES = ['C-S-c', 'M-S-c'];
-const OVERLAY_KEYS = ['C-g', 'C-r', 'C-p', 'f1'];
+/** Ctrl chords often fail on macOS terminals; keep Meta/F-keys + slash fallbacks. */
+const JUMP_KEY_NAMES = ['C-g', 'M-g', 'M-j', 'f3'];
+const FIND_KEY_NAMES = ['C-r', 'M-r', 'M-f', 'f4'];
+const OVERLAY_KEYS = [...JUMP_KEY_NAMES, ...FIND_KEY_NAMES, 'C-p', 'f1'];
+
+const IS_DARWIN = process.platform === 'darwin';
+
+function keysHintLine(): string {
+  if (IS_DARWIN) {
+    return 'keys: ↑↓ history · F3 jump · F4 find · F1 · Tab then g|/';
+  }
+  return 'keys: ↑↓ history · Ctrl+G jump · Ctrl+R search · F3/F4 · o collapse';
+}
 
 type InputBox = {
   value: string;
@@ -167,22 +179,28 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       label: ' search transcript (Enter find · Esc cancel) ',
       tags: true,
       keys: true,
+      inputOnFocus: true,
       hidden: true,
     });
 
-    const commands = [
-      ['Help and keyboard reference', '/help'],
-      ['Show agents and connection status', '/status'],
-      ['Show model choices', '/model'],
-      ['Use direct chat (faster, one agent)', '/orch off'],
-      ['Use orchestration (plan and verify)', '/orch on'],
-      ['Switch agent…', '/switch '],
-      ['Search the web…', '/search '],
+    const commands: Array<{ label: string; cmd?: string; action?: 'jump' | 'find' }> = [
+      { label: 'Help and keyboard reference', cmd: '/help' },
+      { label: 'New chat (clear transcript)', cmd: '/new' },
+      { label: 'Jump to a message', action: 'jump' },
+      { label: 'Find in transcript', action: 'find' },
+      { label: 'Show agents and connection status', cmd: '/status' },
+      { label: 'Show model choices', cmd: '/model' },
+      { label: 'Use direct chat (faster, one agent)', cmd: '/orch off' },
+      { label: 'Use orchestration (plan and verify)', cmd: '/orch on' },
+      { label: 'Switch agent…', cmd: '/switch ' },
+      { label: 'Search the web…', cmd: '/search ' },
     ];
     const commandMenu = blessed.list({ parent: screen, top: 'center', left: 'center',
-      width: '90%', height: 11, border: { type: 'line' },
-      label: ' Commands · ↑↓ choose · Enter insert · Esc close ', keys: true, mouse: true,
-      hidden: true, items: commands.map(([label, cmd]) => `${label}  ${cmd}`),
+      width: '90%', height: 14, border: { type: 'line' },
+      label: ' Commands · ↑↓ choose · Enter · Esc close ', keys: true, mouse: true,
+      hidden: true, items: commands.map((c) => c.action
+        ? `${c.label}  (${c.action === 'jump' ? 'F3' : 'F4'})`
+        : `${c.label}  ${c.cmd}`),
       style: { selected: { bg: 'blue', fg: 'white' } } });
 
     let inputFocused = true;
@@ -190,6 +208,10 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
     let followOutput = true;
     let busySince = 0;
     let closed = false;
+    /** Submitted prompt history for ↑/↓ recall (newest at end). */
+    const inputHistory: string[] = [];
+    let historyIndex = -1; // -1 = live draft
+    let historyDraft = '';
     screen.on('destroy', () => { closed = true; });
 
     const pageLines = () => Math.max(3, (transcript.height as number) - 2);
@@ -291,6 +313,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
     };
 
     const focusInput = () => {
+      if (overlayOpen) return;
       inputFocused = true;
       input.setLabel(` ${promptLabel(session)} `);
       input.focus();
@@ -316,18 +339,21 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
         appendSystem('(no messages to jump to)');
         return;
       }
+      inputFocused = false;
+      overlayOpen = 'jump';
       jumpList.setItems(items);
       jumpList.show();
       jumpList.focus();
-      overlayOpen = 'jump';
+      screen.program.hideCursor();
       screen.render();
     };
 
     const openSearch = () => {
+      inputFocused = false;
+      overlayOpen = 'search';
       searchBox.setValue(searchQuery);
       searchBox.show();
       searchBox.focus();
-      overlayOpen = 'search';
       screen.render();
     };
 
@@ -394,7 +420,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       else if (steps) lines.push(`{green-fg}steps:{/}  ${steps}`);
       else if (busy) lines.push('{green-fg}steps:{/}  working… (Esc cancel)');
       else if (!now) {
-        lines.push('{gray-fg}keys:{/} Shift+Enter newline · Ctrl+G jump · Ctrl+R search · o collapse');
+        lines.push(`{gray-fg}${keysHintLine()}{/}`);
       }
       statusPanel.setContent(compact ? (now || selectHint || meta) : lines.slice(0, 4).join('\n'));
       input.setLabel(` ${busy ? 'Draft next message' : promptLabel(session)} `);
@@ -433,7 +459,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
         if (tb.value && writeClipboard(tb.value)) appendSystem('(copied input)');
       };
       const keys = [...PASTE_KEY_NAMES, ...COPY_INPUT_KEY_NAMES, ...COPY_REPLY_KEY_NAMES, ...OVERLAY_KEYS,
-        'tab', 'escape', 'C-c'];
+        'g', '/', 'tab', 'escape', 'C-c'];
       const locked = screen as unknown as { ignoreLocked: string[] };
       for (const k of keys) {
         if (!locked.ignoreLocked.includes(k)) locked.ignoreLocked.push(k);
@@ -441,14 +467,25 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       screen.program.key(PASTE_KEY_NAMES, pasteIntoInput);
       screen.program.key(COPY_INPUT_KEY_NAMES, copyInputLine);
       screen.program.key(COPY_REPLY_KEY_NAMES, copyLastReply);
-      screen.program.key(['C-g'], () => { if (!overlayOpen) openJump(); });
-      screen.program.key(['C-r'], () => { if (!overlayOpen) openSearch(); });
+      screen.program.key(JUMP_KEY_NAMES, () => { if (!overlayOpen) openJump(); });
+      screen.program.key(FIND_KEY_NAMES, () => { if (!overlayOpen) openSearch(); });
       screen.program.key(['C-p', 'f1'], () => {
         if (overlayOpen) return;
+        inputFocused = false;
         overlayOpen = 'commands';
         commandMenu.show();
         commandMenu.focus();
+        screen.program.hideCursor();
         screen.render();
+      });
+      // macOS-friendly: when transcript is focused, plain g / / (no Ctrl/Cmd needed)
+      screen.program.key(['g'], () => {
+        if (overlayOpen || inputFocused) return;
+        openJump();
+      });
+      screen.program.key(['/'], () => {
+        if (overlayOpen || inputFocused) return;
+        openSearch();
       });
       screen.program.key(['n'], () => {
         if (inputFocused || overlayOpen) return;
@@ -471,7 +508,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       if (closed) return;
       if (on) {
         busySince = Date.now();
-      } else {
+      } else if (!overlayOpen) {
         focusInput();
       }
       refreshStatus();
@@ -547,10 +584,21 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
     });
     jumpList.key(['escape'], closeOverlays);
     commandMenu.on('select', (_item, index) => {
-      const command = commands[index]?.[1];
+      const entry = commands[index];
       closeOverlays();
-      if (command) input.setValue(`${input.getValue()}${input.getValue() ? '\n' : ''}${command}`);
-      screen.render();
+      if (!entry) return;
+      if (entry.action === 'jump') {
+        openJump();
+        return;
+      }
+      if (entry.action === 'find') {
+        openSearch();
+        return;
+      }
+      if (entry.cmd) {
+        input.setValue(`${input.getValue()}${input.getValue() ? '\n' : ''}${entry.cmd}`);
+        screen.render();
+      }
     });
     commandMenu.key(['escape'], closeOverlays);
 
@@ -558,6 +606,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       runSearch(value.trim());
       closeOverlays();
     });
+    searchBox.on('cancel', closeOverlays);
     searchBox.key(['escape'], closeOverlays);
 
     session.attachUI({
@@ -565,6 +614,24 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       onUser: (text) => appendUser(text),
       onAssistant: (agent, text) => appendAssistant(agent, text),
       onSystem: (text) => appendSystem(text),
+      onClear: () => {
+        transcriptBuffer.clear();
+        inputHistory.length = 0;
+        historyIndex = -1;
+        historyDraft = '';
+        searchQuery = '';
+        searchHits = [];
+        searchIdx = 0;
+        lastAssistantText = '';
+        lastUserText = '';
+        agentReplies.clear();
+        orchProgress.reset();
+        selection = null;
+        activeSourceLine = null;
+        input.clearValue();
+        rebuildTranscript(true);
+        refreshStatus();
+      },
       onOrchStart: () => {
         orchProgress.start();
         refreshStatus();
@@ -586,9 +653,50 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       onStateChange: () => refreshStatus(),
     });
 
-    appendSystem('Welcome to agentctl. Type a task, or press F1 for commands.\nUse @agent for a direct reply; /orch off switches to direct chat.\nTab focuses the conversation; o expands a long reply. Ctrl+G jumps to a message.');
+    appendSystem(
+      IS_DARWIN
+        ? 'Welcome to agentctl. Type a task, or press F1 for commands.\nJump: F3 or Tab then g (⌥G if Option is Meta). Find: F4 or Tab then /.\nUse @agent for a direct reply; /orch off switches to direct chat.'
+        : 'Welcome to agentctl. Type a task, or press F1 for commands.\nUse @agent for a direct reply; /orch off switches to direct chat.\nTab focuses the conversation; o expands a long reply. Ctrl+G jumps to a message.',
+    );
     refreshStatus();
     focusInput();
+
+    const pushInputHistory = (line: string) => {
+      const s = line.trim();
+      if (!s) return;
+      if (inputHistory[inputHistory.length - 1] === s) {
+        historyIndex = -1;
+        historyDraft = '';
+        return;
+      }
+      inputHistory.push(s);
+      if (inputHistory.length > 200) inputHistory.shift();
+      historyIndex = -1;
+      historyDraft = '';
+    };
+
+    const recallHistory = (direction: 'up' | 'down') => {
+      if (overlayOpen || !inputFocused) return;
+      if (inputHistory.length === 0) return;
+      const tb = input as unknown as InputBox;
+      if (historyIndex === -1) historyDraft = tb.value ?? '';
+      if (direction === 'up') {
+        if (historyIndex === -1) historyIndex = inputHistory.length - 1;
+        else if (historyIndex > 0) historyIndex -= 1;
+        else return;
+      } else if (historyIndex === -1) {
+        return;
+      } else if (historyIndex < inputHistory.length - 1) {
+        historyIndex += 1;
+      } else {
+        historyIndex = -1;
+        tb.setValue(historyDraft);
+        screen.render();
+        return;
+      }
+      tb.setValue(inputHistory[historyIndex]!);
+      screen.render();
+    };
 
     const submit = (line: string) => {
       const s = line.trim();
@@ -596,6 +704,16 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
         focusInput();
         return;
       }
+      // Local TUI overlays — work without Ctrl chords (macOS-friendly).
+      if (s === '/jump') {
+        openJump();
+        return;
+      }
+      if (s === '/find' || s === '/tsearch') {
+        openSearch();
+        return;
+      }
+      pushInputHistory(s);
       if (busy) {
         appendSystem('(still working — Esc to cancel)');
         focusInput();
@@ -641,11 +759,20 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       screen.render();
     });
 
+    input.key(['up'], () => recallHistory('up'));
+    input.key(['down'], () => recallHistory('down'));
+
     // One permanent native editing handler; submission and shortcuts own their keys.
     const editor = input as unknown as { _listener: (ch: string, key: { name?: string }) => void };
     const nativeListener = editor._listener.bind(input);
     input.on('keypress', (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean }) => {
-      if (key.ctrl || key.meta || ['enter', 'return', 'escape', 'tab'].includes(key.name ?? '')) return;
+      if (overlayOpen) return;
+      if (key.ctrl || key.meta || ['enter', 'return', 'escape', 'tab', 'up', 'down'].includes(key.name ?? '')) return;
+      // Typing a new draft abandons history browse position.
+      if (historyIndex !== -1 && ch && ch.length > 0) {
+        historyIndex = -1;
+        historyDraft = '';
+      }
       nativeListener(ch, key);
     });
     input.on('click', focusInput);

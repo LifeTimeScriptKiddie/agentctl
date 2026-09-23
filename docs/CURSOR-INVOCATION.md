@@ -2,6 +2,8 @@
 
 **Cursor is already an orchestrator.** When the IDE agent shells out to agentctl, use **thin, one-shot commands** — not `agentctl chat` and not full orchestration unless you truly need multi-step verify loops.
 
+**Skill entry:** load `~/code/skillz/ai-agents/agentctl/SKILL.md` (symlinked at `~/.cursor/skills/agentctl`) for when/how to call the CLI. Pi keeps `/agentctl …` instead of this path.
+
 ## Quick reference
 
 | Goal | Command | LLM calls (typical) |

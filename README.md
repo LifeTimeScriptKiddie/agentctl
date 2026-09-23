@@ -63,7 +63,18 @@ agentctl setup --auto    # or interactive: agentctl setup
 agentctl --help
 ```
 
-Same commands as Pi; useful in CI or when Pi is not running. Install prints a reminder to run setup.
+Same commands as Pi; useful in CI or when Pi is not running. Install prints a reminder to run setup when `preferences.yaml` is missing (and warns if `AGENTCTL_HOME` looks like a leftover test path).
+
+### From Cursor / Claude / Codex (skill + CLI)
+
+These IDEs are cockpits, not silent wrappers. Load the **agentctl skill**, then **shell out** to the CLI — do not reimplement routing or memory in-process.
+
+| Client | How |
+| --- | --- |
+| **Pi** | `/agentctl …` (slash extension) |
+| **Cursor / Claude / Codex** | Skill [`docs/CURSOR-INVOCATION.md`](docs/CURSOR-INVOCATION.md) + skill path `~/code/skillz/ai-agents/agentctl` (or `~/.cursor/skills/agentctl` / `~/.claude/skills/agentctl`) → run `agentctl delegate` / `ask` / `orchestrate` / `memory` / `setup` |
+
+Prefer `delegate --dry-route` before spending quota. Never nest `agentctl` inside an agentctl worker (`AGENTCTL_WORKER_DEPTH`).
 
 ## Models and subscriptions
 

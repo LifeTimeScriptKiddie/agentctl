@@ -158,21 +158,32 @@ describe('stepApprovalBlock', () => {
     expect(stepApprovalBlock({ needs: [] }, caps(), 'context: git -C . push\n---\nsummarize')).toBe('git-push');
   });
 
-  it('blocks on gated planner needs or routed agent capabilities', () => {
+  it('blocks on gated planner needs or routed agent capabilities for write/shell steps', () => {
     expect(stepApprovalBlock({ needs: ['canPublish'] }, caps(), 'x')).toBe('capability:canPublish');
-    expect(stepApprovalBlock({ needs: [] }, caps({ canModifyRepo: true }), 'x')).toBe('capability:canModifyRepo');
-    expect(stepApprovalBlock({ needs: [] }, caps({ canRunShell: true }), 'x')).toBe('capability:canRunShell');
+    expect(stepApprovalBlock({ needs: [], type: 'code' }, caps({ canModifyRepo: true }), 'x')).toBe('capability:canModifyRepo');
+    expect(stepApprovalBlock({ needs: [], type: 'shell' }, caps({ canRunShell: true }), 'x')).toBe('capability:canRunShell');
+  });
+
+  it('allows read-only reason steps even when the routed worker has write caps', () => {
+    expect(stepApprovalBlock(
+      { needs: ['canReadFiles'], type: 'reason' },
+      caps({ canModifyRepo: true }),
+      'explain how local file access works in this project',
+    )).toBeNull();
+    expect(stepApprovalBlock({ needs: [], type: 'reason' }, caps({ canWriteFiles: true }), 'list top-level files')).toBeNull();
   });
 
   it('allows read-only steps with benign prompts', () => {
-    expect(stepApprovalBlock({ needs: ['canReadFiles', 'canAccessNetwork'] }, caps({ canAccessNetwork: true }), 'git status')).toBeNull();
-    expect(stepApprovalBlock({ needs: [] }, null, 'summarize the README')).toBeNull();
+    expect(stepApprovalBlock({ needs: ['canReadFiles', 'canAccessNetwork'], type: 'search' }, caps({ canAccessNetwork: true }), 'git status')).toBeNull();
+    expect(stepApprovalBlock({ needs: [], type: 'reason' }, null, 'summarize the README')).toBeNull();
   });
 
   it('gates canWriteFiles in needs and routed capabilities', () => {
     expect(GATED_CAPABILITIES).toContain('canWriteFiles');
     expect(stepApprovalBlock({ needs: ['canWriteFiles'] }, caps(), 'x')).toBe('capability:canWriteFiles');
-    expect(stepApprovalBlock({ needs: [] }, caps({ canWriteFiles: true, canAccessNetwork: true }), 'search'))
+    expect(stepApprovalBlock({ needs: [], type: 'search' }, caps({ canWriteFiles: true, canAccessNetwork: true }), 'search'))
+      .toBeNull();
+    expect(stepApprovalBlock({ needs: [], type: 'code' }, caps({ canWriteFiles: true }), 'patch'))
       .toBe('capability:canWriteFiles');
     expect(gatedCapability(caps({ canWriteFiles: true }))).toBe('canWriteFiles');
     expect(gatedCapability(caps({ canAccessNetwork: true, canUseBrowser: true }))).toBeNull();

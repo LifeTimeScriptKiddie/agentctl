@@ -12,7 +12,7 @@ import {
   type OrchestrateDeps, type StepOutcome,
 } from './orchestrator.js';
 import {
-  buildAgentRoster, formatRosterForPlanner,
+  buildAgentRoster, formatRosterForPlanner, orchestrationWorkerNames,
   resolveDefaultOrchestrator, resolveOrchestratorModel,
 } from './orchestrateRoster.js';
 import { isAgentEnabled, loadPreferences } from './preferences.js';
@@ -38,6 +38,7 @@ export function createOrchestrateDeps(
   hooks: OrchestrateHooks = {},
   signal?: AbortSignal,
   context?: string,
+  readOnlyWorkers = false,
 ): OrchestrateDeps {
   const orchestrator = () => registry.resolveRole('chat', orchName);
   const orchCall = async (prompt: string, phase: OrchCallPhase) => {
@@ -50,7 +51,10 @@ export function createOrchestrateDeps(
   return {
     agents,
     plan: async (goal) => {
-      const r = await orchCall(buildPlannerPrompt(goal, rosterText, undefined, context), 'plan');
+      const r = await orchCall(
+        buildPlannerPrompt(goal, rosterText, undefined, context, { readOnlyWorkers }),
+        'plan',
+      );
       return { text: r.text, costUsd: r.costUsd };
     },
     dispatch: async (agent, instruction, model, effort) => {
@@ -120,21 +124,23 @@ export async function runOrchestrateGoal(
 ) {
   const prefs = loadPreferences();
   const health = await registry.healthcheck();
-  const agents: RouterAgent[] = registry.names()
-    .filter((name) => isAgentEnabled(prefs, name))
-    .map((name) => ({
-      name,
-      capabilities: registry.get(name).capabilities(),
-      available: health[name]?.available ?? false,
-      models: registry.getPreset(name)?.models?.options ?? [],
-      effortLevels: registry.getPreset(name)?.effort?.options ?? [],
-    }));
-  const rosterText = formatRosterForPlanner(buildAgentRoster(registry, health));
+  const approve = opts.approve ?? false;
+  const enabledNames = registry.names().filter((name) => isAgentEnabled(prefs, name));
+  const workerNames = orchestrationWorkerNames(registry, enabledNames, approve);
+  const agents: RouterAgent[] = workerNames.map((name) => ({
+    name,
+    capabilities: registry.get(name).capabilities(),
+    available: health[name]?.available ?? false,
+    models: registry.getPreset(name)?.models?.options ?? [],
+    effortLevels: registry.getPreset(name)?.effort?.options ?? [],
+  }));
+  const roster = buildAgentRoster(registry, health).filter((a) => workerNames.includes(a.name));
+  const rosterText = formatRosterForPlanner(roster);
   const orchName = opts.orchestrator ?? resolveDefaultOrchestrator().agent;
   const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
   const deps = createOrchestrateDeps(
     registry, agents, rosterText, opts.timeoutSeconds, orchName, orchModel, opts.noSynth ?? false,
-    opts.hooks ?? {}, opts.signal, opts.context,
+    opts.hooks ?? {}, opts.signal, opts.context, !approve,
   );
   return runOrchestration(opts.goal, deps, {
     dryPlan: opts.dryPlan ?? false,

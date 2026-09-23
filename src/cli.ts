@@ -8,8 +8,9 @@ import { registerSetupCommands } from './setup/command.js';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
 import { registerMonitorCommands } from './monitor/command.js';
-import { resolveDefaultOrchestrator } from './core/orchestrateRoster.js';
+import { resolveDefaultOrchestrator, resolveBackupOrchestrator } from './core/orchestrateRoster.js';
 import { loadPreferences } from './core/preferences.js';
+import { looksLikeEphemeralAgentctlHome } from './core/agentHome.js';
 import { startRepl } from './repl.js';
 import type { OutputFormat } from './format/output.js';
 
@@ -21,8 +22,14 @@ function parseFormat(value?: string): OutputFormat {
 
 function maybeNudgeSetup(): void {
   if (process.env.AGENTCTL_SETUP_NUDGE === '0') return;
-  if (loadPreferences()) return;
   if (!process.stderr.isTTY) return;
+  if (looksLikeEphemeralAgentctlHome()) {
+    process.stderr.write(
+      `agentctl: warning: AGENTCTL_HOME=${process.env.AGENTCTL_HOME} looks like a leftover test directory — `
+        + 'unset AGENTCTL_HOME to use ~/.agentctl\n',
+    );
+  }
+  if (loadPreferences()) return;
   process.stderr.write(
     'agentctl: no preferences yet — run `agentctl setup` to choose models, '
       + 'or `agentctl setup --auto` to optimize for agents on this machine.\n',
@@ -50,6 +57,11 @@ export function buildProgram(): Command {
         'with each tool’s SSO preserved, plus a controlled improvement loop.',
     )
     .version(packageJson.version);
+
+  program.hook('preAction', (_thisCommand, actionCommand) => {
+    if (actionCommand.name() === 'setup') return;
+    maybeNudgeSetup();
+  });
 
   program
     .command('ask')
@@ -102,10 +114,11 @@ export function buildProgram(): Command {
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '180')
     .option('--orchestrator <agent>', `agent for plan/verify/synth (default: ${defaultOrch})`, defaultOrch)
     .option('--orchestrator-model <model>', 'model override (otherwise the selected agent uses its configured default)')
+    .option('--backup', 'use orchestratorBackup from preferences (stronger/expensive model)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (goalArg: string | undefined, opts: {
       dryPlan: boolean; synth: boolean; approve: boolean; budget?: string; maxReplans: string;
-      resume: boolean; timeout: string; orchestrator: string; orchestratorModel?: string; format: string;
+      resume: boolean; timeout: string; orchestrator: string; orchestratorModel?: string; backup: boolean; format: string;
     }) => {
       const goal = (goalArg ?? (await readStdin())).trim();
       if (!goal) {
@@ -113,13 +126,25 @@ export function buildProgram(): Command {
         process.exitCode = 2;
         return;
       }
+      let orchAgent = opts.orchestrator;
+      let orchModel = opts.orchestratorModel;
+      if (opts.backup) {
+        const backup = resolveBackupOrchestrator();
+        if (!backup) {
+          stdio.err('no orchestratorBackup in preferences — run `agentctl setup` (or pass --orchestrator-model)');
+          process.exitCode = 2;
+          return;
+        }
+        orchAgent = backup.agent;
+        orchModel = backup.model ?? undefined;
+      }
       process.exitCode = await cmdOrchestrate(
         loadRegistry(),
         {
           goal, dryPlan: opts.dryPlan, approve: opts.approve, noSynth: !opts.synth, timeoutSeconds: Number(opts.timeout),
           resume: opts.resume,
-          orchestrator: opts.orchestrator,
-          orchestratorModel: opts.orchestratorModel,
+          orchestrator: orchAgent,
+          orchestratorModel: orchModel,
           ...(opts.budget != null ? { budgetUsd: Number(opts.budget) } : {}),
           maxReplans: Number(opts.maxReplans),
           format: parseFormat(opts.format),
@@ -282,7 +307,6 @@ export function buildProgram(): Command {
     .option('--watch', 'refresh continuously (Ctrl-C to exit)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (opts: { watch: boolean; format: string }) => {
-      maybeNudgeSetup();
       process.exitCode = await cmdStatus(
         loadRegistry(),
         { watch: opts.watch, format: parseFormat(opts.format) },
