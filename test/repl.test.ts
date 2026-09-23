@@ -4,6 +4,7 @@ import { AdapterRegistry } from '../src/adapters/registry.js';
 import { okResult, type AgentAdapter } from '../src/adapters/protocol.js';
 import * as commands from '../src/commands.js';
 import * as exec from '../src/util/exec.js';
+import * as preferences from '../src/core/preferences.js';
 import { buildPlannerPrompt } from '../src/core/orchestrator.js';
 import type { SessionRecord } from '../src/schema/session.js';
 
@@ -34,6 +35,8 @@ function session(opts: Record<string, unknown> = {}) {
 beforeEach(() => {
   runMock.mockReset();
   vi.restoreAllMocks();
+  // User preferences must not decide whether a mocked provider is enabled.
+  vi.spyOn(preferences, 'loadPreferences').mockReturnValue(null);
 });
 
 describe('ReplSession', () => {
@@ -77,6 +80,26 @@ describe('ReplSession', () => {
     expect(spy).not.toHaveBeenCalled();
     expect(r.outputs).toEqual(['Hello! How can I help?']);
     expect(s.ledger.flowHops.some((h) => h.to.startsWith('codex'))).toBe(true);
+  });
+
+  it('shows cancellation instead of a planner error and clears orchestration activity', async () => {
+    const s = session({ orchMode: true });
+    const done = vi.fn();
+    s.attachUI({ onOrchDone: done });
+    const spy = vi.spyOn(commands, 'runOrchestrateGoal').mockImplementation(async () => {
+      s.requestCancel();
+      throw new Error('planner did not return a JSON object');
+    });
+    try {
+      s.beginTurn();
+      const result = await s.handle('/orchestrate count the files');
+      expect(result.outputs).toEqual(['(cancelled)']);
+      expect(done).toHaveBeenCalledOnce();
+      expect(s.ledger.route.formatNow()).toBe('');
+    } finally {
+      s.endTurn();
+      spy.mockRestore();
+    }
   });
 
   it('/switch is honored for casual greetings (not hardcoded to codex)', async () => {

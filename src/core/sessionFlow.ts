@@ -52,7 +52,12 @@ export function resolveSession(
   } else {
     return null;
   }
-  return { record, persist: (r) => saveSession(r, now()) };
+  let lastSavedAt = record.updatedAt;
+  return { record, persist: (r) => {
+    const stamp = Math.max(now(), lastSavedAt + 1);
+    saveSession(r, stamp, { ifUnchangedSince: lastSavedAt });
+    lastSavedAt = stamp;
+  } };
 }
 
 /**

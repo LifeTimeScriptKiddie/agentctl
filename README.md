@@ -57,6 +57,12 @@ agentctl ask --to dry_run "hello" --format json
 
 ### Standalone CLI (optional)
 
+`agentctl chat` uses a conversational lead that answers directly and delegates useful
+subtasks to enabled agents. Sessions and task handoffs are saved by default; use
+`agentctl chat --resume` to continue in the same directory. `/tasks` shows handoffs,
+and `/flow` locates the content-free SessionGraph trace. Full orchestration is opt-in.
+See [the chat guide](docs/CHAT.md) for modes, approvals, limits and local flow analysis.
+
 ```sh
 npm install -g @lifetimescriptkiddie/agentctl
 agentctl setup --auto    # or interactive: agentctl setup

@@ -42,9 +42,13 @@ export function createOrchestrateDeps(
 ): OrchestrateDeps {
   const orchestrator = () => registry.resolveRole('chat', orchName);
   const orchCall = async (prompt: string, phase: OrchCallPhase) => {
+    signal?.throwIfAborted();
     hooks.onOrchCallStart?.(phase);
     const r = await askOne(orchestrator(), prompt, timeoutSeconds, orchModel, null, 'high', signal);
     hooks.onOrchCall?.(phase, r);
+    if (!r.ok) {
+      throw new Error(`${orchName} ${phase} failed (${r.failureClass}): ${redact(r.text).slice(0, 500)}`);
+    }
     return r;
   };
 

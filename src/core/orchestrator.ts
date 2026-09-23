@@ -403,8 +403,21 @@ export async function runOrchestration(
   const budget = opts.budgetUsd ?? Infinity;
 
   let totalCost = 0;
-  const planned = textCall(await deps.plan(goal));
+  const cancelledBeforePlan = (): OrchestrationResult => ({
+    plan: { goal, steps: [] }, outcomes: [], status: 'cancelled', synthesis: null,
+    totalCostUsd: totalCost || null, replans: 0,
+  });
+  if (opts.shouldAbort?.()) return cancelledBeforePlan();
+  let planned: ReturnType<typeof textCall>;
+  try {
+    planned = textCall(await deps.plan(goal));
+  } catch (error) {
+    if (opts.shouldAbort?.()) return cancelledBeforePlan();
+    throw error;
+  }
   if (planned.costUsd != null) totalCost += planned.costUsd;
+  // Interrupted subprocess output is not a plan, including in preview mode.
+  if (opts.shouldAbort?.()) return cancelledBeforePlan();
   let plan = parsePlan(planned.text);
   if (opts.dryPlan) {
     return { plan, outcomes: [], status: 'planned', synthesis: null, totalCostUsd: totalCost || null, replans: 0 };
