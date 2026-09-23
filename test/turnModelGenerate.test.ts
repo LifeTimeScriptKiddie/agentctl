@@ -106,13 +106,20 @@ describe('turn model generate', () => {
       items: [], checkpoint: null, precedence_note: 'test',
     };
     const spawned = vi.spyOn(SubprocessAdapter.prototype, 'invoke');
-    for (const agent of ['codex_write', 'agy', 'agy_image']) {
+    // codex/cursor/claude read files (security review C): refused unless the operator opts in.
+    for (const agent of ['codex_write', 'agy', 'agy_image', 'codex', 'cursor', 'claude']) {
       const out = await generateTurnAnswer({ bundle, workspace: 'w', query: 'q', goal: 'q', agent });
       expect(out, agent).toMatchObject({ status: 'failed', answer: null, agent, failureClass: 'unsafe_serve_agent' });
     }
     expect(spawned).not.toHaveBeenCalled();
     const readOnly = await generateTurnAnswer({ bundle, workspace: 'w', query: 'q', goal: 'q', agent: 'dry_run' });
     expect(readOnly.status).toBe('ok');
+    // The opt-in admits file-reading lanes but never shell/write lanes.
+    vi.stubEnv('AGENTCTL_SERVE_MODEL_AGENT_ALLOW_TOOLS', '1');
+    const stillUnsafe = await generateTurnAnswer({ bundle, workspace: 'w', query: 'q', goal: 'q', agent: 'codex_write' });
+    expect(stillUnsafe.failureClass).toBe('unsafe_serve_agent');
+    vi.unstubAllEnvs();
+    expect(spawned).not.toHaveBeenCalled();
     spawned.mockRestore();
   });
 });

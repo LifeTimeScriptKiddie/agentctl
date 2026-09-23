@@ -7,8 +7,16 @@ import {
   postGatewayAccept,
   postGatewayWrite,
   gatewayAuthHeaders,
+  resetOwnerTokenWarningForTest,
   resetGatewayWarningForTest,
 } from '../src/memory/gatewayClient.js';
+
+const listenerOwner = vi.hoisted(() => ({ result: { ok: true, verified: true } as { ok: true; verified: boolean } | { ok: false; reason: string } }));
+vi.mock('../src/util/listenerOwner.js', async (orig) => ({
+  ...(await orig<typeof import('../src/util/listenerOwner.js')>()),
+  checkListenerOwner: vi.fn(async () => listenerOwner.result),
+}));
+
 
 describe('gateway memory HTTP client', () => {
   afterEach(() => {
@@ -16,36 +24,55 @@ describe('gateway memory HTTP client', () => {
     vi.restoreAllMocks();
   });
 
-  it('gatewayAuthHeaders never sends identity headers (the server derives identity from the token)', () => {
+  it('gatewayAuthHeaders never sends identity headers (the server derives identity from the token)', async () => {
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-gw-headers-')));
     vi.stubEnv('AGENTCTL_USER_ID', 'alice@co');
     vi.stubEnv('AGENTCTL_GROUPS', 'sec,eng');
     vi.stubEnv('AGENTCTL_CLEARANCE', 'internal');
     vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', 'gw-secret');
-    expect(gatewayAuthHeaders('http://127.0.0.1:8741')).toEqual({
+    expect(await gatewayAuthHeaders('http://127.0.0.1:8741')).toEqual({
       'content-type': 'application/json',
       authorization: 'Bearer gw-secret',
     });
   });
 
-  it('gatewayAuthHeaders falls back to the local owner token only for a loopback gateway', () => {
+  it('gatewayAuthHeaders falls back to the local owner token only for a loopback gateway', async () => {
     const home = mkdtempSync(join(tmpdir(), 'agentctl-gw-owner-'));
     vi.stubEnv('AGENTCTL_HOME', home);
     vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', undefined);
-    expect(gatewayAuthHeaders('http://127.0.0.1:8741').authorization).toBeUndefined();
+    expect((await gatewayAuthHeaders('http://127.0.0.1:8741')).authorization).toBeUndefined();
     writeFileSync(join(home, 'serve-token'), 'owner-secret\n', { mode: 0o600 });
-    expect(gatewayAuthHeaders('http://127.0.0.1:8741').authorization).toBe('Bearer owner-secret');
-    expect(gatewayAuthHeaders('http://[::1]:8741').authorization).toBe('Bearer owner-secret');
-    expect(gatewayAuthHeaders('http://memory.example.com:8741').authorization).toBeUndefined();
-    expect(gatewayAuthHeaders('https://127.0.0.1.example.com').authorization).toBeUndefined();
-    expect(gatewayAuthHeaders('not a url').authorization).toBeUndefined();
+    expect((await gatewayAuthHeaders('http://127.0.0.1:8741')).authorization).toBe('Bearer owner-secret');
+    expect((await gatewayAuthHeaders('http://[::1]:8741')).authorization).toBe('Bearer owner-secret');
+    expect((await gatewayAuthHeaders('http://memory.example.com:8741')).authorization).toBeUndefined();
+    expect((await gatewayAuthHeaders('https://127.0.0.1.example.com')).authorization).toBeUndefined();
+    expect((await gatewayAuthHeaders('not a url')).authorization).toBeUndefined();
   });
 
-  it('gatewayAuthHeaders sends the gateway bearer token only when set', () => {
+  it('withholds the owner token when the loopback listener is not ours (security review B)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-gw-foreign-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', undefined);
+    writeFileSync(join(home, 'serve-token'), 'owner-secret\n', { mode: 0o600 });
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    resetOwnerTokenWarningForTest();
+    listenerOwner.result = { ok: false, reason: 'memory gateway port 8741 is held by another user (uid 502)' };
+    try {
+      expect((await gatewayAuthHeaders('http://127.0.0.1:8741')).authorization).toBeUndefined();
+      expect(warn.mock.calls.map((c) => String(c[0])).join('')).toMatch(/not sending the local owner token .*another user/);
+      vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', 'explicit');
+      expect((await gatewayAuthHeaders('http://127.0.0.1:8741')).authorization).toBe('Bearer explicit');
+    } finally {
+      listenerOwner.result = { ok: true, verified: true };
+      warn.mockRestore();
+    }
+  });
+
+  it('gatewayAuthHeaders sends the gateway bearer token only when set', async () => {
     vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', '');
-    expect(gatewayAuthHeaders().authorization).toBeUndefined();
+    expect((await gatewayAuthHeaders()).authorization).toBeUndefined();
     vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', 'gw-secret');
-    expect(gatewayAuthHeaders().authorization).toBe('Bearer gw-secret');
+    expect((await gatewayAuthHeaders()).authorization).toBe('Bearer gw-secret');
   });
 
   it('warns once on stderr for plain http to a non-loopback gateway', async () => {

@@ -141,14 +141,26 @@ function ownerAuthContext(): AuthContext {
 }
 
 type Authentication =
-  | { ok: true; auth: AuthContext }
+  | { ok: true; auth: AuthContext; owner: boolean }
   | { ok: false; status: number; error: string };
+
+/**
+ * run_model spends the server's model quota and executes an agent on the
+ * server, so only the owner (owner or legacy token) may use it unless the
+ * operator lists the caller in AGENTCTL_SERVE_RUN_MODEL_USERS (security review C).
+ */
+function runModelAllowed(callerIsOwner: boolean, auth: AuthContext): boolean {
+  if (callerIsOwner) return true;
+  const allowed = (process.env.AGENTCTL_SERVE_RUN_MODEL_USERS ?? '')
+    .split(',').map((u) => u.trim()).filter(Boolean);
+  return auth.userId !== 'anonymous' && allowed.includes(auth.userId);
+}
 
 function authenticate(req: IncomingMessage, boundHost: string): Authentication {
   const authorization = req.headers.authorization?.toString();
   if (authorization === undefined) {
     if (process.env.AGENTCTL_SERVE_ALLOW_ANON === '1' && isLoopbackHost(boundHost)) {
-      return { ok: true, auth: anonymousAuthContext() };
+      return { ok: true, auth: anonymousAuthContext(), owner: false };
     }
     return { ok: false, status: 401, error: 'token_required' };
   }
@@ -160,8 +172,8 @@ function authenticate(req: IncomingMessage, boundHost: string): Authentication {
   const owner = readOwnerServeToken();
   const isLegacy = legacy !== undefined && serveTokenMatches(presented, legacy);
   const isOwner = owner !== null && serveTokenMatches(presented, owner);
-  if (perUser) return { ok: true, auth: perUser };
-  if (isLegacy || isOwner) return { ok: true, auth: ownerAuthContext() };
+  if (perUser) return { ok: true, auth: perUser, owner: false };
+  if (isLegacy || isOwner) return { ok: true, auth: ownerAuthContext(), owner: true };
   return { ok: false, status: 401, error: 'unauthorized' };
 }
 
@@ -337,6 +349,7 @@ export async function handleMemoryHttpRequest(
     return;
   }
   const auth = authn.auth;
+  const callerIsOwner = authn.owner;
 
   const origin = req.headers.origin?.toString();
   if (origin && !configuredOrigins().includes(origin)) {
@@ -467,6 +480,10 @@ export async function handleMemoryHttpRequest(
     const goal = input.goal ?? input.query;
     const { shouldRunModelOnTurn } = await import('./turnModelGenerate.js');
     const runModel = shouldRunModelOnTurn(input.run_model);
+    if (runModel && !runModelAllowed(callerIsOwner, auth)) {
+      json(res, 403, { error: 'run_model_forbidden', request_id: requestId });
+      return;
+    }
     if (runModel) {
       try {
         assertApproved(`${goal}\n${input.query}`, false);

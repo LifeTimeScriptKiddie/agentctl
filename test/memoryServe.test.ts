@@ -103,8 +103,21 @@ describe('memory serve HTTP', () => {
     expect(j.model.status).toBe('not_implemented');
   });
 
+  it('POST /v1/turn run_model is owner-only unless the caller is listed (security review C)', async () => {
+    process.env.AGENTCTL_SERVE_MODEL_AGENT = 'dry_run';
+    await start();
+    const r = await fetch(`${base}/v1/turn`, {
+      method: 'POST',
+      headers: asBob,
+      body: JSON.stringify({ workspace: 'team-atlas', query: 'Who owns rollback', provider: 'cursor', run_model: true }),
+    });
+    expect(r.status).toBe(403);
+    expect(await r.json()).toMatchObject({ error: 'run_model_forbidden' });
+  });
+
   it('POST /v1/turn run_model completes with dry_run agent', async () => {
     process.env.AGENTCTL_SERVE_MODEL_AGENT = 'dry_run';
+    vi.stubEnv('AGENTCTL_SERVE_RUN_MODEL_USERS', 'alice@co');
     await start();
     const r = await fetch(`${base}/v1/turn`, {
       method: 'POST',

@@ -102,9 +102,9 @@ export class AdapterRegistry {
         `adapter '${name}' is a browser/evidence adapter and cannot fill the '${role}' role (research/evidence only)`,
       );
     }
-    if (READ_ONLY_ROLES.has(role) && (caps.canModifyRepo || caps.canPublish)) {
+    if (READ_ONLY_ROLES.has(role) && (caps.canModifyRepo || caps.canPublish || caps.canRunShell || caps.canWriteFiles)) {
       throw new Error(
-        `adapter '${name}' can modify the repo / publish and cannot be used as a read-only '${role}'`,
+        `adapter '${name}' can modify the repo / publish / run shell / write files and cannot be used as a read-only '${role}'`,
       );
     }
     return adapter;

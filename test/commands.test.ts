@@ -161,6 +161,15 @@ describe('cmdRun generator/repairer capability gate (N6)', () => {
     writeFileSync(runYaml, readFileSync(runYaml, 'utf8').replace('generator: claude', `generator: ${name}`));
   };
 
+  it.each(['agy_image', 'agy', 'codex_write'])('refuses a %s evaluator named by run.yaml and calls nothing (security review A)', async (name) => {
+    const runYaml = join(dir, 'run.yaml');
+    writeFileSync(runYaml, readFileSync(runYaml, 'utf8').replace('evaluator: claude', `evaluator: ${name}`));
+    const io = fakeIO();
+    await expect(cmdRun({ dir, dryRun: false, approve: false }, io)).rejects.toThrow(/read-only 'evaluator'/);
+    expect(runMock).not.toHaveBeenCalled();
+    expect(existsSync(join(dir, 'candidates'))).toBe(false);
+  });
+
   it.each(['codex_write', 'agy'])('refuses a %s generator without --approve and calls nothing', async (name) => {
     useGenerator(name);
     const io = fakeIO();

@@ -4,6 +4,12 @@ import type { ContextBundle } from './contextBundle.js';
 import { formatGatewayTurnPrefix } from './gatewayClient.js';
 import { gatedCapability } from '../approval.js';
 import { quoteUntrusted } from '../core/untrusted.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+/** Capabilities that let a serve-side agent reach files, the network or a browser. */
+const TOOL_CAPABILITIES = ['canReadFiles', 'canAccessNetwork', 'canUseBrowser'] as const;
 
 export function resolveServeModelAgent(): string | null {
   const raw = process.env.AGENTCTL_SERVE_MODEL_AGENT?.trim();
@@ -42,8 +48,12 @@ export async function generateTurnAnswer(opts: {
       failureClass: 'unknown_agent',
     };
   }
-  // Any HTTP caller can reach this lane, so it must not write, run shell, modify the repo or publish.
-  if (gatedCapability(registry.get(opts.agent).capabilities())) {
+  // Any HTTP caller can reach this lane, so it must not write, run shell, modify
+  // the repo or publish, and by default must not read files, use the network or
+  // drive a browser either (security review C).
+  const caps = registry.get(opts.agent).capabilities();
+  const toolCap = TOOL_CAPABILITIES.find((c) => caps[c]);
+  if (gatedCapability(caps) || (toolCap && process.env.AGENTCTL_SERVE_MODEL_AGENT_ALLOW_TOOLS !== '1')) {
     return {
       status: 'failed',
       answer: null,
@@ -70,14 +80,23 @@ export async function generateTurnAnswer(opts: {
   const prompt = prefix + userLine;
   const timeout =
     opts.timeoutSeconds ?? Number(process.env.AGENTCTL_SERVE_MODEL_TIMEOUT ?? 120);
-  const result = await askOne(
-    registry.resolveRole('chat', opts.agent),
-    prompt,
-    timeout,
-    null,
-    null,
-    null,
-  );
+  // Run in a fresh empty folder so the agent cannot read the server's working tree.
+  const workdir = mkdtempSync(join(tmpdir(), 'agentctl-serve-model-'));
+  let result;
+  try {
+    result = await askOne(
+      registry.resolveRole('chat', opts.agent),
+      prompt,
+      timeout,
+      null,
+      null,
+      null,
+      undefined,
+      workdir,
+    );
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
   if (!result.ok) {
     return {
       status: 'failed',

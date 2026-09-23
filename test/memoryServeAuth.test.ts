@@ -10,6 +10,13 @@ import { gatewayAuthHeaders, getGatewayReview } from '../src/memory/gatewayClien
 import { addServeToken, ownerServeTokenPath, revokeServeToken, serveTokensPath } from '../src/memory/serveTokens.js';
 import type { Classification } from '../src/memory/authContext.js';
 
+const listenerOwner = vi.hoisted(() => ({ result: { ok: true, verified: true } as { ok: true; verified: boolean } | { ok: false; reason: string } }));
+vi.mock('../src/util/listenerOwner.js', async (orig) => ({
+  ...(await orig<typeof import('../src/util/listenerOwner.js')>()),
+  checkListenerOwner: vi.fn(async () => listenerOwner.result),
+}));
+
+
 describe('memory serve hardening', () => {
   let server: Server | undefined;
   let base = '';
@@ -257,13 +264,13 @@ describe('memory serve hardening', () => {
       expect(anonymous.status).toBe(401);
 
       await expect(getGatewayReview(base, 'team-atlas')).resolves.toMatchObject({ proposed: [] });
-      expect(gatewayAuthHeaders(base).authorization).toBe(`Bearer ${ownerToken}`);
-      expect(gatewayAuthHeaders('http://localhost:8741').authorization).toBe(`Bearer ${ownerToken}`);
-      expect(gatewayAuthHeaders('https://memory.example.com').authorization).toBeUndefined();
-      expect(gatewayAuthHeaders().authorization).toBeUndefined();
+      expect((await gatewayAuthHeaders(base)).authorization).toBe(`Bearer ${ownerToken}`);
+      expect((await gatewayAuthHeaders('http://localhost:8741')).authorization).toBe(`Bearer ${ownerToken}`);
+      expect((await gatewayAuthHeaders('https://memory.example.com')).authorization).toBeUndefined();
+      expect((await gatewayAuthHeaders()).authorization).toBeUndefined();
 
       vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', 'explicit');
-      expect(gatewayAuthHeaders(base).authorization).toBe('Bearer explicit');
+      expect((await gatewayAuthHeaders(base)).authorization).toBe('Bearer explicit');
     });
 
     it('is not generated when a per-user token exists', async () => {
@@ -326,14 +333,24 @@ describe('memory serve hardening', () => {
   it('requires approval before a model turn matching a destructive intent', async () => {
     await start();
     vi.stubEnv('AGENTCTL_SERVE_MODEL_AGENT', 'dry_run');
+    vi.stubEnv('AGENTCTL_SERVE_TOKEN', 'legacy-owner-secret');
     const response = await post('/v1/turn', {
       workspace: 'team-atlas',
       query: 'publish the release',
       goal: 'deploy to production ',
       run_model: true,
-    });
+    }, bearer('legacy-owner-secret'));
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: 'approval_required' });
+  });
+
+  it('refuses run_model to anonymous callers even when listed (security review C)', async () => {
+    await start();
+    vi.stubEnv('AGENTCTL_SERVE_MODEL_AGENT', 'dry_run');
+    vi.stubEnv('AGENTCTL_SERVE_RUN_MODEL_USERS', 'anonymous');
+    const response = await post('/v1/turn', { workspace: 'team-atlas', query: 'who owns rollback', run_model: true });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: 'run_model_forbidden' });
   });
 
   describe('memory acceptance (N1)', () => {

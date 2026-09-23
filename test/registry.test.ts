@@ -57,6 +57,14 @@ describe('AdapterRegistry packaged', () => {
 });
 
 describe('capability gate (resolveRole)', () => {
+  it('rejects shell- or file-writing adapters as read-only evaluators (security review A)', () => {
+    const r = AdapterRegistry.fromPackaged();
+    expect(() => r.resolveRole('evaluator', 'agy_image')).toThrow(/read-only/);
+    expect(() => r.resolveRole('evaluator', 'agy')).toThrow(/read-only/);
+    expect(() => r.resolveRole('critic', 'codex_write')).toThrow(/read-only/);
+    expect(r.resolveRole('evaluator', 'codex').name).toBe('codex');
+  });
+
   const r = AdapterRegistry.fromPackaged();
 
   it('refuses Comet for a generator role', () => {

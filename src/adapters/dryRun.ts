@@ -16,8 +16,9 @@ export interface DryRunScript {
   evaluator: Evaluation[];
 }
 
+// The dry-run adapter is an offline canned stub: it reads nothing and has no tools.
 const READ_ONLY_CAPS: AdapterCapabilities = {
-  canReadFiles: true,
+  canReadFiles: false,
   canWriteFiles: false,
   canRunShell: false,
   canAccessNetwork: false,

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { checkListenerOwner } from '../util/listenerOwner.js';
 import { join } from 'node:path';
 import { agentctlHome } from '../core/agentHome.js';
 import { ensurePrivateDir, writePrivateFile } from '../core/privateFs.js';
@@ -151,10 +152,7 @@ export function matchDevToolsVersion(version: unknown, active: DevToolsActivePor
   return { ok: true, wsEndpoint: `ws://127.0.0.1:${active.port}${url.pathname}` };
 }
 
-/** Owning uids from `lsof -Fpu` output (`u<uid>` lines). */
-export function parseLsofUids(output: string): number[] {
-  return output.split(/\r?\n/).filter((line) => /^u\d+$/.test(line)).map((line) => Number(line.slice(1)));
-}
+export { parseLsofUids } from '../util/listenerOwner.js';
 
 /**
  * The process listening on the DevTools port must be this user's, or another
@@ -162,24 +160,8 @@ export function parseLsofUids(output: string): number[] {
  * not installed or the platform has no uids; any other lsof failure refuses.
  */
 export async function checkDevToolsListenerOwner(port: number): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const uid = process.getuid?.();
-  if (uid === undefined) return { ok: true };
-  let outcome;
-  try {
-    outcome = await run('lsof', ['-nP', '-w', '-a', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpu'], { timeoutMs: 3000 });
-  } catch (e) {
-    return { ok: false, reason: `could not check who owns DevTools port ${port} (${e instanceof Error ? e.message : String(e)})` };
-  }
-  if (outcome.notFound) return { ok: true };
-  const uids = parseLsofUids(outcome.stdout);
-  if (uids.length === 0) {
-    return { ok: false, reason: `no process owned by this user is listening on DevTools port ${port}` };
-  }
-  const foreign = uids.filter((u) => u !== uid);
-  if (foreign.length > 0) {
-    return { ok: false, reason: `DevTools port ${port} is held by another user (uid ${[...new Set(foreign)].join(', ')})` };
-  }
-  return { ok: true };
+  const r = await checkListenerOwner(port, 'DevTools', 'allow');
+  return r.ok ? { ok: true } : r;
 }
 
 /** The managed browser's WebSocket endpoint, verified against its private profile's port file. */
