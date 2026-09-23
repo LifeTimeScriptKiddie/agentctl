@@ -25,7 +25,8 @@ const SENSITIVE_KEY_RE = /\b(commandTemplate|healthProbe|environment)\b/;
 
 /** Environment variables that make a launched program load or execute other code. */
 const CODE_LOADING_ENV = new Set([
-  'NODE_OPTIONS', 'BASH_ENV', 'ENV', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONSTARTUP', 'PERL5OPT', 'RUBYOPT',
+  'NODE_OPTIONS', 'NODE_PATH', 'BASH_ENV', 'ENV', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONSTARTUP',
+  'PERL5OPT', 'PERL5LIB', 'RUBYOPT', 'RUBYLIB', 'JAVA_TOOL_OPTIONS',
 ]);
 
 export interface ReviewLine {
@@ -150,6 +151,15 @@ export function executablePathWarnings(content: string, configPath: string): str
         if (typeof arg !== 'string' || /\{|:\/\//.test(arg) || arg.trim() === '') return;
         const pathLike = i === 0 ? arg.includes('/') : /^(\.{1,2}\/|\/|~\/)/.test(arg);
         let problem = pathLike ? pathProblem(arg, root) : null;
+        // `--require=./x.js` style: check the value after '='.
+        const eq = arg.startsWith('-') ? arg.indexOf('=') : -1;
+        if (!problem && eq > 0) {
+          const value = arg.slice(eq + 1);
+          if (/^(\.{1,2}\/|\/|~\/)/.test(value)) problem = pathProblem(value, root);
+          else if (value && existsSync(join(root, value))) {
+            problem = `names a file inside the repository (${root}), where a worker could change it`;
+          }
+        }
         // A bare relative argument (e.g. `scripts/x.js`) that names a file in the
         // repo is a script the worker could change after trust.
         if (!problem && i > 0 && !pathLike && !arg.startsWith('-')
