@@ -26,12 +26,14 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/postinstall-hint.mjs"
   ],
   "scripts": {
     "build": "npm run gen:specs && tsc && node scripts/copy-assets.mjs && node scripts/build-pi.mjs",
     "gen:specs": "tsx scripts/gen-specs.ts",
     "prepare": "npm run build",
+    "postinstall": "node scripts/postinstall-hint.mjs || true",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",

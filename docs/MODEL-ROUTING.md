@@ -19,6 +19,8 @@ Role priority for mixed requests: planning, deep review, cyber, prose, ordinary 
 
 ## Model access
 
+After install, run **`agentctl setup`** (interactive) or **`agentctl setup --auto`** so agentctl probes which CLIs are on PATH and writes `~/.agentctl/preferences.yaml` (orchestrator + per-agent default models + cost tier). `agentctl status` nudges you once if preferences are missing. Explicit `--to` / `--model` / `--orchestrator` always win.
+
 `agentctl agents` shows the curated planner roster. `cursor-agent models` shows the live Cursor catalog. Explicit `--model <id>` is passed through, including IDs outside the curated roster; provider access still governs acceptance. Claude aliases include sonnet, opus, haiku and fable. Codex includes Luna, Terra, Sol, Astra and Daybreak Blue. Fable through Cursor remains excluded from automatic planning because the catalog labels it NO ZDR; use native Claude for that tier. No billing settings are changed.
 
 Prefer Composer for the Cursor Models allowance. Third-party models in Cursor use a separate pool; routing everything to Cursor does not imply unlimited usage. Health probes check executable availability, not model entitlement. Daybreak Blue was found in the local Codex cache; no live inference probe was run as part of this update.

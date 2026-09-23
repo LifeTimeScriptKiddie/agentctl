@@ -13,8 +13,9 @@ import {
 } from './orchestrator.js';
 import {
   buildAgentRoster, formatRosterForPlanner,
-  DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL, resolveOrchestratorModel,
+  resolveDefaultOrchestrator, resolveOrchestratorModel,
 } from './orchestrateRoster.js';
+import { isAgentEnabled, loadPreferences } from './preferences.js';
 
 export type OrchCallPhase = 'plan' | 'verify' | 'replan' | 'synth';
 
@@ -31,8 +32,8 @@ export function createOrchestrateDeps(
   agents: RouterAgent[],
   rosterText: string,
   timeoutSeconds: number,
-  orchName: string = DEFAULT_ORCHESTRATOR_AGENT,
-  orchModel: string | null = DEFAULT_ORCHESTRATOR_MODEL,
+  orchName: string = resolveDefaultOrchestrator().agent,
+  orchModel: string | null = resolveDefaultOrchestrator().model,
   noSynth = false,
   hooks: OrchestrateHooks = {},
   signal?: AbortSignal,
@@ -117,16 +118,19 @@ export async function runOrchestrateGoal(
   registry: AdapterRegistry,
   opts: RunOrchestrateGoalOpts,
 ) {
+  const prefs = loadPreferences();
   const health = await registry.healthcheck();
-  const agents: RouterAgent[] = registry.names().map((name) => ({
-    name,
-    capabilities: registry.get(name).capabilities(),
-    available: health[name]?.available ?? false,
-    models: registry.getPreset(name)?.models?.options ?? [],
-    effortLevels: registry.getPreset(name)?.effort?.options ?? [],
-  }));
+  const agents: RouterAgent[] = registry.names()
+    .filter((name) => isAgentEnabled(prefs, name))
+    .map((name) => ({
+      name,
+      capabilities: registry.get(name).capabilities(),
+      available: health[name]?.available ?? false,
+      models: registry.getPreset(name)?.models?.options ?? [],
+      effortLevels: registry.getPreset(name)?.effort?.options ?? [],
+    }));
   const rosterText = formatRosterForPlanner(buildAgentRoster(registry, health));
-  const orchName = opts.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT;
+  const orchName = opts.orchestrator ?? resolveDefaultOrchestrator().agent;
   const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
   const deps = createOrchestrateDeps(
     registry, agents, rosterText, opts.timeoutSeconds, orchName, orchModel, opts.noSynth ?? false,

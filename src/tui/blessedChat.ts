@@ -1,7 +1,8 @@
 import blessed from 'neo-blessed';
 import type { ReplSession } from '../repl.js';
 import {
-  DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL,
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveDefaultOrchestrator,
 } from '../core/orchestrateRoster.js';
 import {
   formatUsageCompact, OrchProgressTracker, stripAnsi,
@@ -45,7 +46,8 @@ function agentTag(name: string): string {
 
 function promptLabel(session: ReplSession): string {
   if (session.orchestratorMode) {
-    return `orch(${DEFAULT_ORCHESTRATOR_AGENT}/${DEFAULT_ORCHESTRATOR_MODEL})> `;
+    const orch = resolveDefaultOrchestrator();
+    return `orch(${orch.agent}/${orch.model ?? DEFAULT_ORCHESTRATOR_MODEL})> `;
   }
   const a = session.currentAgent;
   const m = session.modelFor(a);

@@ -8,6 +8,7 @@ import { quoteUntrusted } from './core/untrusted.js';
 import { formatOrchestrationForChat } from './core/orchestrateRuntime.js';
 import {
   DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL,
+  resolveDefaultOrchestrator,
 } from './core/orchestrateRoster.js';
 import { color, agentColor } from './util/colors.js';
 import { formatStatus, type AgentStatus } from './status.js';
@@ -147,8 +148,9 @@ export class ReplSession {
     this.budget = opts.transcriptCharBudget ?? 16000;
     this.autoRoute = opts.autoRoute ?? true;
     this.orchMode = opts.orchMode ?? true;
-    this.orchAgent = DEFAULT_ORCHESTRATOR_AGENT;
-    this.orchModel = DEFAULT_ORCHESTRATOR_MODEL;
+    const orch = resolveDefaultOrchestrator();
+    this.orchAgent = orch.agent;
+    this.orchModel = orch.model ?? DEFAULT_ORCHESTRATOR_MODEL;
     this.approve = opts.approve ?? false;
     this.approveContext = opts.approveContext ?? false;
     this.onProgress = opts.onProgress;
@@ -714,12 +716,14 @@ export async function startRepl(
 }
 
 async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
+  const orch = resolveDefaultOrchestrator();
+  const orchLabel = `${orch.agent}/${orch.model ?? DEFAULT_ORCHESTRATOR_MODEL}`;
   const printFooter = () => {
     const cols = process.stdout.columns ?? 80;
     for (const l of renderChatFooter({
       sessionName: session.sessionName,
       orchMode: session.orchestratorMode,
-      orchLabel: `${DEFAULT_ORCHESTRATOR_AGENT}/${DEFAULT_ORCHESTRATOR_MODEL}`,
+      orchLabel,
       hops: session.ledger.flowHops,
       route: session.ledger.route,
       totals: session.ledger.usageTotals,
@@ -747,7 +751,7 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
 
     const prompt = () => {
       if (session.orchestratorMode) {
-        rl.setPrompt(`${agentColor('orch')(color.bold(`orch(${DEFAULT_ORCHESTRATOR_AGENT}/${DEFAULT_ORCHESTRATOR_MODEL})`))}> `);
+        rl.setPrompt(`${agentColor('orch')(color.bold(`orch(${orchLabel})`))}> `);
       } else {
         const a = session.currentAgent;
         const m = session.modelFor(a);

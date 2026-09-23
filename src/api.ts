@@ -33,7 +33,8 @@ import type { AskResult } from './core/ask.js';
 import { buildWorkerPrompt } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
-import { DEFAULT_ORCHESTRATOR_AGENT, resolveOrchestratorModel } from './core/orchestrateRoster.js';
+import { resolveDefaultOrchestrator, resolveOrchestratorModel, resolveWorkerModel } from './core/orchestrateRoster.js';
+import { loadPreferences, preferredModel } from './core/preferences.js';
 import { visibleAgentNames } from './core/orchestrateRuntime.js';
 
 export type { AskResult, RouteDecision, OrchestrationResult, StepOutcome, AgentStatus };
@@ -319,6 +320,8 @@ export async function agentAsk(
   const model = opts.model ?? null;
   const effort = opts.effort ?? null;
 
+  const resolveModel = (agent: string) => resolveWorkerModel(registry, agent, model);
+
   try {
     assertApproved(opts.prompt, approve);
   } catch (e) {
@@ -342,7 +345,7 @@ export async function agentAsk(
       to: opts.to,
       prompt: opts.prompt,
       timeoutSeconds,
-      model,
+      model: resolveModel(opts.to),
       effort,
       session: opts.session,
       resume: opts.resume,
@@ -387,7 +390,7 @@ export async function agentRoute(
     ...(opts.delegate ? { delegate: true } : {}),
     task: opts.task,
     agent: decision.agent,
-    model: opts.model ?? decision.model,
+    model: opts.model ?? (decision.agent ? preferredModel(loadPreferences(), decision.agent) : null) ?? decision.model,
     effort: opts.effort ?? decision.effort,
     tier: decision.tier,
     method: decision.method,
@@ -412,13 +415,18 @@ export async function agentRoute(
     };
   }
 
+  const routedModel = opts.model
+    ?? preferredModel(loadPreferences(), decision.agent)
+    ?? decision.model
+    ?? null;
+
   const ask = await executeSingleAsk(
     registry,
     {
       to: decision.agent,
       prompt: opts.task,
       timeoutSeconds,
-      model: opts.model ?? decision.model ?? null,
+      model: routedModel,
       effort: opts.effort ?? decision.effort ?? null,
       session: opts.session,
       resume: opts.resume,
@@ -511,7 +519,7 @@ export async function agentOrchestrate(
   opts: OrchestrateOptions,
 ): Promise<OrchestrateCommandResult> {
   const warnings: string[] = [];
-  const orchName = opts.orchestrator ?? DEFAULT_ORCHESTRATOR_AGENT;
+  const orchName = opts.orchestrator ?? resolveDefaultOrchestrator().agent;
   if (!registry.has(orchName)) {
     return {
       exitCode: 2,
