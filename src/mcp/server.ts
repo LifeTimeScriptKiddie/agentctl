@@ -56,9 +56,13 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
     { name: 'agentctl', version: '1' },
     {
       instructions:
-        'agentctl routes work to local agent CLIs (codex, claude, cursor, pi, agy …) using their own logins. '
-        + 'Use agentctl_delegate for one task on the best agent, agentctl_orchestrate for multi-step plan→execute→verify '
-        + 'work. Long work returns a job_id: poll agentctl_job_wait until done, then read the result. '
+        'agentctl hands work to other local agent CLIs using their own logins. Use it on the user\'s behalf, without '
+        + 'being asked, when another agent fits the work better than you or an independent opinion helps: '
+        + 'codex_write (GPT Luna/Sol) for code edits, tests and shell work in the repo; claude (Opus 5.5 for deep '
+        + 'review/hard reasoning, Sonnet otherwise) for review and writing; cursor (Composer) for fast repository '
+        + 'questions; agy for web research. Use agentctl_delegate for one task, agentctl_orchestrate for multi-step '
+        + 'plan → workers → verify. Do not use it for simple edits or questions you can handle directly. '
+        + 'Long work returns a job_id: poll agentctl_job_wait until done, then read the result. '
         + (opts.allowApprove
           ? 'approve/approve_context are available; set them only when the human has explicitly approved the action.'
           : 'Destructive or outward-facing actions (push, publish, deploy, rm -rf …) are refused here; ask the human to run them with --approve.'),
@@ -141,8 +145,9 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   server.registerTool('agentctl_delegate', {
     title: 'Delegate one task',
     description:
-      'Route a task to the best-fit agent (or `to`) and run it once. Waits up to wait_seconds; '
-      + 'if still running, returns a job_id to poll with agentctl_job_wait.',
+      'Hand one self-contained task to the best-fit local agent (or pin `to`): code changes/tests → codex_write, '
+      + 'deep review or writing → claude, quick repo questions → cursor, web research → agy. Include the context the '
+      + 'worker needs. Waits up to wait_seconds; if still running, returns a job_id to poll with agentctl_job_wait.',
     inputSchema: withoutApproval({
       task: z.string().min(1).describe('Self-contained task for the worker, including any needed context.'),
       to: z.string().optional().describe('Pin an agent (see agentctl_agents); omit to route automatically.'),

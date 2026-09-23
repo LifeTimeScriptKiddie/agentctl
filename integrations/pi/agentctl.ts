@@ -254,7 +254,116 @@ async function execMemoryCli(argv: string[], cwd: string): Promise<string> {
   }
 }
 
+
+/**
+ * Tools Pi's model can call on its own (no `/agentctl` needed). They mirror the
+ * `agentctl mcp` tools and run through the same `agentctl jobs` CLI, so the
+ * approval gates and caller exclusion (`pi`) apply. Approval is never passed:
+ * destructive requests come back as approval_required for the human to run.
+ */
+const TOOL_GUIDELINES = [
+  "Use agentctl_delegate to hand a self-contained task to another local agent (codex for code edits/tests, claude for deep review or writing, cursor for fast repo Q&A, agy for web research) when that agent fits better than you, or for an independent second opinion.",
+  "Use agentctl_orchestrate for multi-step work that benefits from plan → parallel workers → verification; it returns a job id — poll it with agentctl_job_wait.",
+  "Do not use agentctl for simple edits or questions you can answer directly.",
+];
+
+function toolText(value: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], details: value };
+}
+
+async function startAndWait(argv: string[], cwd: string, waitSeconds: number): Promise<unknown> {
+  const started = await runJobsCli(["start", ...argv, "--caller", "pi"], cwd);
+  const id = (started.result as { id?: string } | undefined)?.id;
+  if (!started.ok || !id) return { error: started.error ?? "could not start job" };
+  if (waitSeconds <= 0) return { job_id: id, done: false, next: `call agentctl_job_wait with job_id "${id}"` };
+  const waited = await runJobsCli(["wait", id, "--timeout", String(waitSeconds)], cwd, (waitSeconds + 30) * 1000);
+  const r = waited.result as { done?: boolean; job?: { status?: string }; result?: unknown } | undefined;
+  return r?.done
+    ? { job_id: id, done: true, status: r.job?.status, result: r.result }
+    : { job_id: id, done: false, status: r?.job?.status, next: `call agentctl_job_wait with job_id "${id}"` };
+}
+
+export function registerAgentctlTools(pi: ExtensionAPI): void {
+  if (typeof (pi as { registerTool?: unknown }).registerTool !== "function") return;
+  const str = (description: string) => ({ type: "string", description });
+
+  pi.registerTool({
+    name: "agentctl_delegate",
+    label: "agentctl delegate",
+    description: "Route a task to the best-fit local agent (or `to`) and run it once. Returns the result, or a job_id if still running.",
+    promptSnippet: "agentctl_delegate: hand a task to another local agent (codex/claude/cursor/agy)",
+    promptGuidelines: TOOL_GUIDELINES,
+    parameters: {
+      type: "object",
+      properties: {
+        task: str("Self-contained task for the worker, including the context it needs."),
+        to: str("Optional agent to pin: codex, codex_write, claude, cursor, agy."),
+        wait_seconds: { type: "integer", minimum: 0, maximum: 300, description: "How long to wait here (default 120)." },
+      },
+      required: ["task"],
+    } as never,
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const p = params as { task: string; to?: string; wait_seconds?: number };
+      const argv = ["delegate", ...(p.to ? ["--to", p.to] : []), p.task];
+      return toolText(await startAndWait(argv, ctx.cwd, p.wait_seconds ?? 120));
+    },
+  } as never);
+
+  pi.registerTool({
+    name: "agentctl_orchestrate",
+    label: "agentctl orchestrate",
+    description: "Plan → route steps to workers → verify → synthesize, as a background job. Returns a job_id to poll with agentctl_job_wait.",
+    promptSnippet: "agentctl_orchestrate: multi-step plan/execute/verify across local agents (background job)",
+    promptGuidelines: TOOL_GUIDELINES,
+    parameters: {
+      type: "object",
+      properties: {
+        goal: str("The overall goal, with the context workers need."),
+        dry_plan: { type: "boolean", description: "Return the plan without executing it." },
+      },
+      required: ["goal"],
+    } as never,
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const p = params as { goal: string; dry_plan?: boolean };
+      const argv = ["orchestrate", ...(p.dry_plan ? ["--dry-plan"] : []), p.goal];
+      return toolText(await startAndWait(argv, ctx.cwd, 0));
+    },
+  } as never);
+
+  pi.registerTool({
+    name: "agentctl_job_wait",
+    label: "agentctl job wait",
+    description: "Wait for an agentctl job; returns the result when done, else its status. Call again until done.",
+    parameters: {
+      type: "object",
+      properties: {
+        job_id: str("Id returned by agentctl_delegate / agentctl_orchestrate."),
+        wait_seconds: { type: "integer", minimum: 0, maximum: 300, description: "Default 60." },
+      },
+      required: ["job_id"],
+    } as never,
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const p = params as { job_id: string; wait_seconds?: number };
+      const secs = p.wait_seconds ?? 60;
+      const r = await runJobsCli(["wait", p.job_id, "--timeout", String(secs)], ctx.cwd, (secs + 30) * 1000);
+      return toolText(r.ok ? r.result : { error: r.error });
+    },
+  } as never);
+
+  pi.registerTool({
+    name: "agentctl_job_cancel",
+    label: "agentctl job cancel",
+    description: "Cancel a running agentctl job.",
+    parameters: { type: "object", properties: { job_id: str("Job id.") }, required: ["job_id"] } as never,
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const r = await runJobsCli(["cancel", (params as { job_id: string }).job_id], ctx.cwd);
+      return toolText(r.ok ? r.result : { error: r.error });
+    },
+  } as never);
+}
+
 export default function agentctlExtension(pi: ExtensionAPI) {
+  registerAgentctlTools(pi);
   pi.registerCommand("agentctl", {
     description: "Dispatch to agentctl (ask | route | delegate | orchestrate | health | memory-test)",
     handler: async (args, ctx) => {
