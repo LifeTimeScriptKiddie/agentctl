@@ -66,6 +66,9 @@ function promptLabel(session: ReplSession): string {
   return m ? `${a}(${m})> ` : `${a}> `;
 }
 
+/** Window in which a second Ctrl+C quits (Pi-style: first press clears the draft). */
+export const CTRL_C_EXIT_WINDOW_MS = 1500;
+
 export async function startBlessedRepl(session: ReplSession): Promise<void> {
   const orchProgress = new OrchProgressTracker();
   let busy = false;
@@ -397,8 +400,8 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       transcript.height = compact ? '100%-8' : '100%-11';
       const elapsed = busy ? `Working · ${Math.floor((Date.now() - busySince) / 1000)}s · Esc cancel` : 'Ready';
       header.setContent(` agentctl  |  ${session.orchestratorMode ? 'Orchestrated' : 'Direct'}  |  ${elapsed}`);
-      shortcuts.setContent(w < 75 ? ' Enter send · F1 commands · Esc back · Ctrl+C quit'
-        : ' Enter send · Shift+Enter newline · Tab focus · Ctrl+P commands · Ctrl+R find · Ctrl+C quit');
+      shortcuts.setContent(w < 75 ? ' Enter send · F1 commands · Esc back · Ctrl+C clear · Ctrl+C×2 quit'
+        : ' Enter send · Shift+Enter newline · Tab focus · Ctrl+P commands · Ctrl+R find · Ctrl+C clear · Ctrl+C×2 quit');
       const sessionLabel = session.sessionName ?? 'ephemeral';
       const meta = [
         cwd,
@@ -802,9 +805,31 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       focusInput();
     });
 
+    // Pi-style: first Ctrl+C clears the draft and arms; a second press within the window quits.
+    let ctrlCArmedAt = 0;
+    let ctrlCHintTimer: ReturnType<typeof setTimeout> | null = null;
     screen.key(['C-c'], () => {
-      if (busy) session.requestCancel();
-      exitChat();
+      const now = Date.now();
+      if (ctrlCArmedAt && now - ctrlCArmedAt <= CTRL_C_EXIT_WINDOW_MS) {
+        if (ctrlCHintTimer) clearTimeout(ctrlCHintTimer);
+        if (busy) session.requestCancel();
+        exitChat();
+        return;
+      }
+      ctrlCArmedAt = now;
+      if (overlayOpen) closeOverlays();
+      const hadDraft = Boolean((input as unknown as InputBox).value);
+      input.clearValue();
+      historyIndex = -1;
+      historyDraft = '';
+      focusInput();
+      selectHint = hadDraft ? 'Input cleared · Ctrl+C again to quit' : 'Ctrl+C again to quit';
+      refreshStatus();
+      if (ctrlCHintTimer) clearTimeout(ctrlCHintTimer);
+      ctrlCHintTimer = setTimeout(() => {
+        ctrlCArmedAt = 0;
+        if (selectHint.endsWith('Ctrl+C again to quit')) { selectHint = ''; refreshStatus(); }
+      }, CTRL_C_EXIT_WINDOW_MS);
     });
 
     screen.on('resize', () => {

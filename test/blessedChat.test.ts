@@ -1,7 +1,7 @@
 import { PassThrough } from 'node:stream';
 import blessed from 'neo-blessed';
 import { expect, it, vi } from 'vitest';
-import { startBlessedRepl } from '../src/tui/blessedChat.js';
+import { CTRL_C_EXIT_WINDOW_MS, startBlessedRepl } from '../src/tui/blessedChat.js';
 import { ReplSession } from '../src/repl.js';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 
@@ -34,6 +34,7 @@ it('types initial o normally unless a long reply can be toggled', async () => {
     key('o');
     expect(editor.getValue()).toBe('hello');
   } finally {
+    key('\x03', 'c', 'C-c');
     key('\x03', 'c', 'C-c');
     await running;
     spy.mockRestore();
@@ -116,6 +117,7 @@ it('jump and search overlays accept keyboard input', async () => {
     await new Promise(setImmediate);
   } finally {
     key('\x03', 'c', 'C-c');
+    key('\x03', 'c', 'C-c');
     await running;
     spy.mockRestore();
     input.destroy();
@@ -174,6 +176,7 @@ it('inserts text once after rapid focus changes and for Unicode/pasted chunks', 
     expect(editor.getValue()).toBe('c');
   } finally {
     key('\x03', 'c', 'C-c');
+    key('\x03', 'c', 'C-c');
     await running;
     spy.mockRestore();
     input.destroy();
@@ -225,7 +228,56 @@ it('arrow up/down recalls submitted input history', async () => {
     expect(editor.getValue()).toBe('');
   } finally {
     key('\x03', 'c', 'C-c');
+    key('\x03', 'c', 'C-c');
     await running;
+    spy.mockRestore();
+    input.destroy();
+    output.destroy();
+  }
+});
+
+it('Ctrl+C clears the draft; a second Ctrl+C within the window quits', async () => {
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 30, isTTY: true });
+  output.resume();
+  const factory = blessed.screen;
+  let screen: blessed.Widgets.Screen;
+  const spy = vi.spyOn(blessed, 'screen').mockImplementation((options) => {
+    screen = factory({ ...options, input, output, terminal: 'xterm-256color' });
+    return screen;
+  });
+  let clock = 1_000_000;
+  const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  const session = new ReplSession(AdapterRegistry.fromPackaged(), { orchMode: false });
+  let exited = false;
+  const running = startBlessedRepl(session).then(() => { exited = true; });
+  const key = (ch: string, name?: string, full = name) => {
+    const k = { name, full: full ?? name, ctrl: full?.startsWith('C-') };
+    screen!.program.emit('keypress', ch, k);
+    if (full) screen!.program.emit(`key ${full}`, ch, k);
+  };
+  const ctrlC = () => key('\x03', 'c', 'C-c');
+  try {
+    await new Promise(setImmediate);
+    const editor = screen!.children.find((child) => child.type === 'textarea') as blessed.Widgets.TextareaElement;
+    for (const ch of 'draft text') key(ch, ch);
+    expect(editor.getValue()).toBe('draft text');
+    ctrlC();
+    await new Promise(setImmediate);
+    expect(editor.getValue()).toBe('');
+    expect(exited).toBe(false);
+    // Outside the window the next press only re-arms.
+    clock += CTRL_C_EXIT_WINDOW_MS + 1;
+    ctrlC();
+    await new Promise(setImmediate);
+    expect(exited).toBe(false);
+    clock += 200;
+    ctrlC();
+    await running;
+    expect(exited).toBe(true);
+  } finally {
+    if (!exited) { clock += 1; ctrlC(); ctrlC(); await running; }
+    now.mockRestore();
     spy.mockRestore();
     input.destroy();
     output.destroy();
