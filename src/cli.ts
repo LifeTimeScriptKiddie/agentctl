@@ -4,10 +4,12 @@ import { createRequire } from 'node:module';
 import { registerUsageCommand } from './usage/command.js';
 import { registerMemoryCommands } from './memory/command.js';
 import { registerConfigCommands } from './config/command.js';
+import { registerSetupCommands } from './setup/command.js';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
 import { registerMonitorCommands } from './monitor/command.js';
-import { DEFAULT_ORCHESTRATOR_AGENT } from './core/orchestrateRoster.js';
+import { resolveDefaultOrchestrator } from './core/orchestrateRoster.js';
+import { loadPreferences } from './core/preferences.js';
 import { startRepl } from './repl.js';
 import type { OutputFormat } from './format/output.js';
 
@@ -15,6 +17,16 @@ const packageJson = createRequire(import.meta.url)('../package.json') as { versi
 
 function parseFormat(value?: string): OutputFormat {
   return value === 'json' ? 'json' : 'text';
+}
+
+function maybeNudgeSetup(): void {
+  if (process.env.AGENTCTL_SETUP_NUDGE === '0') return;
+  if (loadPreferences()) return;
+  if (!process.stderr.isTTY) return;
+  process.stderr.write(
+    'agentctl: no preferences yet — run `agentctl setup` to choose models, '
+      + 'or `agentctl setup --auto` to optimize for agents on this machine.\n',
+  );
 }
 
 async function readStdin(): Promise<string> {
@@ -26,9 +38,11 @@ async function readStdin(): Promise<string> {
 
 export function buildProgram(): Command {
   const program = new Command();
+  registerSetupCommands(program);
   registerMemoryCommands(program);
   registerUsageCommand(program);
   registerConfigCommands(program);
+  const defaultOrch = resolveDefaultOrchestrator().agent;
   program
     .name('agentctl')
     .description(
@@ -86,7 +100,7 @@ export function buildProgram(): Command {
     .option('--max-replans <n>', 'revise the plan up to N times on a step failure', '0')
     .option('--resume', 'continue a prior run of this goal, skipping passed steps', false)
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '180')
-    .option('--orchestrator <agent>', 'agent for plan/verify/synth (default: codex)', DEFAULT_ORCHESTRATOR_AGENT)
+    .option('--orchestrator <agent>', `agent for plan/verify/synth (default: ${defaultOrch})`, defaultOrch)
     .option('--orchestrator-model <model>', 'model override (otherwise the selected agent uses its configured default)')
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (goalArg: string | undefined, opts: {
@@ -268,6 +282,7 @@ export function buildProgram(): Command {
     .option('--watch', 'refresh continuously (Ctrl-C to exit)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (opts: { watch: boolean; format: string }) => {
+      maybeNudgeSetup();
       process.exitCode = await cmdStatus(
         loadRegistry(),
         { watch: opts.watch, format: parseFormat(opts.format) },

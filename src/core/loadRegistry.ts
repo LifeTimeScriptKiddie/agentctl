@@ -6,6 +6,7 @@ import { AdapterRegistry } from '../adapters/registry.js';
 import { visibleAgentNames } from './orchestrateRuntime.js';
 import { agentctlHome } from './agentHome.js';
 import { readTrustedConfig } from './configTrust.js';
+import { isAgentEnabled, loadPreferences, preferredModel } from './preferences.js';
 import type { AgentStatus } from '../status.js';
 
 export interface RegistryOptions {
@@ -76,12 +77,14 @@ export async function collectStatus(
   opts: { model?: (agent: string) => string | null; nativeAgents?: Set<string> } = {},
 ): Promise<AgentStatus[]> {
   const health = await registry.healthcheck();
-  const names = visibleAgentNames(registry, health);
+  const prefs = loadPreferences();
+  const names = visibleAgentNames(registry, health).filter((name) => isAgentEnabled(prefs, name));
   return names.map((name) => {
     const preset = registry.getPreset(name);
     const chosen = opts.model?.(name) ?? null;
-    const def = preset?.models?.default ?? preset?.model ?? null;
-    const model = chosen ?? (def ? `${def} (default)` : 'CLI default');
+    const preferred = preferredModel(prefs, name);
+    const def = preferred ?? preset?.models?.default ?? preset?.model ?? null;
+    const model = chosen ?? (preferred ? preferred : def ? `${def} (default)` : 'CLI default');
     const h = health[name];
     return {
       name,

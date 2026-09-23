@@ -1,6 +1,7 @@
 import type { AdapterRegistry } from '../adapters/registry.js';
 import type { HealthStatus } from '../adapters/protocol.js';
 import type { AdapterCapabilities } from '../schema/capabilities.js';
+import { loadPreferences, preferredModel, preferredOrchestrator } from './preferences.js';
 
 export interface RosterAgent {
   name: string;
@@ -12,15 +13,23 @@ export interface RosterAgent {
   defaultEffort: string | null;
 }
 
-/** Default orchestrator: Astra via the codex CLI (plan / verify / synth). */
+/** Packaged default orchestrator: Astra via the codex CLI (plan / verify / synth). */
 export const DEFAULT_ORCHESTRATOR_AGENT = 'codex';
 export const DEFAULT_ORCHESTRATOR_MODEL = 'gpt-6-astra';
 
+/** Effective orchestrator after user preferences (from `agentctl setup`). */
+export function resolveDefaultOrchestrator(): { agent: string; model: string | null } {
+  return preferredOrchestrator(loadPreferences(), {
+    agent: DEFAULT_ORCHESTRATOR_AGENT,
+    model: DEFAULT_ORCHESTRATOR_MODEL,
+  });
+}
+
 /**
  * Pick an orchestrator model without leaking the default backend's model name
- * into another CLI. An explicit override always wins. The built-in default
- * keeps its stronger orchestration tier; every other adapter uses its own
- * configured default (or the CLI default when the preset leaves it null).
+ * into another CLI. An explicit override always wins. User preferences from
+ * `agentctl setup` apply next. The built-in default keeps its stronger
+ * orchestration tier; every other adapter uses its own configured default.
  */
 export function resolveOrchestratorModel(
   registry: AdapterRegistry,
@@ -28,7 +37,26 @@ export function resolveOrchestratorModel(
   requested?: string | null,
 ): string | null {
   if (requested != null) return requested;
+  const prefs = loadPreferences();
+  if (prefs?.orchestrator.agent === agent && prefs.orchestrator.model) {
+    return prefs.orchestrator.model;
+  }
+  const preferred = preferredModel(prefs, agent);
+  if (preferred) return preferred;
   if (agent === DEFAULT_ORCHESTRATOR_AGENT) return DEFAULT_ORCHESTRATOR_MODEL;
+  const preset = registry.getPreset(agent);
+  return preset?.models?.default ?? preset?.model ?? null;
+}
+
+/** Default worker model for an agent: CLI --model wins; else preferences; else preset. */
+export function resolveWorkerModel(
+  registry: AdapterRegistry,
+  agent: string,
+  requested?: string | null,
+): string | null {
+  if (requested != null) return requested;
+  const preferred = preferredModel(loadPreferences(), agent);
+  if (preferred) return preferred;
   const preset = registry.getPreset(agent);
   return preset?.models?.default ?? preset?.model ?? null;
 }
@@ -37,6 +65,7 @@ export function buildAgentRoster(
   registry: AdapterRegistry,
   health: Record<string, HealthStatus>,
 ): RosterAgent[] {
+  const prefs = loadPreferences();
   return registry.names().map((name) => {
     const preset = registry.getPreset(name);
     const adapter = registry.get(name);
@@ -45,7 +74,7 @@ export function buildAgentRoster(
       available: health[name]?.available ?? false,
       capabilities: adapter.capabilities(),
       models: preset?.models?.options ?? (preset?.model ? [preset.model] : []),
-      defaultModel: preset?.models?.default ?? preset?.model ?? null,
+      defaultModel: preferredModel(prefs, name) ?? preset?.models?.default ?? preset?.model ?? null,
       effortLevels: preset?.effort?.options ?? [],
       defaultEffort: preset?.effort?.default ?? null,
     };

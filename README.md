@@ -24,6 +24,16 @@ Requires [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agen
 pi install npm:@lifetimescriptkiddie/agentctl
 ```
 
+Then detect which agent CLIs you have signed in and pick models (or let agentctl optimize):
+
+```sh
+agentctl setup          # interactive: choose orchestrator + per-agent defaults
+agentctl setup --auto   # non-interactive: probe PATH and pick economical defaults
+agentctl setup --show   # inspect preferences + live availability
+```
+
+Preferences land in `~/.agentctl/preferences.yaml` and drive default `--orchestrator` / worker models. Per-command `--to` / `--model` still override.
+
 Reload Pi, then:
 
 ```text
@@ -49,10 +59,11 @@ agentctl ask --to dry_run "hello" --format json
 
 ```sh
 npm install -g @lifetimescriptkiddie/agentctl
+agentctl setup --auto    # or interactive: agentctl setup
 agentctl --help
 ```
 
-Same commands as Pi; useful in CI or when Pi is not running.
+Same commands as Pi; useful in CI or when Pi is not running. Install prints a reminder to run setup.
 
 ## Models and subscriptions
 
