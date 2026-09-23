@@ -11,6 +11,19 @@ agentctl is a headless orchestrator. Claude Code, Cursor, Codex and Pi call it t
 
 All four share one engine (`src/api.ts`), the same approval gates and the same JSON result shapes.
 
+## Automatic use
+
+Nobody has to type `/agentctl`. Once agentctl is registered, the client's model sees its tools and decides when to use them. The server instructions and tool descriptions say when to use agentctl: when another agent fits the work better, or when an independent opinion helps. They also say not to use it for simple edits the client can do itself:
+
+| Work | Lane (models) |
+|---|---|
+| Code edits, tests, shell in the repo | `codex_write` (GPT Luna → Sol) |
+| Deep review, hard reasoning, writing | `claude` (Opus 5.5 for hard work, Sonnet otherwise) |
+| Fast repository questions | `cursor` (Composer) |
+| Web research | `agy` |
+
+Model policy: GPT lanes use only `gpt-5.6-luna` and `gpt-5.6-sol` (no Terra, no GPT‑6 Astra). Claude uses only `claude-opus-5-5` and `claude-sonnet-5`. Cursor uses only Composer. Pi gets the same tools as native Pi tools (`agentctl_delegate`, `agentctl_orchestrate`, `agentctl_job_wait`, `agentctl_job_cancel`) through its extension.
+
 ## Register the MCP server
 
 Use `--caller` to name the agent that is calling. agentctl keeps that agent out of routing, so work it hands off never comes back to it.
@@ -111,3 +124,26 @@ Background jobs started from Pi use `--caller pi`.
 
 - `schemaVersion` (currently `1`) is bumped on any breaking change to the envelope or to a command's `result` shape.
 - Exit codes: `0` ok, `1` failed, `2` usage/configuration error, `3` approval required or ambiguous route, `4` budget reached.
+
+## Improving agentctl from real usage (SessionGraph)
+
+agentctl records content-free traces of what happens:
+- **Harness behavior:** job events (routing, worker calls, failure classes, cost, tokens, orchestrator phases).
+- **Interaction:** each MCP client session's sequence of tool calls (delegates, polls, cancels).
+
+No task, prompt or answer text is recorded. `agentctl graph` runs [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) on those traces and uses the structure it finds to change agentctl's own code:
+
+```bash
+agentctl graph analyze --since 7d          # export → SessionGraph per session → findings + harness hotspots
+agentctl graph improve <analysis-dir>      # evidence-backed proposals + SessionGraph's agentctl workflow sketch
+agentctl graph apply <analysis-dir> <proposal-id> --approve
+                                           # new git branch + worktree; an orchestration job implements it
+# review the diff, rebuild, run a comparable workload, then:
+agentctl graph analyze --since 1d --out <after-dir>
+agentctl graph compare <analysis-dir> <after-dir> --proposal <proposal-id>   # keep, or roll back
+```
+
+- **Proposals:** each names its evidence (for example "3 of 5 codex calls failed with usage_limit"), the files it targets, and the metric that must move.
+- **`compare`:** keeps a change only if mean workflow health does not drop, no finding type grows, and the proposal's metric moves the right way.
+- **`apply`:** never merges. It needs `--approve`, because workers edit files on the new branch.
+- **Analyzer lookup:** `AGENTCTL_SESSIONGRAPH_ANALYZER`, then `sessiongraph` on PATH, then `uv run` in `AGENTCTL_SESSIONGRAPH_ROOT` or the Pi-installed package. Without it, `graph analyze` still reports the harness hotspots.

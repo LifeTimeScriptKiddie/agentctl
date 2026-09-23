@@ -63,8 +63,12 @@ describe('job runner', () => {
     expect(done.exitCode).toBe(0);
     const result = readJobResult(job.id) as { ask: { agent: string; ok: boolean } };
     expect(result.ask).toMatchObject({ agent: 'dry_run', ok: true });
-    const types = readJobEvents(job.id).events.map((e) => e.type);
-    expect(types).toEqual(['queued', 'started', 'succeeded']);
+    const events = readJobEvents(job.id).events;
+    expect(events.map((e) => e.type)).toEqual(['queued', 'started', 'route', 'worker_result', 'succeeded']);
+    const worker = events.find((e) => e.type === 'worker_result')!;
+    expect(worker).toMatchObject({ agent: 'dry_run', ok: true, failureClass: 'none' });
+    // content-free: no prompt or answer text in the event stream
+    expect(JSON.stringify(events)).not.toMatch(/say hello|Dry-run output/);
     const waited = await waitForJob(job.id, 10);
     expect(waited.done).toBe(true);
   });

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { agentAsk, agentDelegate, agentOrchestrate } from '../api.js';
 import { loadRegistry } from '../core/loadRegistry.js';
+import type { AskResult } from '../core/ask.js';
 import {
   appendJobEvent, cancelRequested, createJob, getJob, isTerminal, readJobInput, readJobResult,
   requestCancel, updateJob, writeJobResult,
@@ -35,19 +36,30 @@ export interface JobInput {
   excludeAgents?: string[];
 }
 
+/** Content-free worker outcome for job events (no prompt or answer text). */
+function workerFields(r: AskResult, cancelled = false): Record<string, unknown> {
+  return {
+    // A worker killed by a job cancel is not a lane failure.
+    agent: r.agent, model: r.model, ok: r.ok, failureClass: !r.ok && cancelled ? 'cancelled' : r.failureClass,
+    costUsd: r.costUsd, steppedDown: r.steppedDown,
+    inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+  };
+}
+
 function summaryOf(input: JobInput): string {
   return input.goal ?? input.task ?? input.prompt ?? '';
 }
 
-/** Launch the detached runner process: `node <cli> jobs _run <id>`. */
-export type JobLauncher = (id: string) => number | null;
+/** Launch the detached runner process: `node <cli> jobs _run <id>`, optionally in `cwd`. */
+export type JobLauncher = (id: string, cwd?: string) => number | null;
 
-export const defaultLauncher: JobLauncher = (id) => {
+export const defaultLauncher: JobLauncher = (id, cwd) => {
   const cli = process.env.AGENTCTL_CLI_PATH ?? fileURLToPath(new URL('../cli.js', import.meta.url));
   const child = spawn(process.execPath, [cli, 'jobs', '_run', id], {
     detached: true,
     stdio: 'ignore',
     env: process.env,
+    ...(cwd ? { cwd } : {}),
   });
   child.unref();
   return child.pid ?? null;
@@ -55,7 +67,7 @@ export const defaultLauncher: JobLauncher = (id) => {
 
 export function startJob(
   input: JobInput,
-  opts: { caller?: string | null; launch?: JobLauncher } = {},
+  opts: { caller?: string | null; launch?: JobLauncher; cwd?: string } = {},
 ): JobRecord {
   const text = summaryOf(input).trim();
   if (!text) throw new Error(`a ${input.kind} job needs ${input.kind === 'orchestrate' ? 'a goal' : 'a task'}`);
@@ -65,7 +77,7 @@ export function startJob(
   const record = createJob({
     kind: input.kind, input: input as unknown as Record<string, unknown>, summary: text, caller: opts.caller ?? null,
   });
-  const pid = (opts.launch ?? defaultLauncher)(record.id);
+  const pid = (opts.launch ?? defaultLauncher)(record.id, opts.cwd);
   return pid === null ? record : updateJob(record.id, { pid });
 }
 
@@ -115,10 +127,16 @@ export async function runJob(
         signal,
         hooks: {
           onOrchCallStart: (phase) => appendJobEvent(id, { type: 'orchestrator', phase }),
+          onOrchCall: (phase, r) => appendJobEvent(id, {
+            type: 'orchestrator_result', phase, agent: r.agent, model: r.model, ok: r.ok,
+            failureClass: r.failureClass, costUsd: r.costUsd, steppedDown: r.steppedDown,
+          }),
           onDispatchStart: (agent, model, effort) => appendJobEvent(id, { type: 'dispatch', agent, model, effort }),
+          onDispatch: (r) => appendJobEvent(id, { type: 'worker_result', ...workerFields(r, signal.aborted) }),
         },
         onStep: (outcome) => appendJobEvent(id, {
-          type: 'step', step: outcome.id, agent: outcome.agent, ok: outcome.ok, note: outcome.note,
+          type: 'step', step: outcome.id, agent: outcome.agent, model: outcome.model, ok: outcome.ok,
+          attempts: outcome.attempts, costUsd: outcome.costUsd, note: outcome.note,
         }),
       });
       writeJobResult(id, r);
@@ -138,6 +156,11 @@ export async function runJob(
         signal,
       });
       writeJobResult(id, r);
+      appendJobEvent(id, {
+        type: 'route', agent: r.route.agent, model: r.route.model, method: r.route.method,
+        tier: r.route.tier, ambiguous: r.route.ambiguous,
+      });
+      if (r.ask) appendJobEvent(id, { type: 'worker_result', ...workerFields(r.ask, signal.aborted) });
       exitCode = r.exitCode;
       error = r.error ?? null;
     } else {
@@ -153,6 +176,7 @@ export async function runJob(
         signal,
       });
       writeJobResult(id, r);
+      for (const a of r.results) appendJobEvent(id, { type: 'worker_result', ...workerFields(a, signal.aborted) });
       exitCode = r.exitCode;
       error = r.error ?? null;
     }

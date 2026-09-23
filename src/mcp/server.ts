@@ -7,6 +7,7 @@ import { route } from '../core/router.js';
 import { findDestructive } from '../approval.js';
 import { getJob, listJobs, readJobEvents, readJobResult, isJobId } from '../jobs/store.js';
 import { cancelJob, startJob, waitForJob, type JobInput, type JobLauncher } from '../jobs/runner.js';
+import { appendMcpCall, newMcpSessionId } from './trace.js';
 
 /**
  * `agentctl mcp`: agentctl as a native tool server for Claude Code, Cursor,
@@ -31,6 +32,8 @@ export interface McpServerOptions {
   maxWaitSeconds?: number;
   registry?: AdapterRegistry;
   launch?: JobLauncher;
+  /** Record a content-free per-session tool-call trace (default true). */
+  trace?: boolean;
 }
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -84,6 +87,30 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
     }
     return shape;
   };
+
+  // Content-free trace of this client session's tool calls, for SessionGraph:
+  // tool name, timing, outcome, job id and pinned agent — never task/goal text.
+  const traceSession = opts.trace === false ? null : newMcpSessionId();
+  let seq = 0;
+  const register = server.registerTool.bind(server);
+  server.registerTool = ((name: string, config: unknown, cb: (...a: unknown[]) => Promise<ToolResult>) =>
+    register(name, config as never, (async (...a: unknown[]) => {
+      const started = Date.now();
+      const result = await cb(...a);
+      if (traceSession) {
+        let parsed: Record<string, unknown> = {};
+        try { parsed = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>; } catch { /* non-JSON */ }
+        const args = (a[0] ?? {}) as Record<string, unknown>;
+        appendMcpCall(traceSession, {
+          seq: ++seq, tool: name, ok: result.isError !== true, ms: Date.now() - started, caller: caller.join(',') || null,
+          job_id: (parsed.job_id ?? args.job_id ?? (parsed as { id?: unknown }).id ?? null) as string | null,
+          ...(typeof parsed.done === 'boolean' ? { done: parsed.done } : {}),
+          ...(typeof parsed.status === 'string' ? { status: parsed.status } : {}),
+          ...(typeof args.to === 'string' ? { to: args.to } : {}),
+        });
+      }
+      return result;
+    }) as never)) as typeof server.registerTool;
 
   const gate = (text: string): string | null => {
     if (opts.allowApprove) return null;
