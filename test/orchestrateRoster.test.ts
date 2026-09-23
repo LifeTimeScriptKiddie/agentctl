@@ -19,9 +19,9 @@ afterEach(() => {
 });
 
 describe('orchestrateRoster', () => {
-  it('defaults to codex gpt-6-astra as orchestrator', () => {
+  it('defaults to codex gpt-5.6-sol as orchestrator (no Astra)', () => {
     expect(DEFAULT_ORCHESTRATOR_AGENT).toBe('codex');
-    expect(DEFAULT_ORCHESTRATOR_MODEL).toBe('gpt-6-astra');
+    expect(DEFAULT_ORCHESTRATOR_MODEL).toBe('gpt-5.6-sol');
   });
 
   it('includes cursor in the packaged roster', () => {
@@ -29,21 +29,18 @@ describe('orchestrateRoster', () => {
     const roster = buildAgentRoster(reg, { cursor: { available: true, detail: 'ok' } });
     const cursor = roster.find((a) => a.name === 'cursor');
     expect(cursor).toBeDefined();
-    expect(cursor!.models).toContain('composer-2.5');
-    expect(cursor!.models).toContain('gemini-3.8-flash-low');
-    expect(cursor!.models).toContain('gpt-5.6-sol-high');
-    expect(cursor!.models).toContain('cursor-grok-4.6-high-fast');
-    expect(cursor!.models).not.toContain('kimi-k3-high');
+    // Lane policy: Cursor runs Composer only.
+    expect(cursor!.models).toEqual(['composer-2.5', 'composer-2.5-fast']);
   });
 
   it('uses the selected backend default instead of leaking the Codex model', () => {
     const home = mkdtempSync(join(tmpdir(), 'agentctl-orch-'));
     vi.stubEnv('AGENTCTL_HOME', home);
     const reg = AdapterRegistry.fromPackaged();
-    expect(resolveOrchestratorModel(reg, 'codex')).toBe('gpt-6-astra');
-    expect(resolveOrchestratorModel(reg, 'claude')).toBeNull();
+    expect(resolveOrchestratorModel(reg, 'codex')).toBe('gpt-5.6-sol');
+    expect(resolveOrchestratorModel(reg, 'claude')).toBe('claude-sonnet-5');
     expect(resolveOrchestratorModel(reg, 'cursor')).toBe('composer-2.5');
-    expect(resolveOrchestratorModel(reg, 'claude', 'opus')).toBe('opus');
+    expect(resolveOrchestratorModel(reg, 'claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
   });
 
   it('resolves orchestratorBackup from setup prefs', () => {
@@ -52,18 +49,18 @@ describe('orchestrateRoster', () => {
     const probes: AgentProbe[] = [
       {
         name: 'codex', available: true, detail: 'ok',
-        models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'],
+        models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
         defaultModel: 'gpt-5.6-luna', optional: false,
       },
       {
         name: 'cursor', available: true, detail: 'ok',
-        models: ['composer-2.5', 'claude-opus-5-thinking-high'],
+        models: ['composer-2.5', 'composer-2.5-fast'],
         defaultModel: 'composer-2.5', optional: false,
       },
     ];
     savePreferences(planAutoSetup(probes, { tier: 'balanced' }).preferences, home);
     expect(resolveDefaultOrchestrator()).toEqual({ agent: 'cursor', model: 'composer-2.5' });
-    expect(resolveBackupOrchestrator()).toEqual({ agent: 'codex', model: 'gpt-6-astra' });
+    expect(resolveBackupOrchestrator()).toEqual({ agent: 'codex', model: 'gpt-5.6-sol' });
   });
 
   it('packages Pi with the authenticated OpenAI-Codex provider', () => {
@@ -73,7 +70,8 @@ describe('orchestrateRoster', () => {
     const pi = reg.getPreset('pi');
     expect(pi?.family).toBe('subprocess');
     expect(pi?.models?.default).toBe('openai-codex/gpt-5.6-luna');
-    expect(pi?.models?.options).toContain('openai-codex/gpt-6-astra');
+    expect(pi?.models?.options).toContain('openai-codex/gpt-5.6-sol');
+    expect(pi?.models?.options?.join(' ')).not.toMatch(/astra|terra/);
     expect(resolveOrchestratorModel(reg, 'pi')).toBe('openai-codex/gpt-5.6-luna');
   });
 

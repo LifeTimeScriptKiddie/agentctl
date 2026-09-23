@@ -5,15 +5,14 @@ export const CODEX_EFFORT_LADDER = ['minimal', 'low', 'medium', 'high', 'max'] a
 export type CodexEffort = (typeof CODEX_EFFORT_LADDER)[number];
 
 /** Codex model tiers (cheap/fast → frontier planning). */
-export const CODEX_MODEL_LADDER = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra'] as const;
+// GPT family is limited to Luna (daily) and Sol (hard/escalation); Terra and Astra are not used.
+export const CODEX_MODEL_LADDER = ['gpt-5.6-luna', 'gpt-5.6-sol'] as const;
 
-/** Cursor read-only models (fast → deep). */
-export const CURSOR_MODEL_LADDER = [
-  'composer-2.5',
-  'gpt-5.6-sol-high',
-  'claude-opus-5-thinking-high',
-  'gpt-5.3-codex',
-] as const;
+/** Cursor lane: Composer only (fast → full). */
+export const CURSOR_MODEL_LADDER = ['composer-2.5-fast', 'composer-2.5'] as const;
+
+/** Claude lane: Sonnet → Opus 5.5 after a rejected attempt. */
+export const CLAUDE_MODEL_LADDER = ['claude-sonnet-5', 'claude-opus-5-5'] as const;
 
 function nextInLadder(ladder: readonly string[], current: string | null): string | null {
   if (!current) return ladder[0] ?? null;
@@ -69,6 +68,15 @@ export function escalateWorker(
       return { model: nextModel, effort: 'max', changed: true };
     }
     return { model, effort: curEffort, changed: false };
+  }
+
+  if (agent === 'claude') {
+    const curModel = model ?? CLAUDE_MODEL_LADDER[0]!;
+    const nextModel = nextInLadder(CLAUDE_MODEL_LADDER, curModel);
+    if (nextModel && nextModel !== curModel) {
+      return { model: nextModel, effort: null, changed: true };
+    }
+    return { model: curModel, effort: null, changed: false };
   }
 
   if (agent === 'cursor') {

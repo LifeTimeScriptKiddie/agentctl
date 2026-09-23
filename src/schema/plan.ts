@@ -26,7 +26,7 @@ export const PlanStepSchema = z.object({
 });
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 
-/** A linear, ordered plan produced by the orchestrator (default: codex gpt-6-astra). */
+/** A linear, ordered plan produced by the orchestrator (default: codex gpt-5.6-sol). */
 export const PlanSchema = z.object({
   goal: z.string(),
   steps: z.array(PlanStepSchema).min(1, 'a plan needs at least one step'),

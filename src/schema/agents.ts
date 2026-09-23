@@ -29,7 +29,7 @@ export const ModelsSchema = z.object({
   default: z.string().nullable().default(null),
   options: z.array(z.string()).default([]),
   /**
-   * Ordered step-down ladder, strongest first (claude: fable → opus → sonnet).
+   * Ordered step-down ladder, strongest first (claude: opus 5.5 → sonnet).
    * When a call fails because that tier's usage limit is exhausted, the adapter
    * retries the same prompt on the next entry instead of failing the run. A
    * model outside this list never auto-steps (we don't guess its tier); an

@@ -107,10 +107,11 @@ describe('ReplSession', () => {
   });
 
   it('/model with no args lists each agent’s effective model', async () => {
+    runMock.mockResolvedValue(ok('')); // health probes succeed, so optional lanes are listed
     const s = session();
     const r = await s.handle('/model');
-    expect(r.outputs.some((l) => l.includes('claude'))).toBe(true);
-    expect(r.outputs.some((l) => l.includes('codex'))).toBe(true);
+    expect(r.outputs.some((l) => l.startsWith('claude') && l.includes('claude-sonnet-5') && l.includes('claude-opus-5-5'))).toBe(true);
+    expect(r.outputs.some((l) => l.startsWith('codex') && !/astra|terra/.test(l))).toBe(true);
   });
 
   it('native-resume agent (claude): captures session_id, then resumes with --resume', async () => {

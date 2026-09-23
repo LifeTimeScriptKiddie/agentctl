@@ -41,41 +41,41 @@ const ECONOMY_MODELS: Record<string, string> = {
   codex: 'gpt-5.6-luna',
   codex_write: 'gpt-5.6-luna',
   cursor: 'composer-2.5',
-  claude: 'sonnet',
+  claude: 'claude-sonnet-5',
   pi: 'openai-codex/gpt-5.6-luna',
 };
 
 /** Stronger planning models when the user picks balanced/frontier. */
 const ORCH_MODELS: Record<string, Partial<Record<CostTier, string>>> = {
   codex: {
-    // balanced daily default is sol (cheaper); astra is the backup/frontier
+    // GPT family: Luna for economy, Sol for balanced/frontier planning (no Terra/Astra)
     economy: 'gpt-5.6-luna',
     balanced: 'gpt-5.6-sol',
-    frontier: 'gpt-6-astra',
+    frontier: 'gpt-5.6-sol',
   },
   claude: {
-    economy: 'sonnet',
-    balanced: 'sonnet',
-    frontier: 'opus',
+    economy: 'claude-sonnet-5',
+    balanced: 'claude-sonnet-5',
+    frontier: 'claude-opus-5-5',
   },
   cursor: {
     economy: 'composer-2.5',
     balanced: 'composer-2.5',
-    frontier: 'claude-opus-5-thinking-high',
+    frontier: 'composer-2.5',
   },
   pi: {
     economy: 'openai-codex/gpt-5.6-luna',
     balanced: 'openai-codex/gpt-5.6-sol',
-    frontier: 'openai-codex/gpt-6-astra',
+    frontier: 'openai-codex/gpt-5.6-sol',
   },
 };
 
 /** Expensive backup models (used via `orchestrate --backup`). */
 const ORCH_BACKUP_MODELS: Record<string, string> = {
-  codex: 'gpt-6-astra',
-  claude: 'opus',
-  cursor: 'claude-opus-5-thinking-high',
-  pi: 'openai-codex/gpt-6-astra',
+  codex: 'gpt-5.6-sol',
+  claude: 'claude-opus-5-5',
+  cursor: 'composer-2.5',
+  pi: 'openai-codex/gpt-5.6-sol',
 };
 
 export async function probeAgents(registry: AdapterRegistry): Promise<AgentProbe[]> {
@@ -121,7 +121,7 @@ function pickOrchestratorBackup(
   primary: { agent: string; model: string | null },
 ): { agent: string; model: string | null } | null {
   const available = new Map(probes.filter((p) => p.available).map((p) => [p.name, p]));
-  // Prefer a *different* agent for backup (codex/astra is the intended expensive path).
+  // Prefer a *different* agent for backup (codex/sol is the intended stronger path).
   const backupOrder = ['codex', 'claude', 'cursor', 'pi'] as const;
   for (const name of backupOrder) {
     if (name === primary.agent) continue;
@@ -153,7 +153,7 @@ function workerModel(probe: AgentProbe, tier: CostTier): string | null {
     return pickFromOptions(probe.models, 'gpt-5.6-sol', probe.defaultModel);
   }
   if (tier === 'frontier' && probe.name === 'claude') {
-    return pickFromOptions(probe.models, 'opus', probe.defaultModel);
+    return pickFromOptions(probe.models, 'claude-opus-5-5', probe.defaultModel);
   }
   return pickFromOptions(probe.models, economy ?? probe.defaultModel, probe.defaultModel);
 }

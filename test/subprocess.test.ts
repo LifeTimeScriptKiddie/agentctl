@@ -13,10 +13,12 @@ vi.mock('../src/util/exec.js', () => ({ run: vi.fn() }));
 const runMock = vi.mocked(exec.run);
 
 const EMPTY_MCP = join(presetsDir(), 'empty-mcp.json');
-const CLAUDE_ARGS = [
+const CLAUDE_BASE = [
   '-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob',
   '--strict-mcp-config', '--mcp-config', EMPTY_MCP, '--setting-sources', 'user',
 ];
+// lane policy: the claude lane pins its default model (Sonnet) explicitly
+const CLAUDE_ARGS = [...CLAUDE_BASE, '--model', 'claude-sonnet-5'];
 
 function req(p: Partial<AdapterRequest> & { role: AdapterRequest['role'] }): AdapterRequest {
   return {
@@ -209,8 +211,8 @@ describe('prompts that start with - (security review N10)', () => {
 
 describe('per-agent model switching', () => {
   it('claude: --model <name> when a model is requested', () => {
-    const inv = buildInvocation(loadPreset('claude'), req({ role: 'chat', model: 'opus' }));
-    expect(inv.args).toEqual([...CLAUDE_ARGS, '--model', 'opus']);
+    const inv = buildInvocation(loadPreset('claude'), req({ role: 'chat', model: 'claude-opus-5-5' }));
+    expect(inv.args).toEqual([...CLAUDE_BASE, '--model', 'claude-opus-5-5']);
   });
 
   it('cursor: wires --model for the requested model', () => {
@@ -255,7 +257,8 @@ describe('per-agent model switching', () => {
 
   it('resolveModel reports whether a model is in the curated list (escape hatch)', () => {
     const claude = loadPreset('claude');
-    expect(resolveModel(claude, 'opus')).toEqual({ model: 'opus', flag: '--model', known: true });
+    expect(resolveModel(claude, 'claude-opus-5-5')).toEqual({ model: 'claude-opus-5-5', flag: '--model', known: true });
+    expect(resolveModel(claude, null).model).toBe('claude-sonnet-5');
     // an unknown model is still honored (passed through), but flagged not-known
     const escaped = resolveModel(claude, 'claude-4-experimental');
     expect(escaped.model).toBe('claude-4-experimental');

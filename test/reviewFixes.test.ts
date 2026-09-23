@@ -32,7 +32,7 @@ function savePrefs(agent = 'cursor', model: string | null = 'composer-2.5') {
   preferences.savePreferences({
     version: 1, updatedAt: '2026-09-23', source: 'manual', tier: 'balanced', agents: {},
     orchestrator: { agent, model },
-    orchestratorBackup: { agent: 'codex', model: 'gpt-6-astra' },
+    orchestratorBackup: { agent: 'codex', model: 'gpt-5.6-sol' },
   }, home);
 }
 
@@ -40,7 +40,7 @@ describe('review 1: invalid preferences recovery', () => {
   it.each(['version: [', 'version: 2\n'])('warns and falls back for %j', (body) => {
     writeFileSync(join(home, 'preferences.yaml'), body);
     const warning = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-    expect(resolveDefaultOrchestrator()).toEqual({ agent: 'codex', model: 'gpt-6-astra' });
+    expect(resolveDefaultOrchestrator()).toEqual({ agent: 'codex', model: 'gpt-5.6-sol' });
     expect(preferences.loadPreferences()).toBeNull();
     expect(warning.mock.calls.flat().join('')).toContain('setup --reset');
   });
@@ -70,8 +70,8 @@ describe('review 2: provider-specific defaults', () => {
     const session = new ReplSession(registry, { tui: false });
     await session.handle('/orchestrate count the files');
     expect(orchestrate.mock.calls[0]![1]).toMatchObject({ orchestrator: agent, orchestratorModel: null });
-    expect(resolveOrchestratorModel(registry, agent, null)).not.toBe('gpt-6-astra');
-    expect(session.orchestratorLabel()).not.toContain('gpt-6-astra');
+    expect(resolveOrchestratorModel(registry, agent, null)).not.toBe('gpt-5.6-sol');
+    expect(session.orchestratorLabel()).not.toContain('gpt-5.6-sol');
   });
 
   it('uses the Codex worker preset in direct chat without preferences', async () => {
@@ -81,13 +81,13 @@ describe('review 2: provider-specific defaults', () => {
     const session = new ReplSession(AdapterRegistry.fromPackaged(), { defaultAgent: 'codex', orchMode: false });
     await session.handle('hello');
     expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['-m', 'gpt-5.6-luna']));
-    expect(run.mock.calls[0]![1]).not.toContain('gpt-6-astra');
+    expect(run.mock.calls[0]![1]).not.toContain('gpt-5.6-sol');
   });
 });
 
 describe('review 4: explicit orchestration flags win', () => {
   it.each([
-    { flags: [], agent: 'codex', model: 'gpt-6-astra' },
+    { flags: [], agent: 'codex', model: 'gpt-5.6-sol' },
     { flags: ['--orchestrator', 'claude'], agent: 'claude', model: undefined },
     { flags: ['--orchestrator-model', 'explicit-model'], agent: 'codex', model: 'explicit-model' },
     { flags: ['--orchestrator', 'claude', '--orchestrator-model', 'sonnet'], agent: 'claude', model: 'sonnet' },
