@@ -19,6 +19,8 @@ export async function checkListenerOwner(
   port: number,
   label: string,
   unverifiable: 'allow' | 'deny',
+  /** Exact listen address (e.g. '127.0.0.1' or '::1'); omitted = any address on the port. */
+  address?: string,
 ): Promise<ListenerOwnerResult> {
   const uid = process.getuid?.();
   const cannotCheck = (why: string): ListenerOwnerResult =>
@@ -26,7 +28,10 @@ export async function checkListenerOwner(
   if (uid === undefined) return cannotCheck('no user ids on this platform');
   let outcome;
   try {
-    outcome = await run('lsof', ['-nP', '-w', '-a', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpu'], { timeoutMs: 3000 });
+    // lsof without root only lists this user's processes, so the useful check
+    // is positive: a listener we own on the exact address the client will use.
+    const target = address ? `-iTCP@${address.includes(':') ? `[${address}]` : address}:${port}` : `-iTCP:${port}`;
+    outcome = await run('lsof', ['-nP', '-w', '-a', target, '-sTCP:LISTEN', '-Fpu'], { timeoutMs: 3000 });
   } catch (e) {
     return { ok: false, reason: `could not check who owns ${label} port ${port} (${e instanceof Error ? e.message : String(e)})` };
   }

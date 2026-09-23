@@ -60,6 +60,16 @@ function isLoopbackGateway(gatewayUrl: string): boolean {
 
 let warnedOwnerTokenWithheld = false;
 
+/** '127.0.0.1' or '::1' when the URL names a literal loopback IP, else null. */
+function literalLoopbackAddress(gatewayUrl: string): string | null {
+  try {
+    const host = new URL(gatewayUrl).hostname.replace(/^\[|\]$/g, '');
+    return host === '127.0.0.1' || host === '::1' ? host : null;
+  } catch {
+    return null;
+  }
+}
+
 function loopbackPort(gatewayUrl: string): number | null {
   try {
     const url = new URL(gatewayUrl);
@@ -88,9 +98,15 @@ export async function gatewayAuthHeaders(gatewayUrl?: string): Promise<Record<st
   const owner = readOwnerServeToken();
   if (!owner) return headers;
   const port = loopbackPort(gatewayUrl);
+  const address = literalLoopbackAddress(gatewayUrl);
+  // `localhost` may resolve to 127.0.0.1 or ::1 at connect time, and another
+  // account can bind the other family on the same port, so the owner token is
+  // only sent to a literal loopback address whose exact listener is ours.
   const check = port === null
     ? { ok: false as const, reason: 'gateway URL has no usable port' }
-    : await checkListenerOwner(port, 'memory gateway', 'deny');
+    : address === null
+      ? { ok: false as const, reason: `use a literal loopback address such as http://127.0.0.1:${port} instead of a hostname` }
+      : await checkListenerOwner(port, 'memory gateway', 'deny', address);
   if (check.ok) {
     headers.authorization = `Bearer ${owner}`;
   } else if (!warnedOwnerTokenWithheld) {

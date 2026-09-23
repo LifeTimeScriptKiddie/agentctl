@@ -537,3 +537,82 @@ Fix A and confirm D before merging. The rest can follow.
 - **G:** owner attribution is forced to the caller; self-commit needs `AGENTCTL_MEMORY_ALLOW_SELF_COMMIT=1`; legacy proposals need `AGENTCTL_MEMORY_ALLOW_LEGACY_ACCEPT=1`; the legacy shared token logs a deprecation warning.
 - **N8 residual:** highlighting uses the parsed YAML; warnings cover bare repo-relative scripts, spaced paths and code-loading environment variables.
 - **Not done:** codex/agy per-run MCP disabling. Neither CLI has a working flag; the TODOs stay.
+
+## S8 verification (Opus 5.5, via the MCP-locked claude lane on the branch build)
+
+I verified every S8 item by reading the code. I didn't run `tsc` or the tests. **B is only partially fixed and is still a Medium**, on hosts with several local accounts. Everything else in S8 is fixed apart from the Low items listed below.
+
+## S8 items
+
+| ID | Status | Evidence |
+|---|---|---|
+| **A** (run-loop evaluator) | **Fixed** | Both roles go through `gatedCapability` in `commands.ts:585-595`; `resume` uses the same `cmdRun` (`cli.ts:318`). Read-only roles also reject `canRunShell`/`canWriteFiles` (`registry.ts:105`). The candidate is quoted (`planner.ts:58`). |
+| **B** (owner token to loopback) | **Partially fixed** | Details below. |
+| **C** (`run_model`) | **Fixed** | Owner-only or allow-listed, never anonymous, and the check uses the effective value, so the host default is covered too (`serve.ts:152-157,482-486`). Agents with shell/write or file/network/browser tools are refused (`turnModelGenerate.ts:54-64`). The agent runs in a fresh temp folder that is removed afterwards (`:84-99`), and the adapter uses `request.workdir` (`subprocess.ts:301`). |
+| **D** (project config) | **Fixed** (claude); codex/cursor recorded | `claude.yaml:22-26` adds `--setting-sources user`. Codex and Cursor findings are recorded in `codex.yaml:35-38` and `cursor.yaml:22-23`. Codex still loads project config in repos the user marked trusted (documented, accepted). |
+| **E** (`$&` expansion) | **Fixed** | Function replacers in `planner.ts:41-43,60-62` and `subprocess.ts:57`. A grep found no other string-replacement `replace` that inserts untrusted text. |
+| **F** (REPL) | **Fixed** | `/all` scans the typed text and skips gated lanes (`repl.ts:598-607`). The summarizer quotes the transcript and uses only a non-gated lane, or skips (`repl.ts:674-683`). |
+| **G** (attribution) | **Fixed** | Owner is forced to the caller, and a mismatch gets 403 (`serve.ts:702-706`). Self-commit is refused (`:710-721`). Legacy accepts need the env opt-in (`authContext.ts:53-55`); both stores call it (`store.ts:509`, Postgres `:297`). Deprecation warning at `serve.ts:783-788`. |
+| **N5 residual** | **Not fixed (acknowledged)** | Neither codex (`codex.yaml:39-43`) nor agy (`agy.yaml:18-22`) has a per-run MCP switch, and agy's `--sandbox` file-write limits still need confirmation. Auto-routed `/search` sends the typed text to agy (`canWriteFiles`, web content) with no `findDestructive` scan and no capability gate (`repl.ts:632-640,374-386`). Web results are quoted when later sent to other lanes (`repl.ts:284`). |
+| **N8 residual** | **Fixed**, with Low edges | Highlighting uses the parsed YAML (`review.ts:43-63`). Bare repo-relative files and arguments with spaces are covered (`:150-158`), and so are code-loading variables (`:27-29,165`). Edges below. |
+
+## B: why it's only partially fixed (Medium, multi-account hosts)
+
+`checkListenerOwner` (`listenerOwner.ts:29-42`) runs `lsof -iTCP:<port>`, which matches the port on every address, not the host in the URL.
+- lsof run without root can't see other users' processes (on macOS and Linux), so the "held by another user" branch (`:38-41`) rarely fires.
+- In practice the check only asks "does this user have any listener on this port?"
+
+**Exploit:** the server binds `127.0.0.1:8741` by default (`command.ts:483`), and the gateway URL is `http://localhost:8741`, the form the tests use.
+1. Another account binds `[::1]:8741`. That's allowed, because it's a different address family.
+2. lsof sees only the owner's IPv4 listener, so `ok: true`.
+3. If Node resolves `localhost` to `::1` first, `fetch` connects to the attacker, which captures the owner token and returns forged context.
+
+The same happens in reverse when serve runs with `--host localhost` or `::1` and the URL says `127.0.0.1`. Which address Node tries first needs confirmation with a two-account test. The flaw in the check itself is visible in the code.
+
+**Fix:**
+- Resolve the URL host once and connect to that exact IP.
+- Check `lsof -iTCP@<ip>:<port>`.
+- Refuse `localhost` URLs, or rewrite them to `127.0.0.1`.
+- Better: a unix socket with 0600 permissions, or a challenge-response where the server proves it knows the token before the client sends it.
+
+There's also a small race between the lsof check and the `fetch` connection (`gatewayClient.ts:93` vs `:133`). It's Low, because the attacker can't take the port while serve holds it.
+
+## New issues from S8
+
+- **B bypass above:** Medium.
+- **N8 edges (Low):**
+  - A key written as a YAML alias (`*k: [...]` with `&k commandTemplate` defined elsewhere) isn't a scalar. `review.ts:54` skips it, so the real value isn't highlighted. Path warnings still run, because `parseYaml` resolves the alias.
+  - `--require=./x.js` style arguments start with `-`, so they skip both path checks (`:151,155`).
+  - `NODE_PATH`, `PERL5LIB`, `RUBYLIB` and `JAVA_TOOL_OPTIONS` aren't in the list.
+- **Cosmetic:** `{max_turns}` is substituted after `{prompt}` (`subprocess.ts:57-58`), so a prompt containing that literal text gets changed. Not exploitable. `{asset:}` is resolved first, so a prompt can't inject one.
+- **Owner forcing when `AGENTCTL_USER_ID` is unset:**
+  - The owner and every ALLOW_ANON caller share the id `anonymous` (`serve.ts:139-140`). Owner forcing (`:706`) now puts that id on team memories too.
+  - Team memories are readable by their owner id whatever `allowed_groups` says (`authContext.ts:80`), and that id is shared. So one anonymous caller's group-restricted memories are readable by the others, within public clearance.
+  - The same sharing already applied to private memories before S8. Low; needs confirmation of how often this setup is used.
+- **Checked, no issue:**
+  - The `askAll` include filter runs before `resolveRole` (`ask.ts:89`).
+  - `run_model` owner detection comes from the token only (`serve.ts:169-177`).
+  - Self-commit and legacy-accept logic has no path around it.
+  - Owner forcing can't be skipped by leaving the field out, because it's set unconditionally.
+- **Inconsistency (not a vulnerability):** the `/all` comment says it follows the same rules as `ask --to all`. But `ask --to all` (`api.ts:335`) still sends to gated lanes, because there the text is typed directly by the user.
+
+## Verdict
+
+The High items stay closed. **One Medium remains: B**, which only matters on hosts with several local accounts and a `localhost` or mixed-address gateway setup. Everything else in S8 is fixed apart from the Low edges and the acknowledged N5 residual. If multi-user hosts are in scope, fix B before merging by pinning the resolved address or moving to a unix socket or challenge-response. Otherwise record it as accepted, like M6.
+
+## Follow-up to the S8 verification (Claude)
+
+- **B, fixed:** the owner token is sent only to a literal loopback IP (`127.0.0.1` or `[::1]`), after `lsof -iTCP@<ip>:<port>` confirms a listener owned by this user on that exact address. Hostnames such as `localhost` get no owner token, and a warning says to use `http://127.0.0.1:<port>` or set `AGENTCTL_GATEWAY_TOKEN`.
+- **N8 edges:** `--opt=value` arguments are checked. `NODE_PATH`, `PERL5LIB`, `RUBYLIB` and `JAVA_TOOL_OPTIONS` are flagged.
+- **N5 residual:** REPL `/search` queries get the destructive-action scan before reaching agy.
+
+## Accepted residual risks (documented, not fixed)
+
+| Item | Why it stays | Mitigation |
+|---|---|---|
+| M6: the managed Chrome DevTools port is unauthenticated | A pipe launch breaks the keychain-backed Perplexity login | Random port, `DevToolsActivePort` verification, lsof owner check, 0700 profile |
+| N5: codex/agy lanes may load user-configured MCP servers | Neither CLI has a per-run MCP-disable flag (checked with `--help`) | agy is behind the capability gate; codex read-only runs in its sandbox; review `codex mcp list` / `agy mcp` |
+| Codex project config in repos the user marked trusted | Codex's own trust model | Don't trust untrusted clones in `~/.codex` |
+| lsof check vs. connect race (B) | Needs a unix socket or challenge-response | Low: serve holds the port while running |
+| Owner and ALLOW_ANON callers share the id `anonymous` when `AGENTCTL_USER_ID` is unset | Single-user dev setup | Set `AGENTCTL_USER_ID` on the serve host (startup warns) |
+| Regex approval gate is not complete | Shell indirection can always get past pattern matching | The capability gates (`--approve`, `--approve-context`) are the real boundary; run write-capable workers in a sandbox or container without push credentials |

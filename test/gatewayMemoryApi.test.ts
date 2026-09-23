@@ -68,6 +68,23 @@ describe('gateway memory HTTP client', () => {
     }
   });
 
+  it('checks the exact loopback address before sending the owner token (security review B)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentctl-gw-exact-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', undefined);
+    writeFileSync(join(home, 'serve-token'), 'owner-secret\n', { mode: 0o600 });
+    const { checkListenerOwner } = await import('../src/util/listenerOwner.js');
+    const mocked = vi.mocked(checkListenerOwner);
+    mocked.mockClear();
+    await gatewayAuthHeaders('http://[::1]:9000');
+    expect(mocked).toHaveBeenLastCalledWith(9000, 'memory gateway', 'deny', '::1');
+    await gatewayAuthHeaders('http://127.0.0.1:9001');
+    expect(mocked).toHaveBeenLastCalledWith(9001, 'memory gateway', 'deny', '127.0.0.1');
+    mocked.mockClear();
+    expect((await gatewayAuthHeaders('http://localhost:9002')).authorization).toBeUndefined();
+    expect(mocked).not.toHaveBeenCalled();
+  });
+
   it('gatewayAuthHeaders sends the gateway bearer token only when set', async () => {
     vi.stubEnv('AGENTCTL_GATEWAY_TOKEN', '');
     expect((await gatewayAuthHeaders()).authorization).toBeUndefined();

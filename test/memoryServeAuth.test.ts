@@ -265,7 +265,8 @@ describe('memory serve hardening', () => {
 
       await expect(getGatewayReview(base, 'team-atlas')).resolves.toMatchObject({ proposed: [] });
       expect((await gatewayAuthHeaders(base)).authorization).toBe(`Bearer ${ownerToken}`);
-      expect((await gatewayAuthHeaders('http://localhost:8741')).authorization).toBe(`Bearer ${ownerToken}`);
+      // A hostname may resolve to either loopback family; only literal IPs get the owner token (review B).
+      expect((await gatewayAuthHeaders('http://localhost:8741')).authorization).toBeUndefined();
       expect((await gatewayAuthHeaders('https://memory.example.com')).authorization).toBeUndefined();
       expect((await gatewayAuthHeaders()).authorization).toBeUndefined();
 

@@ -374,3 +374,18 @@ describe('config trust review residuals (security review N8)', () => {
     expect(warnings).not.toMatch(/HOME|--flag|\[0\] "node"/);
   });
 });
+
+describe('config trust review edges (security review N8 follow-up)', () => {
+  it('checks --opt=value paths and extra code-loading env vars', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentctl-trust-edge-'));
+    mkdirSync(join(root, '.git'));
+    writeFileSync(join(root, 'hook.js'), '');
+    const yaml = 'agents:\n  x:\n    commandTemplate: [node, --require=./hook.js, --import=hook.js, --max-old-space-size=4096]\n    environment: { NODE_PATH: /tmp, JAVA_TOOL_OPTIONS: -Dx=y }\n';
+    const w = executablePathWarnings(yaml, join(root, 'agents.yaml')).join('\n');
+    expect(w).toMatch(/\[1\] "--require=\.\/hook\.js" is a relative path/);
+    expect(w).toMatch(/\[2\] "--import=hook\.js" names a file inside the repository/);
+    expect(w).not.toMatch(/max-old-space-size/);
+    expect(w).toMatch(/NODE_PATH/);
+    expect(w).toMatch(/JAVA_TOOL_OPTIONS/);
+  });
+});

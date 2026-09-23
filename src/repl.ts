@@ -372,6 +372,12 @@ export class ReplSession {
   }
 
   private async searchWeb(query: string): Promise<string> {
+    // agy can write files, so the typed query gets the same destructive-action
+    // scan as send() and /all (security review N5 residual).
+    const hit = this.approve ? null : findDestructive(query);
+    if (hit) {
+      return `blocked: search requests a destructive/outward-facing action ('${hit}'). Restart chat with --approve to allow it.`;
+    }
     const candidates = ['agy', 'comet'].filter((name) => this.registry.has(name));
     if (candidates.length === 0) return 'no web-research agent is configured (install agy or Comet)';
     const failures: string[] = [];
