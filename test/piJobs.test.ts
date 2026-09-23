@@ -47,3 +47,33 @@ describe('Pi background orchestration via jobs', () => {
     expect(notify.mock.calls[0]![0]).toMatch(/Usage: \/agentctl job/);
   });
 });
+
+describe('Pi model-callable tools (no /agentctl needed)', () => {
+  function loadTools() {
+    const tools = new Map<string, { execute: (...a: unknown[]) => Promise<{ details: unknown }>; promptGuidelines?: string[] }>();
+    extension({
+      registerCommand: () => {},
+      registerTool: (t: { name: string }) => tools.set(t.name, t as never),
+    } as never);
+    return tools;
+  }
+
+  it('registers delegate/orchestrate/wait/cancel tools with usage guidelines', () => {
+    const tools = loadTools();
+    expect([...tools.keys()].sort()).toEqual(['agentctl_delegate', 'agentctl_job_cancel', 'agentctl_job_wait', 'agentctl_orchestrate']);
+    expect(tools.get('agentctl_delegate')!.promptGuidelines!.join(' ')).toMatch(/Do not use agentctl for simple edits/);
+  });
+
+  it('agentctl_delegate starts a job as caller pi, never with --approve, then waits', async () => {
+    execute
+      .mockResolvedValueOnce(envelope({ id: 'job_abc12345' }))
+      .mockResolvedValueOnce(envelope({ done: true, job: { status: 'succeeded' }, result: { ask: { text: 'ok' } } }));
+    const tools = loadTools();
+    const out = await tools.get('agentctl_delegate')!.execute('call1', { task: 'review parser.ts', to: 'claude' }, undefined, undefined, { cwd: '/work' });
+    const start = (execute.mock.calls[0]![1] as string[]).slice(1);
+    expect(start).toEqual(['jobs', 'start', 'delegate', '--to', 'claude', 'review parser.ts', '--caller', 'pi']);
+    expect(start).not.toContain('--approve');
+    expect((execute.mock.calls[1]![1] as string[]).slice(1, 4)).toEqual(['jobs', 'wait', 'job_abc12345']);
+    expect(out.details).toMatchObject({ job_id: 'job_abc12345', done: true, status: 'succeeded' });
+  });
+});
