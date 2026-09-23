@@ -542,6 +542,42 @@ describe('runOrchestration', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
+  it('does not start planning when already cancelled', async () => {
+    const plan = vi.fn();
+    const result = await runOrchestration('g', deps({ plan }), { shouldAbort: () => true });
+    expect(result.status).toBe('cancelled');
+    expect(plan).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('does not parse interrupted planner output (dryPlan=%s)', async (dryPlan) => {
+    let aborted = false;
+    const plan = vi.fn(async () => {
+      aborted = true;
+      return { text: 'process interrupted', costUsd: 0.1 };
+    });
+    const dispatch = vi.fn();
+    const result = await runOrchestration('g', deps({ plan, dispatch }), {
+      dryPlan, shouldAbort: () => aborted,
+    });
+    expect(result).toMatchObject({ status: 'cancelled', outcomes: [], totalCostUsd: 0.1 });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('handles a rejected planner call after cancellation', async () => {
+    let aborted = false;
+    const plan = async () => {
+      aborted = true;
+      throw new Error('process aborted');
+    };
+    const result = await runOrchestration('g', deps({ plan }), { shouldAbort: () => aborted });
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('preserves planner call errors when not cancelled', async () => {
+    const plan = async () => { throw new Error('provider unavailable'); };
+    await expect(runOrchestration('g', deps({ plan }))).rejects.toThrow('provider unavailable');
+  });
+
   it('replan: on failure with maxReplans, the planner is asked to revise', async () => {
     const plan = async () => '{"goal":"g","steps":[{"id":"a","instruction":"A","acceptance":"x"}]}';
     const verify = vi.fn(async () => ({ passed: false, feedback: 'no' }));

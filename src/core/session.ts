@@ -68,7 +68,12 @@ export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchange
       throw new SessionWriteConflict(onDisk.updatedAt);
     }
   }
-  const withStamp = { ...rec, transcript: redactDeep(rec.transcript), updatedAt: now };
+  const withStamp = {
+    ...rec, transcript: redactDeep(rec.transcript), updatedAt: now,
+    ...(rec.chat ? { chat: { ...rec.chat, tasks: rec.chat.tasks.map(task => ({
+      ...task, instruction: redactDeep(task.instruction), result: redactDeep(task.result),
+    })) } } : {}),
+  };
   writePrivateFile(path, JSON.stringify(withStamp, null, 2));
 }
 

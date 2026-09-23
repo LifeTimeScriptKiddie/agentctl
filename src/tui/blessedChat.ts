@@ -1,10 +1,6 @@
 import blessed from 'neo-blessed';
 import type { ReplSession } from '../repl.js';
 import {
-  DEFAULT_ORCHESTRATOR_MODEL,
-  resolveDefaultOrchestrator,
-} from '../core/orchestrateRoster.js';
-import {
   formatUsageCompact, OrchProgressTracker, stripAnsi,
 } from './chatDashboard.js';
 import { readClipboard, writeClipboard, clipboardToInputLine } from './clipboard.js';
@@ -58,12 +54,11 @@ function agentTag(name: string): string {
 
 function promptLabel(session: ReplSession): string {
   if (session.orchestratorMode) {
-    const orch = resolveDefaultOrchestrator();
-    return `orch(${orch.agent}/${orch.model ?? DEFAULT_ORCHESTRATOR_MODEL})> `;
+    return `${session.orchestratorLabel()}> `;
   }
   const a = session.currentAgent;
   const m = session.modelFor(a);
-  return m ? `${a}(${m})> ` : `${a}> `;
+  return `${session.chatMode === 'lead' ? 'lead ' : ''}${m ? `${a}(${m})` : a}> `;
 }
 
 /** Window in which a second Ctrl+C quits (Pi-style: first press clears the draft). */
@@ -89,6 +84,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
   return new Promise<void>((resolve) => {
     const screen = blessed.screen({
       smartCSR: true,
+      dockBorders: true,
       fullUnicode: true,
       title: 'agentctl chat',
       mouse: true,
@@ -110,7 +106,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       top: 1,
       left: 0,
       width: '100%',
-      height: '100%-10',
+      height: '100%-11',
       tags: true,
       keys: true,
       mouse: true,
@@ -127,7 +123,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
 
     const statusPanel = blessed.box({
       parent: screen,
-      top: '100%-9',
+      top: '100%-11',
       left: 0,
       width: '100%',
       height: 6,
@@ -143,7 +139,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       bottom: 1,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 5,
       border: { type: 'line' },
       // Own one input listener for the widget lifetime. readInput installs a
       // deferred listener on every focus, which can leak during rapid switching.
@@ -193,6 +189,9 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       { label: 'Find in transcript', action: 'find' },
       { label: 'Show agents and connection status', cmd: '/status' },
       { label: 'Show model choices', cmd: '/model' },
+      { label: 'Use conversational lead (selective delegation)', cmd: '/lead' },
+      { label: 'Show saved delegated tasks', cmd: '/tasks' },
+      { label: 'Show SessionGraph flow trace', cmd: '/flow' },
       { label: 'Use direct chat (faster, one agent)', cmd: '/orch off' },
       { label: 'Use orchestration (plan and verify)', cmd: '/orch on' },
       { label: 'Switch agent…', cmd: '/switch ' },
@@ -395,18 +394,22 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       if (closed) return;
       const w = (screen.width as number) ?? 80;
       const compact = Number(screen.height) < 28;
+      input.height = Number(screen.height) < 18 ? 4 : 5;
       statusPanel.height = compact ? 3 : 6;
-      statusPanel.top = compact ? '100%-7' : '100%-10';
-      transcript.height = compact ? '100%-8' : '100%-11';
+      // Share the two panel boundaries to give the draft more rows without
+      // shrinking the conversation. The final row remains the shortcut bar.
+      const panelRows = Number(input.height) + Number(statusPanel.height);
+      statusPanel.top = `100%-${panelRows}`;
+      transcript.height = `100%-${panelRows}`;
       const elapsed = busy ? `Working · ${Math.floor((Date.now() - busySince) / 1000)}s · Esc cancel` : 'Ready';
-      header.setContent(` agentctl  |  ${session.orchestratorMode ? 'Orchestrated' : 'Direct'}  |  ${elapsed}`);
+      header.setContent(` agentctl  |  ${session.chatMode === 'lead' ? 'Lead + delegation' : session.orchestratorMode ? 'Orchestrated' : 'Direct'}  |  ${elapsed}`);
       shortcuts.setContent(w < 75 ? ' Enter send · F1 commands · Esc back · Ctrl+C clear · Ctrl+C×2 quit'
         : ' Enter send · Shift+Enter newline · Tab focus · Ctrl+P commands · Ctrl+R find · Ctrl+C clear · Ctrl+C×2 quit');
       const sessionLabel = session.sessionName ?? 'ephemeral';
       const meta = [
         cwd,
         sessionLabel,
-        session.orchestratorMode ? 'orch' : 'direct',
+        session.chatMode,
         formatUsageCompact(session.ledger.usageTotals),
       ].join(' · ');
       const route = session.ledger.route.formatRoute(w - 10);
@@ -425,7 +428,7 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       else if (!now) {
         lines.push(`{gray-fg}${keysHintLine()}{/}`);
       }
-      statusPanel.setContent(compact ? (now || selectHint || meta) : lines.slice(0, 4).join('\n'));
+      statusPanel.setContent(compact ? (now || selectHint || meta) : (now ? [lines[0]!, lines[1]!, `{yellow-fg}now:{/} ${now}`, lines.at(-1)!] : lines.slice(0, 4)).join('\n'));
       input.setLabel(` ${busy ? 'Draft next message' : promptLabel(session)} `);
       screen.render();
     };
@@ -666,9 +669,13 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
 
     appendSystem(
       IS_DARWIN
-        ? 'Welcome to agentctl. Type a task, or press F1 for commands.\nJump: F3 · Find: F4 · Expand long reply: o (empty input) or Ctrl+O · /orch off for direct chat.'
-        : 'Welcome to agentctl. Type a task, or press F1 for commands.\nExpand long reply: o (empty input) or Ctrl+O. Tab focuses transcript. /orch off for direct chat.',
+        ? 'Welcome to agentctl. Talk to your lead; it delegates when useful. F1 commands.\nF3 jump · F4 find · Ctrl+O expand · /tasks handoffs · /flow SessionGraph'
+        : 'Welcome to agentctl. Talk to your lead; it delegates when useful. F1 commands.\nCtrl+O expands replies · Tab focuses transcript · /tasks handoffs · /flow SessionGraph',
     );
+    for (const turn of session.savedTurns) {
+      if (turn.role === 'user') appendUser(turn.text);
+      else appendAssistant(turn.agent, turn.text);
+    }
     refreshStatus();
     focusInput();
 
