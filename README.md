@@ -138,10 +138,37 @@ Everything lives in a **workspace** (string id, e.g. `team-atlas`, `team-reports
 | `process` | `team-ops` | Runbooks, on-call steps |
 | `ops_note` | `team-ops` | Shift/status handoff (“where things stand now”) |
 | `cve` | `team-sec-cve` | Advisory tracking, vendor fix status |
-| `technique` | `team-techniques` | TTP notes, tool usage (custom kind — add in YAML) |
+| `technique` | `team-techniques` | TTP notes, tool usage |
+| `playbook` | `team-playbooks` | Pointer to an approved Markdown page under `$AGENTCTL_HOME/kb` |
+| `lesson` | `team-lessons` | Sanitized reusable observation |
 | `preference` | (per team) | Explicit operator preferences |
 
 Kinds are not separate databases by themselves; they label rows and drive briefing defaults. **Physical separation** is done with workspaces and/or separate Postgres databases on the same VM (below).
+
+### Tiered knowledge model (four formats)
+
+Do **not** force every artifact into one table. agentctl implements the assessment-style split:
+
+| Tier | Format | In agentctl |
+| --- | --- | --- |
+| **1. Knowledge base** | Markdown under `$AGENTCTL_HOME/kb` | `agentctl memory kb init` scaffolds playbooks, technique library, engagements, lessons. Short claims use kinds `playbook` / `technique` / `lesson` and point at pages via `--source`. |
+| **2. Findings tracker** | Structured DB rows | `agentctl memory finding create\|list\|show\|update\|link-evidence` — ownership, severity, remediation, ATT&CK, retest, retention. |
+| **3. Evidence vault** | Encrypted files on disk | Store blobs under `$AGENTCTL_HOME/evidence/vault/` (0700). Register **pointers only** with `agentctl memory evidence add` (uri + optional sha256). |
+| **4. Secrets** | External secrets manager | **Never** store credentials, tokens, or private keys in memory/findings/evidence URIs. |
+
+Full field list and page template: [TEAM-SHARED-KNOWLEDGE.md](docs/TEAM-SHARED-KNOWLEDGE.md).
+
+```bash
+agentctl memory kb init
+agentctl memory evidence add --workspace team-reports \
+  --label 'auth log excerpt' --uri 'vault://eng-a/auth.log' --source operator:lab
+agentctl memory finding create --workspace team-reports \
+  --title 'Insufficient privileged-account detection' --severity high \
+  --engagement 'Client A / Q3' --attck T1078 --status open \
+  --source operator:lab --evidence <pointer-uuid>
+```
+
+HTTP (token-auth gatekeeper): `GET /v1/finding/list`, `GET /v1/finding/show`, `POST /v1/finding/create`, `GET /v1/evidence/list`, `POST /v1/evidence/add`.
 
 ### Storage on the memory VM (one host, multiple planes)
 

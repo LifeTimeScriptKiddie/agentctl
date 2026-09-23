@@ -22,6 +22,7 @@ import { jevOperatorEnabled } from './jevEvidence.js';
 import { agentctlHome } from '../core/agentHome.js';
 import { appendPrivate, ensurePrivateDir } from '../core/privateFs.js';
 import { writeBodySchema } from './memoryWriteGraph.js';
+import { evidencePointerInputSchema, findingInputSchema } from './teamKb.js';
 import { resolveMemoryBackend } from './backendConfig.js';
 import { PostgresMemoryStore } from './postgres/memoryStorePostgres.js';
 import type { PgPool } from './postgres/pgClient.js';
@@ -386,6 +387,54 @@ export async function handleMemoryHttpRequest(
         updated_at: m.updatedAt,
       })),
     });
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === '/v1/finding/list') {
+    const workspace = url.searchParams.get('workspace')?.trim();
+    if (!workspace) {
+      json(res, 400, { error: 'workspace query parameter required' });
+      return;
+    }
+    const status = url.searchParams.get('status')?.trim() || undefined;
+    const severity = url.searchParams.get('severity')?.trim() || undefined;
+    const requestId = randomUUID();
+    const findings = await withStore(auth, store => store.listFindings(workspace, { status, severity }));
+    auditEvent({
+      route: '/v1/finding/list',
+      request_id: requestId,
+      user_id: auth.userId,
+      workspace,
+      count: Array.isArray(findings) ? findings.length : 0,
+    });
+    json(res, 200, { request_id: requestId, auth_applied: true, workspace, findings: await Promise.resolve(findings) });
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === '/v1/finding/show') {
+    const workspace = url.searchParams.get('workspace')?.trim();
+    const id = url.searchParams.get('id')?.trim();
+    if (!workspace || !id) {
+      json(res, 400, { error: 'workspace and id query parameters required' });
+      return;
+    }
+    const finding = await withStore(auth, store => store.getFinding(workspace, id));
+    if (!(await Promise.resolve(finding))) {
+      json(res, 404, { error: 'not_found' });
+      return;
+    }
+    json(res, 200, { auth_applied: true, finding: await Promise.resolve(finding) });
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === '/v1/evidence/list') {
+    const workspace = url.searchParams.get('workspace')?.trim();
+    if (!workspace) {
+      json(res, 400, { error: 'workspace query parameter required' });
+      return;
+    }
+    const evidence = await withStore(auth, store => store.listEvidence(workspace));
+    json(res, 200, { auth_applied: true, workspace, evidence: await Promise.resolve(evidence) });
     return;
   }
 
@@ -755,15 +804,64 @@ export async function handleMemoryHttpRequest(
     return;
   }
 
+  if (url.pathname === '/v1/finding/create') {
+    const parsed = findingInputSchema.safeParse(body);
+    if (!parsed.success) {
+      validationFailed(res, requestId, parsed.error);
+      return;
+    }
+    try {
+      const finding = await withStore(auth, store => store.saveFinding(parsed.data));
+      auditEvent({
+        route: '/v1/finding/create',
+        request_id: requestId,
+        user_id: auth.userId,
+        workspace: parsed.data.workspace,
+        finding_key: (await Promise.resolve(finding)).findingKey,
+      });
+      json(res, 200, { request_id: requestId, auth_applied: true, finding: await Promise.resolve(finding) });
+    } catch (e) {
+      internalError(res, '/v1/finding/create', requestId, e, 400);
+    }
+    return;
+  }
+
+  if (url.pathname === '/v1/evidence/add') {
+    const parsed = evidencePointerInputSchema.safeParse(body);
+    if (!parsed.success) {
+      validationFailed(res, requestId, parsed.error);
+      return;
+    }
+    try {
+      const evidence = await withStore(auth, store => store.registerEvidence(parsed.data));
+      auditEvent({
+        route: '/v1/evidence/add',
+        request_id: requestId,
+        user_id: auth.userId,
+        workspace: parsed.data.workspace,
+        evidence_id: (await Promise.resolve(evidence)).id,
+      });
+      json(res, 200, { request_id: requestId, auth_applied: true, evidence: await Promise.resolve(evidence) });
+    } catch (e) {
+      internalError(res, '/v1/evidence/add', requestId, e, 400);
+    }
+    return;
+  }
+
   json(res, 404, {
     error: 'not_found',
     paths: [
       'GET /health',
       'GET /v1/memory/review?workspace=',
+      'GET /v1/finding/list?workspace=',
+      'GET /v1/finding/show?workspace=&id=',
+      'GET /v1/evidence/list?workspace=',
       'POST /v1/context',
       'POST /v1/turn',
       'POST /v1/memory/write',
       'POST /v1/memory/accept',
+      'POST /v1/finding/create',
+      'POST /v1/evidence/add',
     ],
   });
 }
