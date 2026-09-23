@@ -419,6 +419,25 @@ describe('memory serve hardening', () => {
     });
   });
 
+  it('refuses to accept a legacy proposal with no recorded proposer unless opted in (security review G)', async () => {
+    await start();
+    vi.stubEnv('AGENTCTL_MEMORY_REVIEWER_GROUPS', 'memory-reviewers');
+    const sam = token('sam', ['memory-reviewers']);
+    // In-process CLI saves (null auth) record no proposer, like pre-S5 rows.
+    const store = await MemoryStore.open(undefined, { auth: null });
+    const legacy = store.save({ workspace: 'team-atlas', text: 'legacy', source: 'cli', key: 'legacy-row' });
+    await Promise.resolve(store.close());
+    expect(legacy.proposedBy).toBeNull();
+    const body = { workspace: 'team-atlas', memory_id: legacy.id, revision: legacy.revision, human_approved: true };
+
+    const refused = await post('/v1/memory/accept', body, bearer(sam));
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: 'legacy_accept_forbidden' });
+
+    vi.stubEnv('AGENTCTL_MEMORY_ALLOW_LEGACY_ACCEPT', '1');
+    expect((await post('/v1/memory/accept', body, bearer(sam))).status).toBe(200);
+  });
+
   describe('commit writes', () => {
     const commitBody = {
       mode: 'commit',
@@ -459,9 +478,30 @@ describe('memory serve hardening', () => {
       expect(await storedCount()).toBe(0);
     });
 
-    it('commits for a reviewer, but human_approved is still required', async () => {
+    it('refuses a reviewer committing their own text by default (security review G)', async () => {
       await start();
       vi.stubEnv('AGENTCTL_MEMORY_REVIEWER_GROUPS', 'memory-reviewers');
+      const reviewer = token('alice', ['memory-reviewers']);
+      const r = await post('/v1/memory/write', commitBody, bearer(reviewer));
+      expect(r.status).toBe(403);
+      expect(await r.json()).toMatchObject({ error: 'self_commit_forbidden' });
+      expect(await storedCount()).toBe(0);
+    });
+
+    it('refuses a write that attributes the memory to another user (security review G)', async () => {
+      await start();
+      const bob = token('bob', []);
+      const r = await post('/v1/memory/write', {
+        mode: 'propose', workspace: 'team-atlas', text: 'x', source: 'test', key: 'spoof', owner_user_id: 'alice',
+      }, bearer(bob));
+      expect(r.status).toBe(403);
+      expect(await r.json()).toMatchObject({ error: 'owner_mismatch' });
+    });
+
+    it('commits for a reviewer when self-commit is enabled, but human_approved is still required', async () => {
+      await start();
+      vi.stubEnv('AGENTCTL_MEMORY_REVIEWER_GROUPS', 'memory-reviewers');
+      vi.stubEnv('AGENTCTL_MEMORY_ALLOW_SELF_COMMIT', '1');
       const reviewer = token('alice', ['memory-reviewers']);
 
       const unapproved = await post('/v1/memory/write', { ...commitBody, human_approved: false }, bearer(reviewer));

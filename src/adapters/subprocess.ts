@@ -53,7 +53,8 @@ function substitute(
   if (guardLeadingDash && prompt.startsWith('-')) prompt = ` ${prompt}`;
   return token
     .replace(ASSET_TOKEN, (_m, name: string) => assetPath(name))
-    .replaceAll('{prompt}', prompt)
+    // Function replacer: a string replacement would expand $&, $` and $' in the prompt.
+    .replaceAll('{prompt}', () => prompt)
     .replaceAll('{max_turns}', String(req.maxTurns));
 }
 

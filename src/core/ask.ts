@@ -84,8 +84,9 @@ export async function askAll(
   registry: AdapterRegistry,
   prompt: string,
   timeoutSeconds: number,
+  include: (name: string) => boolean = () => true,
 ): Promise<AskResult[]> {
-  const targets = fanoutTargets(registry);
+  const targets = fanoutTargets(registry).filter(include);
   const settled = await Promise.allSettled(
     targets.map((n) => askOne(registry.resolveRole('chat', n), prompt, timeoutSeconds)),
   );

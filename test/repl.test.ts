@@ -332,3 +332,26 @@ describe('ReplSession prompt-injection gates (N4)', () => {
     expect(buildPlannerPrompt('g', 'ROSTER', 'RULES')).not.toContain('UNTRUSTED');
   });
 });
+
+describe('REPL /all fan-out gate (security review F)', () => {
+  it('blocks a destructive /all message without chat --approve and calls nothing', async () => {
+    const s = session();
+    const r = await s.handle('/all git -C . push origin main');
+    expect(r.outputs.join('\n')).toMatch(/blocked: .*git-push/);
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  it('skips shell/write lanes in /all unless chat --approve', async () => {
+    runMock.mockResolvedValue(ok('R'));
+    const s = session();
+    const r = await s.handle('/all hello');
+    expect(r.outputs[0]).toMatch(/skipped .*codex_write/);
+    const spawned = runMock.mock.calls.map((c) => c.slice(0, 2).flat().join(' '));
+    expect(spawned.some((cmd) => /workspace-write/.test(cmd))).toBe(false);
+
+    runMock.mockClear();
+    const approved = session({ approve: true });
+    const r2 = await approved.handle('/all hello');
+    expect(r2.outputs.join('\n')).not.toMatch(/skipped/);
+  });
+});

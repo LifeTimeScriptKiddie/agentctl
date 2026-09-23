@@ -34,10 +34,27 @@ export function anonymousAuthContext(): AuthContext {
 }
 
 export class SelfAcceptForbiddenError extends Error {
-  constructor() {
-    super('The proposer of a memory cannot accept it.');
+  /** 'self' = caller proposed it; 'unknown_proposer' = legacy row with no recorded proposer. */
+  constructor(public readonly reason: 'self' | 'unknown_proposer' = 'self') {
+    super(reason === 'self'
+      ? 'The proposer of a memory cannot accept it.'
+      : 'This memory has no recorded proposer; set AGENTCTL_MEMORY_ALLOW_LEGACY_ACCEPT=1 to accept legacy proposals.');
     this.name = 'SelfAcceptForbiddenError';
   }
+}
+
+/**
+ * Gateway-side accept rule (security review N1/G): the caller may not accept
+ * their own proposal, and legacy rows without a recorded proposer need an
+ * explicit operator opt-in. In-process CLI calls (null auth) are unchanged.
+ */
+export function assertMayAccept(proposedBy: string | null, ctx: AuthContext | null): void {
+  if (!ctx) return;
+  if (proposedBy === null) {
+    if (process.env.AGENTCTL_MEMORY_ALLOW_LEGACY_ACCEPT !== '1') throw new SelfAcceptForbiddenError('unknown_proposer');
+    return;
+  }
+  if (proposedBy === ctx.userId) throw new SelfAcceptForbiddenError('self');
 }
 
 export interface CheckpointAccessFields {
