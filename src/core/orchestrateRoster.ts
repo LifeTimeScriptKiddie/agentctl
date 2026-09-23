@@ -16,10 +16,10 @@ export interface RosterAgent {
 
 /**
  * Packaged fallback when no preferences exist.
- * Daily `agentctl setup --auto` writes a cheaper primary (sol) + astra backup.
+ * Daily `agentctl setup --auto` writes a cheaper primary plus a Sol backup.
  */
 export const DEFAULT_ORCHESTRATOR_AGENT = 'codex';
-export const DEFAULT_ORCHESTRATOR_MODEL = 'gpt-6-astra';
+export const DEFAULT_ORCHESTRATOR_MODEL = 'gpt-5.6-sol';
 /** Cheaper daily default written by setup (balanced/economy). */
 export const DEFAULT_ORCHESTRATOR_ECONOMY_MODEL = 'gpt-5.6-sol';
 

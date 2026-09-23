@@ -27,17 +27,14 @@ commandTemplate:
 # evaluator/critic roles append this flag with read-only tools.
 disallowedToolsFlag: --disallowedTools
 # per-invocation model switching (claude accepts an alias or a full name).
-# Claude 5 generation: fable (top tier, draws usage credits), opus/sonnet
-# aliases now resolve to Opus 5 / Sonnet 5; haiku stays the cheap tier.
 models:
   flag: --model
-  default: null            # null → the claude CLI's own default model
-  options: [fable, opus, sonnet, haiku]
-  # Automatic step-down when a tier's usage limit is exhausted: fable → opus →
-  # sonnet. haiku is intentionally NOT a rung — dropping two tiers silently
-  # would change the answer's character more than it saves; ask for it
-  # explicitly. Off-ladder models never auto-step.
-  stepDown: [fable, opus, sonnet]
+  # Lane policy: Claude runs Opus 5.5 (hard work) and Sonnet (everything else)
+  # only. Full ids are pinned so a CLI alias change cannot move the lane.
+  default: claude-sonnet-5
+  options: [claude-opus-5-5, claude-sonnet-5]
+  # Step down Opus → Sonnet when Opus's usage limit is exhausted.
+  stepDown: [claude-opus-5-5, claude-sonnet-5]
 # native session memory: claude's JSON output carries session_id; replay it with
 # --resume so the agent keeps its own real conversation thread across turns.
 session:

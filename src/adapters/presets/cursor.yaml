@@ -42,17 +42,10 @@ models:
   # and Cursor is a third-party endpoint, so the Fable tier must not be reached
   # through here (see DECISION-RUBRIC §2/§3 third-party trust).
   options:
+    # Lane policy: Cursor runs Composer only. GPT work goes to the codex/pi
+    # lanes (Luna/Sol) and Claude work to the claude lane (Opus 5.5/Sonnet).
     - composer-2.5
     - composer-2.5-fast
-    - muse-spark-1.3-minimal
-    - gemini-3.8-flash-low
-    - gpt-5.6-luna-high
-    - gpt-5.6-terra-high
-    - gpt-5.6-sol-high
-    - claude-sonnet-5-thinking-high
-    - claude-opus-5-thinking-high
-    - gpt-5.3-codex
-    - cursor-grok-4.6-high-fast
 # Native resume remains disabled; existing transcript fallback is unchanged.
 session: null
 healthProbe: [which, cursor-agent]

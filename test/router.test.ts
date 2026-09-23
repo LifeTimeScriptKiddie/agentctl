@@ -58,7 +58,7 @@ describe('route (deterministic)', () => {
   it('reasoning task → cursor (no-claude-default profile)', () => {
     const d = route('explain the trade-offs and analyze which architecture to choose', fleet());
     expect(d.agent).toBe('cursor');
-    expect(d.model).toBe('gpt-5.6-sol-high');
+    expect(d.model).toBe('composer-2.5');
     expect(d.tier).toBe('frontier');
   });
 
@@ -154,13 +154,13 @@ describe('route (deterministic)', () => {
   it('creative writing uses native Claude Sonnet', () => {
     const d = route('draft a short story with natural dialogue', fleet());
     expect(d.agent).toBe('claude');
-    expect(d.model).toBe('sonnet');
+    expect(d.model).toBe('claude-sonnet-5');
   });
 
-  it('cross-model second opinion uses current Grok through Cursor', () => {
+  it('cross-model second opinion stays on Composer through Cursor', () => {
     const d = route('give me an independent second opinion', fleet());
     expect(d.agent).toBe('cursor');
-    expect(d.model).toBe('cursor-grok-4.6-high-fast');
+    expect(d.model).toBe('composer-2.5');
   });
 
   it('returns null agent when nothing is available', () => {
@@ -178,9 +178,9 @@ describe('route (deterministic)', () => {
   it('model-aware: reasoning, bulk, and fallback defaults use the local roster', () => {
     expect(route('explain and analyze the trade-offs', fleet()).model).toBe('composer-2.5');
     expect(route('summarize this quickly', fleet()).model).toBe('composer-2.5');
-    expect(suggestModel('claude', ['bulk signal'])).toBe('haiku');
-    expect(suggestModel('codex', ['reason signal'])).toBe('gpt-5.6-terra');
-    expect(suggestModel('codex', ['reason signal'], 'deep architectural analysis')).toBe('gpt-6-astra');
+    expect(suggestModel('claude', ['bulk signal'])).toBe('claude-sonnet-5');
+    expect(suggestModel('codex', ['reason signal'])).toBe('gpt-5.6-luna');
+    expect(suggestModel('codex', ['reason signal'], 'deep architectural analysis')).toBe('gpt-5.6-sol');
     expect(defaultWorkerModel('codex')).toBe('gpt-5.6-luna');
     expect(defaultWorkerModel('cursor')).toBe('composer-2.5');
     expect(defaultWorkerModel('pi')).toBe('openai-codex/gpt-5.6-luna');
@@ -190,11 +190,11 @@ describe('route (deterministic)', () => {
 
 describe('Cursor-first role policy', () => {
   it.each([
-    ['plan repository changes', 'codex', 'gpt-6-astra'],
-    ['plan a cybersecurity review', 'codex', 'gpt-6-astra'],
-    ['deep code review', 'claude', 'opus'],
-    ['deep security review', 'claude', 'opus'],
-    ['draft a report', 'claude', 'sonnet'],
+    ['plan repository changes', 'codex', 'gpt-5.6-sol'],
+    ['plan a cybersecurity review', 'codex', 'gpt-5.6-sol'],
+    ['deep code review', 'claude', 'claude-opus-5-5'],
+    ['deep security review', 'claude', 'claude-opus-5-5'],
+    ['draft a report', 'claude', 'claude-sonnet-5'],
     ['analyze cybersecurity findings', 'cursor', 'composer-2.5'],
     ['patch the security bug in this file', 'codex_write', 'gpt-daybreak-blue-latest'],
     ['run tests and explain their output', 'codex_write', 'gpt-5.6-luna'],
@@ -206,10 +206,10 @@ describe('Cursor-first role policy', () => {
   it('cyber fallback uses Daybreak when Cursor is unavailable', () => {
     expect(route('analyze security findings', fleet({ cursor: false })).model).toBe('gpt-daybreak-blue-latest');
   });
-  it('deep review falls back to Claude through Cursor', () => {
+  it('deep review falls back to Composer through Cursor', () => {
     const d = route('deep code review', fleet({ claude: false }));
     expect(d.agent).toBe('cursor');
-    expect(d.model).toBe('claude-opus-5-thinking-high');
+    expect(d.model).toBe('composer-2.5');
   });
   it('never falls back to a read-only lane for a write', () => {
     expect(route('edit the security code file', fleet({ codex_write: false })).agent).toBeNull();

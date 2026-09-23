@@ -22,7 +22,7 @@ effort:
 models:
   flag: -m
   default: gpt-5.6-luna
-  options: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol, gpt-6-astra, gpt-daybreak-blue-latest]
+  options: [gpt-5.6-luna, gpt-5.6-sol, gpt-daybreak-blue-latest]
 healthProbe: [which, codex]
 capabilities:
   canReadFiles: true

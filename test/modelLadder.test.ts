@@ -27,6 +27,19 @@ afterEach(() => {
   delete process.env.AGENTCTL_LIMITS_FILE;
 });
 
+/**
+ * The step-down mechanism is tested against a synthetic three-rung ladder with
+ * the historical tier names, independent of the current Claude lane policy
+ * (which the preset test in subprocess.test.ts covers).
+ */
+function laddered() {
+  const preset = loadPreset('claude');
+  return {
+    ...preset,
+    models: { ...preset.models!, default: null, options: ['fable', 'opus', 'sonnet', 'haiku'], stepDown: ['fable', 'opus', 'sonnet'] },
+  };
+}
+
 function req(p: Partial<AdapterRequest> = {}): AdapterRequest {
   return {
     prompt: 'PROMPT', outputContract: 'text', contextPaths: [], timeoutSeconds: 300,
@@ -119,7 +132,7 @@ describe('usage-limit detection', () => {
 describe('SubprocessAdapter step-down', () => {
   it('fable exhausted → retries on opus and returns opus\'s answer', async () => {
     runMock.mockResolvedValueOnce(limitRun).mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     const r = await adapter.invoke(req({ model: 'fable' }));
 
@@ -133,7 +146,7 @@ describe('SubprocessAdapter step-down', () => {
 
   it('walks the whole ladder fable → opus → sonnet when each tier is exhausted', async () => {
     runMock.mockResolvedValueOnce(limitRun).mockResolvedValueOnce(limitRun).mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     const r = await adapter.invoke(req({ model: 'fable' }));
 
@@ -144,7 +157,7 @@ describe('SubprocessAdapter step-down', () => {
 
   it('ladder fully exhausted → usage_limit naming every tier tried', async () => {
     runMock.mockResolvedValue(limitRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     const r = await adapter.invoke(req({ model: 'fable' }));
 
@@ -157,7 +170,7 @@ describe('SubprocessAdapter step-down', () => {
 
   it('the prompt is unchanged across rungs — only the model differs', async () => {
     runMock.mockResolvedValueOnce(limitRun).mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     await adapter.invoke(req({ model: 'fable', prompt: 'EXACT PROMPT' }));
 
@@ -167,7 +180,7 @@ describe('SubprocessAdapter step-down', () => {
 
   it('a non-limit failure is returned as-is, never retried on a cheaper tier', async () => {
     runMock.mockResolvedValue({ stdout: '', stderr: 'boom', exitCode: 2, timedOut: false });
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     const r = await adapter.invoke(req({ model: 'fable' }));
 
@@ -186,7 +199,7 @@ describe('SubprocessAdapter step-down', () => {
     runMock
       .mockResolvedValueOnce(costly(0.25, 100, 10, 1, LIMIT_MSG))
       .mockResolvedValueOnce(costly(0.75, 200, 20, 0));
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     const r = await adapter.invoke(req({ model: 'fable' }));
 
@@ -313,7 +326,7 @@ describe('addUsage', () => {
 describe('persistent limit memory', () => {
   it('records the capped tier so the next call skips it without spending an attempt', async () => {
     runMock.mockResolvedValueOnce(limitRun).mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
     await adapter.invoke(req({ model: 'fable' }));
 
     expect(exhaustedUntil(loadLimits(limitsFile), 'claude', 'fable')).toBeInstanceOf(Date);
@@ -330,7 +343,7 @@ describe('persistent limit memory', () => {
 
   it('a tier that answers is un-capped again', async () => {
     runMock.mockResolvedValueOnce(limitRun).mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
     await adapter.invoke(req({ model: 'fable' }));
     expect(exhaustedUntil(loadLimits(limitsFile), 'claude', 'opus')).toBeNull();
 
@@ -344,7 +357,7 @@ describe('persistent limit memory', () => {
     writeFileSync(limitsFile, JSON.stringify({ 'claude:fable': { until: past, via: 'text', at: past } }));
 
     runMock.mockResolvedValue(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
     await adapter.invoke(req({ model: 'fable' }));
 
     expect(modelOf(0)).toBe('fable');
@@ -355,7 +368,7 @@ describe('persistent limit memory', () => {
     writeFileSync(limitsFile, 'not json at all{{{');
 
     runMock.mockResolvedValue(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
     const r = await adapter.invoke(req({ model: 'fable' }));
 
     expect(r.ok).toBe(true);
@@ -382,7 +395,7 @@ describe('reset-time fidelity', () => {
         stderr: '', exitCode: 1, timedOut: false,
       })
       .mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     await adapter.invoke(req({ model: 'fable' }));
 
@@ -398,7 +411,7 @@ describe('reset-time fidelity', () => {
     runMock
       .mockResolvedValueOnce({ stdout: '', stderr: 'rate limit', exitCode: 1, timedOut: false })
       .mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
 
     await adapter.invoke(req({ model: 'fable' }));
 
@@ -413,7 +426,7 @@ describe('a cached skip is never silent', () => {
   it('counts skipped rungs in steppedDown so the caller is told about the downgrade', async () => {
     // prime the cache: fable capped
     runMock.mockResolvedValueOnce(limitRun).mockResolvedValueOnce(okRun);
-    const adapter = new SubprocessAdapter(loadPreset('claude'));
+    const adapter = new SubprocessAdapter(laddered());
     await adapter.invoke(req({ model: 'fable' }));
 
     // second call skips fable from cache — one CLI call, but still a downgrade

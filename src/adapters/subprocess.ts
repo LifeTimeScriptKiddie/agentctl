@@ -193,7 +193,7 @@ export class SubprocessAdapter implements AgentAdapter {
 
   /**
    * Run the prompt, stepping one rung down the preset's model ladder each time
-   * a tier reports its usage limit exhausted (claude: fable → opus → sonnet).
+   * a tier reports its usage limit exhausted (claude: opus 5.5 → sonnet).
    * The prompt and every other flag stay identical across rungs; only the model
    * changes. Exhausting the ladder returns `usage_limit` naming what was tried.
    *

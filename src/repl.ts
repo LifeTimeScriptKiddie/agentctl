@@ -729,7 +729,7 @@ export async function startRepl(
     const agent = ['codex', 'claude', ...registry.names()].find((n) => n !== 'dry_run' && safe(n));
     if (!agent) return '';
     const model =
-      agent === 'codex' ? 'gpt-5.6-luna' : agent === 'claude' ? 'haiku' : null;
+      agent === 'codex' ? 'gpt-5.6-luna' : agent === 'claude' ? 'claude-sonnet-5' : null;
     try {
       const r = await askOne(
         registry.resolveRole('chat', agent),

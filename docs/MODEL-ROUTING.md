@@ -4,14 +4,14 @@ User policy updated 2026-09-23. Provider and caller are independent: Codex, Clau
 
 | Job | Preferred lane/model | Fallback or escalation |
 | --- | --- | --- |
-| Plan / verify / synthesize (daily) | cursor / composer-2.5 | `orchestrate --backup` → codex / gpt-6-astra |
-| Plan / verify / synthesize (hard) | codex / gpt-6-astra | Explicit `--orchestrator` / `--orchestrator-model` |
+| Plan / verify / synthesize (daily) | cursor / composer-2.5 | `orchestrate --backup` → codex / gpt-5.6-sol |
+| Plan / verify / synthesize (hard) | codex / gpt-5.6-sol | Explicit `--orchestrator` / `--orchestrator-model` |
 | Routine analysis, code reading, summaries, extraction | cursor / composer-2.5 | Stronger Cursor model when justified |
 | Cyber triage / initial analysis | cursor / composer-2.5 | codex / gpt-daybreak-blue-latest |
 | Independent cyber validation | codex / gpt-daybreak-blue-latest | Report unavailable access; do not claim validation occurred |
 | Writing / drafting prose | claude / sonnet | cursor / claude-sonnet-5-thinking-high |
 | Deep review | claude / opus | cursor / claude-opus-5-thinking-high |
-| Edits / tests / shell | codex_write / gpt-5.6-luna | Terra → Sol → Astra on evidence of failure |
+| Edits / tests / shell | codex_write / gpt-5.6-luna | Sol on evidence of failure (Terra/Astra are not used) |
 | Cyber edits / tests | codex_write / gpt-daybreak-blue-latest | Requires authorized scope and write capability |
 | Second opinion | cursor / cursor-grok-4.6-high-fast | Explicit alternate model |
 | Live web / image generation | existing agy / agy_image lanes | comet for web fallback |
@@ -29,7 +29,7 @@ Prefer Composer for the Cursor Models allowance. Third-party models in Cursor us
 ## Planner rules
 
 <!-- PLANNER_RULES_START -->
-Use only available lanes and advertised models from the live roster. Keep plans to 2–6 useful steps. Each step must include agent and model. Do not change the externally selected plan/verify/synthesis backend: default cursor / composer-2.5 (backup codex / gpt-6-astra via --backup).
+Use only available lanes and advertised models from the live roster. Keep plans to 2–6 useful steps. Each step must include agent and model. Do not change the externally selected plan/verify/synthesis backend: default cursor / composer-2.5 (backup codex / gpt-5.6-sol via --backup).
 - Prefer cursor / composer-2.5 for read-only repo analysis, ordinary review, summaries, translation and extraction. Use stronger Cursor models only when the task warrants them.
 - Writing and prose drafting: claude / sonnet. Deep review: claude / opus. If native Claude is unavailable, use the corresponding advertised Cursor Claude model.
 - Authorized cybersecurity analysis: cursor / composer-2.5 for initial triage, followed by independent codex / gpt-daybreak-blue-latest validation when the goal asks for assessed findings. Do not treat one worker's output as independent validation. If Daybreak fails or lacks access, report the gap rather than silently claiming equivalent validation.

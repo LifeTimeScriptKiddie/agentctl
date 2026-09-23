@@ -22,14 +22,19 @@ describe('effortEscalation', () => {
 
     const b = escalateWorker('codex', 'gpt-5.6-luna', 'max');
     expect(b.changed).toBe(true);
-    expect(b.model).toBe('gpt-5.6-terra');
+    expect(b.model).toBe('gpt-5.6-sol');
     expect(b.effort).toBe('max');
   });
 
-  it('escalateWorker bumps cursor model tier', () => {
-    const r = escalateWorker('cursor', 'composer-2.5', null);
-    expect(r.changed).toBe(true);
-    expect(r.model).toBe('gpt-5.6-sol-high');
+  it('escalateWorker keeps cursor on Composer (fast → full, then stops)', () => {
+    const r = escalateWorker('cursor', 'composer-2.5-fast', null);
+    expect(r).toMatchObject({ changed: true, model: 'composer-2.5' });
+    expect(escalateWorker('cursor', 'composer-2.5', null).changed).toBe(false);
+  });
+
+  it('escalateWorker moves claude from Sonnet to Opus 5.5', () => {
+    expect(escalateWorker('claude', 'claude-sonnet-5', null)).toMatchObject({ changed: true, model: 'claude-opus-5-5' });
+    expect(escalateWorker('claude', 'claude-opus-5-5', null).changed).toBe(false);
   });
 
   it('formatWorkerLabel includes effort', () => {
@@ -38,7 +43,7 @@ describe('effortEscalation', () => {
 
   it('ladders are ordered', () => {
     expect(CODEX_EFFORT_LADDER[0]).toBe('minimal');
-    expect(CODEX_MODEL_LADDER.at(-1)).toBe('gpt-6-astra');
-    expect(CURSOR_MODEL_LADDER[0]).toBe('composer-2.5');
+    expect([...CODEX_MODEL_LADDER]).toEqual(['gpt-5.6-luna', 'gpt-5.6-sol']);
+    expect([...CURSOR_MODEL_LADDER]).toEqual(['composer-2.5-fast', 'composer-2.5']);
   });
 });

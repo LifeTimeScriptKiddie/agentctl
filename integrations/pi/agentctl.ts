@@ -7,7 +7,7 @@ const execFileAsync = promisify(execFile);
 
 /** Packaged agentctl defaults for plan/verify/synth. */
 const DEFAULT_ORCHESTRATOR = "codex";
-const DEFAULT_ORCHESTRATOR_MODEL = "gpt-6-astra";
+const DEFAULT_ORCHESTRATOR_MODEL = "gpt-5.6-sol";
 
 interface JsonEnvelope {
   ok: boolean;
@@ -186,7 +186,7 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
   if (!goal) {
     return {
       error:
-        "Usage: /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-6-astra] <goal>",
+        "Usage: /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-5.6-sol] <goal>",
     };
   }
 
@@ -268,7 +268,7 @@ export default function agentctlExtension(pi: ExtensionAPI) {
         if (sub === "help" || !sub) {
           ctx.ui.notify(
             [
-              "Pi = cockpit. agentctl = traffic controller. Codex/gpt-6-astra = orchestrator.",
+              "Pi = cockpit. agentctl = traffic controller. Codex/gpt-5.6-sol = orchestrator.",
               "Usage:",
               "  /agentctl health",
               "  /agentctl memory-test  (3 live Cursor calls, synthetic data only)",
@@ -281,8 +281,8 @@ export default function agentctlExtension(pi: ExtensionAPI) {
               "  /agentctl delegate <task>",
               "Team memory (optional): AGENTCTL_GATEWAY_URL + AGENTCTL_BRIEFING_WORKSPACE (JIT context on delegate/route/ask)",
               "  /agentctl delegate --briefing-workspace team-atlas \"…\"  (or rely on env default)",
-              "  /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-6-astra] <goal>",
-              "Defaults: orchestrate is --dry-plan; --run plans with codex + gpt-6-astra then delegates steps.",
+              "  /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-5.6-sol] <goal>",
+              "Defaults: orchestrate is --dry-plan; --run plans with codex + gpt-5.6-sol then delegates steps.",
               "  /agentctl orchestrate --run --bg <goal>   start as a background job (returns a job id)",
               "  /agentctl job list | status|wait|result|events|cancel <job_id>",
             ].join("\n"),

@@ -80,29 +80,29 @@ export function classifyCostPerformance(
 export function suggestModel(agent: string | null, reasons: string[], task = ''): string | null {
   if (!agent) return null;
   const has = (s: string) => reasons.some((r) => r.startsWith(s));
-  if (has('planning') && agent === 'codex') return 'gpt-6-astra';
+  if (has('planning') && agent === 'codex') return 'gpt-5.6-sol';
   if (has('deep-review')) {
-    if (agent === 'claude') return 'opus';
-    if (agent === 'cursor') return 'claude-opus-5-thinking-high';
+    if (agent === 'claude') return 'claude-opus-5-5';
+    if (agent === 'cursor') return 'composer-2.5';
   }
   if (has('cyber') || /\b(?:cyber(?:security)?|security|vulnerabilit(?:y|ies)|threat model|malware|incident response)\b/i.test(task)) {
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-daybreak-blue-latest';
   }
-  if (has('second-opinion') && agent === 'cursor') return 'cursor-grok-4.6-high-fast';
+  if (has('second-opinion') && agent === 'cursor') return 'composer-2.5';
   if (has('creative')) {
-    if (agent === 'claude') return 'sonnet';
-    if (agent === 'cursor') return 'claude-sonnet-5-thinking-high';
-    if (agent === 'pi') return 'openai-codex/gpt-5.6-terra';
+    if (agent === 'claude') return 'claude-sonnet-5';
+    if (agent === 'cursor') return 'composer-2.5';
+    if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (has('bulk')) {
-    if (agent === 'claude') return 'haiku';
+    if (agent === 'claude') return 'claude-sonnet-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (has('trivial')) {
-    if (agent === 'claude') return 'haiku';
+    if (agent === 'claude') return 'claude-sonnet-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.3-codex-spark';
@@ -117,21 +117,21 @@ export function suggestModel(agent: string | null, reasons: string[], task = '')
   }
   const tier = classifyCostPerformance(task, agent, reasons);
   if (tier === 'frontier') {
-    if (agent === 'claude') return 'opus';
-    if (agent === 'cursor') return 'gpt-5.6-sol-high';
-    if (agent === 'codex' || agent === 'codex_write') return 'gpt-6-astra';
-    if (agent === 'pi') return 'openai-codex/gpt-6-astra';
+    if (agent === 'claude') return 'claude-opus-5-5';
+    if (agent === 'cursor') return 'composer-2.5';
+    if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-sol';
+    if (agent === 'pi') return 'openai-codex/gpt-5.6-sol';
   }
   if (has('write') || has('shell') || has('code')) {
-    if (agent === 'claude') return 'sonnet';
+    if (agent === 'claude') return 'claude-sonnet-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (tier === 'balanced') {
-    if (agent === 'claude') return 'sonnet';
+    if (agent === 'claude') return 'claude-sonnet-5';
     if (agent === 'cursor') return 'composer-2.5';
-    if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-terra';
-    if (agent === 'pi') return 'openai-codex/gpt-5.6-terra';
+    if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
+    if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   return defaultWorkerModel(agent);
 }
@@ -161,7 +161,7 @@ export function defaultWorkerModel(agent: string | null): string | null {
   if (!agent) return null;
   switch (agent) {
     case 'claude':
-      return 'sonnet';
+      return 'claude-sonnet-5';
     case 'codex':
     case 'codex_write':
       return 'gpt-5.6-luna';

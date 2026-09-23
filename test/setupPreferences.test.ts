@@ -37,7 +37,7 @@ const probes: AgentProbe[] = [
     name: 'codex',
     available: true,
     detail: 'ok',
-    models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'],
+    models: ['gpt-5.6-luna', 'gpt-5.6-sol'],
     defaultModel: 'gpt-5.6-luna',
     optional: false,
   },
@@ -45,7 +45,7 @@ const probes: AgentProbe[] = [
     name: 'cursor',
     available: true,
     detail: 'ok',
-    models: ['composer-2.5', 'claude-opus-5-thinking-high'],
+    models: ['composer-2.5', 'composer-2.5-fast'],
     defaultModel: 'composer-2.5',
     optional: false,
   },
@@ -53,7 +53,7 @@ const probes: AgentProbe[] = [
     name: 'claude',
     available: false,
     detail: 'not found',
-    models: ['fable', 'opus', 'sonnet', 'haiku'],
+    models: ['claude-opus-5-5', 'claude-sonnet-5'],
     defaultModel: null,
     optional: true,
   },
@@ -66,12 +66,12 @@ describe('agentctl setup preferences', () => {
     expect(plan.preferences.orchestrator.model).toBe('composer-2.5');
     expect(plan.preferences.orchestratorBackup).toEqual({
       agent: 'codex',
-      model: 'gpt-6-astra',
+      model: 'gpt-5.6-sol',
     });
     expect(plan.preferences.agents.cursor?.defaultModel).toBe('composer-2.5');
     expect(plan.preferences.agents.claude?.enabled).toBe(false);
     expect(plan.summary[0]).toMatch(/orchestrator: cursor/);
-    expect(plan.summary[1]).toMatch(/orchestrator backup:.*gpt-6-astra/);
+    expect(plan.summary[1]).toMatch(/orchestrator backup:.*gpt-5.6-sol/);
   });
 
   it('falls back to codex when cursor is missing', () => {
