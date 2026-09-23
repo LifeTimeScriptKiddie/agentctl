@@ -19,6 +19,8 @@ commandTemplate:
   # belt-and-braces: explicitly pin the sandbox rather than inheriting config.
   - --sandbox
   - enabled
+  # Project hooks (security review D, verified 2026-09-22): a .cursor/hooks.json
+  # beforeSubmitPrompt/stop hook did not run under `-p --mode ask --trust`.
   # never add --approve-mcps: headless runs would then auto-approve every
   # configured MCP server for this read-only lane. Checked 2026-09-22 against
   # cursor-agent 2026.09.18: --approve-mcps is opt-in (default false) and there is
