@@ -582,10 +582,16 @@ export async function cmdRun(args: RunArgs, io: IO): Promise<number> {
   }
 
   const deps = buildRunDeps(state, args);
-  const cap = args.approve ? null : gatedCapability(deps.generator.capabilities());
-  if (cap) {
-    io.err(`blocked: run generator/repairer '${deps.generator.name}' has ${cap}. Re-run with --approve to allow it.`);
-    return 3;
+  if (!args.approve) {
+    // run.yaml is working-directory content, so it may not pick a shell/write
+    // lane for either role without explicit approval.
+    for (const [role, adapter] of [['generator/repairer', deps.generator], ['evaluator', deps.evaluator]] as const) {
+      const cap = gatedCapability(adapter.capabilities());
+      if (cap) {
+        io.err(`blocked: run ${role} '${adapter.name}' has ${cap}. Re-run with --approve to allow it.`);
+        return 3;
+      }
+    }
   }
   let final: RunState;
   try {

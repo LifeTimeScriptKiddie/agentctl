@@ -34,10 +34,13 @@ export function buildGeneratorPrompt(i: GeneratorPromptInput): string {
       ),
     ].join('\n');
   }
+  // Function replacers: a string replacement would expand $&, $` and $' found
+  // in untrusted text into pieces of the template (including marker lines).
+  const rubric = quoteUntrusted('rubric.md', i.rubric);
   return i.template
-    .replaceAll('{{task}}', i.task)
-    .replaceAll('{{rubric}}', quoteUntrusted('rubric.md', i.rubric))
-    .replaceAll('{{revision_block}}', revision)
+    .replaceAll('{{task}}', () => i.task)
+    .replaceAll('{{rubric}}', () => rubric)
+    .replaceAll('{{revision_block}}', () => revision)
     .trim();
 }
 
@@ -49,9 +52,13 @@ export interface EvaluatorPromptInput {
 }
 
 export function buildEvaluatorPrompt(i: EvaluatorPromptInput): string {
+  // The candidate is model output and the rubric is working-directory content:
+  // both are quoted, and inserted via function replacers (see above).
+  const rubric = quoteUntrusted('rubric.md', i.rubric);
+  const candidate = quoteUntrusted('candidate', i.candidate);
   return i.template
-    .replaceAll('{{task}}', i.task)
-    .replaceAll('{{rubric}}', quoteUntrusted('rubric.md', i.rubric))
-    .replaceAll('{{candidate}}', i.candidate)
+    .replaceAll('{{task}}', () => i.task)
+    .replaceAll('{{rubric}}', () => rubric)
+    .replaceAll('{{candidate}}', () => candidate)
     .trim();
 }

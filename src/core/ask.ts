@@ -52,11 +52,11 @@ export async function askOne(
   resumeSessionId: string | null = null,
   effort: string | null = null,
   signal?: AbortSignal,
+  workdir: string | null = null,
 ): Promise<AskResult> {
-  const r = await adapter.invoke(
-    chatRequest(prompt, timeoutSeconds, model, resumeSessionId, effort),
-    signal ? { signal } : undefined,
-  );
+  const request = chatRequest(prompt, timeoutSeconds, model, resumeSessionId, effort);
+  if (workdir) request.workdir = workdir;
+  const r = await adapter.invoke(request, signal ? { signal } : undefined);
   return {
     agent: adapter.name,
     ok: r.ok,

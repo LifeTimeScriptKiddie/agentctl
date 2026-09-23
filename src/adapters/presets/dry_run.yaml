@@ -6,7 +6,7 @@ parse: text
 # in run.yaml yields a generic always-passing loop; `run --dry-run` seeds a
 # validation-aware variant instead.
 capabilities:
-  canReadFiles: true
+  canReadFiles: false  # offline canned stub; reads nothing
   canWriteFiles: false
   canModifyRepo: false
   canPublish: false
