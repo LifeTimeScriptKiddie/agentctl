@@ -27,6 +27,7 @@ import {
   logRoute,
   logHallucinationIncidents,
   writeOrchestrationRun,
+  type OrchestrateHooks,
 } from './core/orchestrateFlow.js';
 import { collectStatus } from './core/loadRegistry.js';
 import type { AskResult } from './core/ask.js';
@@ -50,6 +51,8 @@ export interface AskOptions {
    * dropped with a warning; `approve` does not cover it.
    */
   approveContext?: boolean;
+  /** Cancels the in-flight worker call (job cancel, MCP client abort). */
+  signal?: AbortSignal;
   model?: string | null;
   effort?: string | null;
   session?: string;
@@ -87,6 +90,10 @@ export interface RouteOptions {
   gatewayUrl?: string | null;
   /** Internal marker used to keep delegate route-log entries compatible. */
   delegate?: boolean;
+  /** Cancels the in-flight worker call (job cancel, MCP client abort). */
+  signal?: AbortSignal;
+  /** Agents the router must not pick, e.g. the calling agent (see `--caller`). */
+  excludeAgents?: string[];
 }
 
 export interface RouteCommandResult {
@@ -116,6 +123,13 @@ export interface OrchestrateOptions {
   resume?: boolean;
   orchestrator?: string;
   orchestratorModel?: string;
+  /** Cancels in-flight planner/worker calls (job cancel, MCP client abort). */
+  signal?: AbortSignal;
+  /** Workers that must not receive steps, e.g. the calling agent (see `--caller`). */
+  excludeAgents?: string[];
+  /** Progress callbacks for job runners and MCP progress notifications. */
+  hooks?: OrchestrateHooks;
+  onStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
 }
 
 export interface OrchestrateCommandResult {
@@ -143,9 +157,9 @@ export interface AgentsResult {
   agents: Array<{ name: string; transport: string }>;
 }
 
-async function routerAgents(registry: AdapterRegistry): Promise<RouterAgent[]> {
+async function routerAgents(registry: AdapterRegistry, exclude: string[] = []): Promise<RouterAgent[]> {
   const health = await registry.healthcheck();
-  return registry.names().map((name) => ({
+  return registry.names().filter((name) => !exclude.includes(name)).map((name) => ({
     name,
     capabilities: registry.get(name).capabilities(),
     available: health[name]?.available ?? false,
@@ -169,6 +183,7 @@ async function executeSingleAsk(
     gatewayUrl?: string | null;
     approve: boolean;
     approveContext: boolean;
+    signal?: AbortSignal;
   },
   warnings: string[],
 ): Promise<{ exitCode: number; result: AskResult; error?: string }> {
@@ -282,6 +297,7 @@ async function executeSingleAsk(
     args.model,
     resumeId,
     args.effort,
+    args.signal,
   );
 
   if (sess) {
@@ -354,6 +370,7 @@ export async function agentAsk(
       gatewayUrl: opts.gatewayUrl,
       approve,
       approveContext: opts.approveContext ?? false,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     },
     warnings,
   );
@@ -370,7 +387,7 @@ export async function agentRoute(
   registry: AdapterRegistry,
   opts: RouteOptions,
 ): Promise<RouteCommandResult> {
-  const agents = await routerAgents(registry);
+  const agents = await routerAgents(registry, opts.excludeAgents);
   const warnings: string[] = [];
   const timeoutSeconds = opts.timeoutSeconds ?? 120;
 
@@ -435,6 +452,7 @@ export async function agentRoute(
       gatewayUrl: opts.gatewayUrl,
       approve: opts.approve ?? false,
       approveContext: opts.approveContext ?? false,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     },
     warnings,
   );
@@ -476,6 +494,7 @@ export async function agentDelegate(
       briefingWorkspace: opts.briefingWorkspace,
       sessionScope: opts.sessionScope,
       gatewayUrl: opts.gatewayUrl,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
     const ask = askResult.results[0];
     return {
@@ -566,9 +585,13 @@ export async function agentOrchestrate(
       dryPlan: opts.dryPlan ?? false,
       approve: opts.approve ?? false,
       completed,
-      onStep: (_outcome, all) => {
+      onStep: (outcome, all) => {
         writeOrchestrationRun(runPath, { goal: opts.goal, outcomes: all });
+        opts.onStep?.(outcome, all);
       },
+      ...(opts.hooks ? { hooks: opts.hooks } : {}),
+      ...(opts.signal ? { signal: opts.signal, shouldAbort: () => opts.signal!.aborted } : {}),
+      ...(opts.excludeAgents?.length ? { excludeAgents: opts.excludeAgents } : {}),
       ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
       ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),
     });

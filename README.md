@@ -7,10 +7,13 @@ The project **started there** (route · ask · delegate · orchestrate across CL
 | Layer | What it adds |
 | --- | --- |
 | **Orchestration** (core) | Multi-step plans, dry-run routing, recursion limits, Pi + standalone CLI |
+| **[Agent integration](docs/AGENT-INTEGRATION.md)** | `agentctl mcp` tool server for Claude Code, Cursor, Codex; durable `agentctl jobs` for long runs; caller exclusion; approval stays with the human |
 | **[Team memory](#team-shared-knowledge-domain)** | Linux VM gatekeeper, workspaces, propose → accept, ACL-filtered **`POST /v1/turn`** |
 | **Storage (modular)** | Pluggable SQLite/Postgres backends; add **workspaces, kinds, or whole databases** on the VM without changing Pi/CLI clients |
 | **[SessionGraph](#sessiongraph-on-the-backend-observe--suggest)** | Backend observer — audit + store flow → findings, **graph-engineering** hints, workflow suggestions |
 | **Usage & monitor** | [`agentctl usage`](docs/USAGE.md) token ledger; macOS `agentctl monitor` (read-only agent snapshot in README below) |
+
+**Using agentctl from another agent** (Claude Code, Cursor, Codex, Pi): see [`docs/AGENT-INTEGRATION.md`](docs/AGENT-INTEGRATION.md). The interactive `agentctl chat` is kept working but frozen; new work goes into the headless orchestrator.
 
 Nothing beyond orchestration is required for a single developer with Pi and one provider. Turn on memory and SessionGraph when the team needs shared, reviewed knowledge on a central VM.
 

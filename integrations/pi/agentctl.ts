@@ -35,6 +35,23 @@ async function runAgentctl(args: string[], cwd: string, timeoutMs = 600_000): Pr
   return JSON.parse(line) as JsonEnvelope;
 }
 
+/** `agentctl jobs …` always prints one JSON envelope; it takes no --format flag. */
+async function runJobsCli(args: string[], cwd: string, timeoutMs = 120_000): Promise<JsonEnvelope> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(process.execPath, [fileURLToPath(new URL("../cli.js", import.meta.url)), "jobs", ...args], {
+      cwd, maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs,
+      env: { ...process.env, AGENTCTL_CALLER: process.env.AGENTCTL_CALLER ?? "pi" },
+    }));
+  } catch (error) {
+    const output = (error as { stdout?: string }).stdout;
+    if (!output?.trim()) throw error;
+    stdout = output;
+  }
+  const line = stdout.trim().split("\n").pop() ?? stdout.trim();
+  return JSON.parse(line) as JsonEnvelope;
+}
+
 function formatWarnings(warnings: string[]): string {
   return warnings.length ? `\n\nWarnings:\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
 }
@@ -95,6 +112,8 @@ interface OrchestrateFlags {
   orchestratorModel: string;
   budget?: string;
   maxReplans?: string;
+  /** Start as a durable background job and return its id (see /agentctl job). */
+  background: boolean;
   goal: string;
 }
 
@@ -108,6 +127,7 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
   let orchestratorModel = "";
   let budget: string | undefined;
   let maxReplans: string | undefined;
+  let background = false;
   const goalParts: string[] = [];
 
   for (let i = 0; i < tokens.length; i++) {
@@ -126,6 +146,10 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
     }
     if (t === "--resume") {
       resume = true;
+      continue;
+    }
+    if (t === "--bg" || t === "--background") {
+      background = true;
       continue;
     }
     if (t === "--orchestrator") {
@@ -170,7 +194,7 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
   if (!dryPlan && !run) dryPlan = true;
   if (run) dryPlan = false;
 
-  return { dryPlan, run, approve, resume, orchestrator, orchestratorModel, budget, maxReplans, goal };
+  return { dryPlan, run, approve, resume, orchestrator, orchestratorModel, budget, maxReplans, background, goal };
 }
 
 function formatOrchestration(
@@ -259,6 +283,8 @@ export default function agentctlExtension(pi: ExtensionAPI) {
               "  /agentctl delegate --briefing-workspace team-atlas \"…\"  (or rely on env default)",
               "  /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-6-astra] <goal>",
               "Defaults: orchestrate is --dry-plan; --run plans with codex + gpt-6-astra then delegates steps.",
+              "  /agentctl orchestrate --run --bg <goal>   start as a background job (returns a job id)",
+              "  /agentctl job list | status|wait|result|events|cancel <job_id>",
             ].join("\n"),
             "info",
           );
@@ -449,11 +475,49 @@ export default function agentctlExtension(pi: ExtensionAPI) {
           if (parsed.maxReplans) argv.push("--max-replans", parsed.maxReplans);
           argv.push(parsed.goal);
 
+          if (parsed.background) {
+            // Durable job: returns at once; Pi stays usable while it runs.
+            const jobArgv = ["start", "orchestrate", "--orchestrator", parsed.orchestrator, "--caller", "pi"];
+            if (parsed.orchestratorModel) jobArgv.push("--orchestrator-model", parsed.orchestratorModel);
+            if (parsed.dryPlan) jobArgv.push("--dry-plan");
+            if (parsed.approve) jobArgv.push("--approve");
+            if (parsed.budget) jobArgv.push("--budget", parsed.budget);
+            if (parsed.maxReplans) jobArgv.push("--max-replans", parsed.maxReplans);
+            jobArgv.push(parsed.goal);
+            const started = await runJobsCli(jobArgv, ctx.cwd);
+            const id = (started.result as { id?: string } | undefined)?.id;
+            ctx.ui.notify(
+              started.ok && id
+                ? `orchestration started as ${id}\nCheck: /agentctl job wait ${id}  ·  /agentctl job result ${id}  ·  /agentctl job cancel ${id}`
+                : `could not start job: ${started.error ?? "unknown error"}`,
+              started.ok ? "info" : "error",
+            );
+            return;
+          }
+
           // Multi-step runs can exceed the default 10m shell timeout.
           const timeoutMs = parsed.dryPlan ? 600_000 : 1_800_000;
           const env = await runAgentctl(argv, ctx.cwd, timeoutMs);
           ctx.ui.notify(
             formatOrchestration(env, parsed.dryPlan, parsed.orchestrator, parsed.orchestratorModel),
+            env.ok ? "info" : "error",
+          );
+          return;
+        }
+
+        if (sub === "job" || sub === "jobs") {
+          const [action = "list", id, secs] = rest.trim().split(/\s+/).filter(Boolean);
+          const allowed = ["list", "status", "wait", "result", "events", "cancel"];
+          if (!allowed.includes(action) || (action !== "list" && !id)) {
+            ctx.ui.notify("Usage: /agentctl job list | status|wait|result|events|cancel <job_id> [wait-seconds]", "warning");
+            return;
+          }
+          const argv = action === "list" ? ["list"]
+            : action === "wait" ? ["wait", id!, "--timeout", secs ?? "60"]
+              : [action, id!];
+          const env = await runJobsCli(argv, ctx.cwd, action === "wait" ? (Number(secs ?? 60) + 30) * 1000 : 120_000);
+          ctx.ui.notify(
+            env.ok ? JSON.stringify(env.result, null, 2) : `job ${action} failed: ${env.error ?? "unknown error"}`,
             env.ok ? "info" : "error",
           );
           return;
