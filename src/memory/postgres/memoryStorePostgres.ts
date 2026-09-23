@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   type AuthContext,
   SelfAcceptForbiddenError,
+  assertMayAccept,
   assertCanWriteScope,
   canReadCheckpoint,
   canReadMemory,
@@ -293,9 +294,7 @@ export class PostgresMemoryStore {
         throw new Error('Revision conflict: inspect the current memory before accepting.');
       }
       if (current.state !== 'proposed') throw new Error('Only proposed memories can be accepted.');
-      if (this.auth && current.proposedBy !== null && current.proposedBy === this.auth.userId) {
-        throw new SelfAcceptForbiddenError();
-      }
+      assertMayAccept(current.proposedBy, this.auth);
       await client.query(
         'UPDATE memories SET revision = revision + 1, state = $1, updated_at = $2 WHERE id = $3',
         ['accepted', Date.now(), opts.memoryId],

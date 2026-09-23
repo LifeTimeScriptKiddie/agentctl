@@ -676,9 +676,12 @@ export async function handleMemoryHttpRequest(
           user_id: auth.userId,
           workspace: parsed.data.workspace,
           memory_id: parsed.data.memory_id,
-          status: 'self_accept_forbidden',
+          status: e.reason === 'self' ? 'self_accept_forbidden' : 'legacy_accept_forbidden',
         });
-        json(res, 403, { error: 'self_accept_forbidden', request_id: requestId });
+        json(res, 403, {
+          error: e.reason === 'self' ? 'self_accept_forbidden' : 'legacy_accept_forbidden',
+          request_id: requestId,
+        });
         return;
       }
       internalError(res, '/v1/memory/accept', requestId, e, 400);
@@ -694,7 +697,28 @@ export async function handleMemoryHttpRequest(
     }
     // Commit writes an accepted memory directly, so the body's human_approved
     // alone is not enough: the caller must be a configured reviewer.
+    // Attribution comes from the token: a caller may not write a memory owned
+    // by someone else (security review G).
+    if (parsed.data.owner_user_id && parsed.data.owner_user_id !== auth.userId) {
+      json(res, 403, { error: 'owner_mismatch', request_id: requestId });
+      return;
+    }
+    parsed.data.owner_user_id = auth.userId;
     if (parsed.data.mode === 'commit') {
+      // A commit is always the caller's own text, so it is a self-accept: use
+      // propose + accept by a second reviewer unless the operator opts in.
+      if (isReviewer(auth) && process.env.AGENTCTL_MEMORY_ALLOW_SELF_COMMIT !== '1') {
+        auditEvent({
+          route: '/v1/memory/write',
+          request_id: requestId,
+          user_id: auth.userId,
+          workspace: parsed.data.workspace,
+          mode: parsed.data.mode,
+          status: 'self_commit_forbidden',
+        });
+        json(res, 403, { error: 'self_commit_forbidden', request_id: requestId });
+        return;
+      }
       if (!isReviewer(auth)) {
         auditEvent({
           route: '/v1/memory/write',
@@ -754,6 +778,12 @@ export async function startMemoryServer(opts: { host: string; port: number }): P
     throw new Error(
       'Binding memory serve off loopback requires per-user tokens (agentctl memory serve token add) '
         + 'or AGENTCTL_SERVE_TOKEN',
+    );
+  }
+  if (process.env.AGENTCTL_SERVE_TOKEN) {
+    process.stderr.write(
+      'agentctl memory serve: warning: AGENTCTL_SERVE_TOKEN is deprecated; every holder acts as the server owner. '
+        + 'Issue per-user tokens with `agentctl memory serve token add`.\n',
     );
   }
   if (loopback) {

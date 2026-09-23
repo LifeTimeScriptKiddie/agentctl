@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, parseDocument, visit, isPair, isScalar } from 'yaml';
 
 /**
  * What `agentctl config trust` shows before the user approves a local
@@ -23,15 +23,50 @@ export function stripControlChars(text: string): { text: string; removed: number
 
 const SENSITIVE_KEY_RE = /\b(commandTemplate|healthProbe|environment)\b/;
 
+/** Environment variables that make a launched program load or execute other code. */
+const CODE_LOADING_ENV = new Set([
+  'NODE_OPTIONS', 'BASH_ENV', 'ENV', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONSTARTUP', 'PERL5OPT', 'RUBYOPT',
+]);
+
 export interface ReviewLine {
   text: string;
   highlight: boolean;
 }
 
+const SENSITIVE_KEYS = new Set(['commandTemplate', 'healthProbe', 'environment']);
+
+/**
+ * 0-based line numbers covered by a sensitive key and its value, found from the
+ * parsed YAML so escaped or quoted spellings of the key (e.g. "health\x50robe")
+ * are still flagged. Empty when the text does not parse.
+ */
+function parsedSensitiveLines(text: string): Set<number> {
+  const lines = new Set<number>();
+  let doc;
+  try {
+    doc = parseDocument(text);
+  } catch {
+    return lines;
+  }
+  const lineAt = (offset: number) => text.slice(0, offset).split('\n').length - 1;
+  visit(doc, {
+    Pair(_key, pair) {
+      if (!isPair(pair) || !isScalar(pair.key) || !SENSITIVE_KEYS.has(String(pair.key.value))) return;
+      const start = pair.key.range?.[0];
+      const valueRange = (pair.value as { range?: [number, number, number] } | null)?.range;
+      const end = valueRange?.[1] ?? pair.key.range?.[1];
+      if (start === undefined || end === undefined) return;
+      for (let l = lineAt(start); l <= lineAt(Math.max(start, end - 1)); l++) lines.add(l);
+    },
+  });
+  return lines;
+}
+
 /** Lines of `text`, with commandTemplate/healthProbe/environment and their nested block values flagged. */
 export function reviewLines(text: string): ReviewLine[] {
   let blockIndent: number | null = null;
-  return text.split('\n').map((line) => {
+  const parsed = parsedSensitiveLines(text);
+  return text.split('\n').map((line, index) => {
     const indent = /^ */.exec(line)![0].length;
     const blank = line.trim() === '';
     if (blockIndent !== null && !blank) {
@@ -42,7 +77,7 @@ export function reviewLines(text: string): ReviewLine[] {
       blockIndent = indent;
       return { text: line, highlight: true };
     }
-    return { text: line, highlight: blockIndent !== null && !blank };
+    return { text: line, highlight: (blockIndent !== null && !blank) || parsed.has(index) };
   });
 }
 
@@ -111,13 +146,27 @@ export function executablePathWarnings(content: string, configPath: string): str
       const argv = preset[field];
       if (!Array.isArray(argv)) continue;
       argv.forEach((arg, i) => {
-        if (typeof arg !== 'string' || /\s|\{|:\/\//.test(arg)) return;
+        // Arguments with spaces are still checked; placeholders and URLs are not paths.
+        if (typeof arg !== 'string' || /\{|:\/\//.test(arg) || arg.trim() === '') return;
         const pathLike = i === 0 ? arg.includes('/') : /^(\.{1,2}\/|\/|~\/)/.test(arg);
-        const problem = pathLike ? pathProblem(arg, root) : null;
+        let problem = pathLike ? pathProblem(arg, root) : null;
+        // A bare relative argument (e.g. `scripts/x.js`) that names a file in the
+        // repo is a script the worker could change after trust.
+        if (!problem && i > 0 && !pathLike && !arg.startsWith('-')
+          && (existsSync(join(root, arg)) || existsSync(join(dirname(resolve(configPath)), arg)))) {
+          problem = `names a file inside the repository (${root}), where a worker could change it`;
+        }
         if (problem) warnings.push(`${name}.${field}[${i}] ${JSON.stringify(arg)} ${problem}`);
       });
     }
     const env = preset.environment;
+    if (env && typeof env === 'object') {
+      for (const key of Object.keys(env as Record<string, unknown>)) {
+        if (CODE_LOADING_ENV.has(key) || key.startsWith('DYLD_')) {
+          warnings.push(`${name}.environment.${key} makes the launched program load or run other code`);
+        }
+      }
+    }
     const pathVar = env && typeof env === 'object' ? (env as Record<string, unknown>).PATH : undefined;
     if (typeof pathVar === 'string') {
       for (const entry of pathVar.split(':')) {

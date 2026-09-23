@@ -8,6 +8,7 @@ import {
   type AuthContext,
   type Classification,
   SelfAcceptForbiddenError,
+  assertMayAccept,
   assertCanWriteScope,
   canReadCheckpoint,
   canReadMemory,
@@ -505,9 +506,7 @@ export class MemoryStore {
         throw new Error('Revision conflict: inspect the current memory before accepting.');
       }
       if (current.state !== 'proposed') throw new Error('Only proposed memories can be accepted.');
-      if (this.auth && current.proposedBy !== null && current.proposedBy === this.auth.userId) {
-        throw new SelfAcceptForbiddenError();
-      }
+      assertMayAccept(current.proposedBy, this.auth);
       this.db.prepare('UPDATE memories SET revision=revision+1,state=?,updated_at=? WHERE id=?').run(
         'accepted', Date.now(), opts.memoryId,
       );

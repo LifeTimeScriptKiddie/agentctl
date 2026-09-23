@@ -3,7 +3,7 @@ import { AdapterRegistry } from './adapters/registry.js';
 import {
   askOne, askAll, collectStatus, runOrchestrateGoal, type IO, type OrchCallPhase,
 } from './commands.js';
-import { findDestructive, gateInjectedContext } from './approval.js';
+import { findDestructive, gateInjectedContext, gatedCapability } from './approval.js';
 import { quoteUntrusted } from './core/untrusted.js';
 import { formatOrchestrationForChat } from './core/orchestrateRuntime.js';
 import {
@@ -593,12 +593,26 @@ export class ReplSession {
     }
     if (s.startsWith('/all ')) {
       const msg = s.slice(5).trim();
-      const results = await askAll(this.registry, msg, this.timeout);
+      // Same rules as `ask --to all` and send(): scan the typed text, and keep
+      // shell/write/publish lanes out of the fan-out unless chat --approve.
+      const hit = this.approve ? null : findDestructive(msg);
+      if (hit) {
+        return { outputs: [`blocked: message requests a destructive/outward-facing action ('${hit}'). Restart chat with --approve to allow it.`] };
+      }
+      const skipped: string[] = [];
+      const results = await askAll(this.registry, msg, this.timeout, (name) => {
+        if (this.approve || !gatedCapability(this.registry.get(name).capabilities())) return true;
+        skipped.push(name);
+        return false;
+      });
+      const note = skipped.length
+        ? [color.dim(`(skipped ${skipped.join(', ')}: shell/write lanes need chat --approve)`)]
+        : [];
       return {
-        outputs: results.flatMap((r) => [
+        outputs: [...note, ...results.flatMap((r) => [
           `=== ${agentColor(r.agent)(color.bold(r.agent))}${r.ok ? '' : ` ${color.red(`(${r.failureClass})`)}`} ===`,
           r.text,
-        ]),
+        ])],
       };
     }
     if (s.startsWith('@')) {
@@ -655,17 +669,18 @@ export async function startRepl(
   opts: ReplStartOptions = {},
 ): Promise<void> {
   const summarizer = async (text: string): Promise<string> => {
-    const agent = registry.has('codex')
-      ? 'codex'
-      : registry.has('claude')
-        ? 'claude'
-        : registry.names()[0] ?? 'codex';
+    // The transcript is untrusted (web answers, model output), so only a lane
+    // without shell/write/publish capabilities may summarize it; none → skip.
+    const safe = (n: string) => registry.has(n) && !gatedCapability(registry.get(n).capabilities());
+    const agent = ['codex', 'claude', ...registry.names()].find((n) => n !== 'dry_run' && safe(n));
+    if (!agent) return '';
     const model =
       agent === 'codex' ? 'gpt-5.6-luna' : agent === 'claude' ? 'haiku' : null;
     try {
       const r = await askOne(
         registry.resolveRole('chat', agent),
-        `Summarize this conversation concisely, preserving key facts, decisions, names, and open threads:\n\n${text}`,
+        'Summarize this conversation concisely, preserving key facts, decisions, names, and open threads.\n\n'
+          + quoteUntrusted('conversation transcript', text),
         60, model,
       );
       return r.ok ? r.text : '';
