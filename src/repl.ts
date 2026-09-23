@@ -7,7 +7,6 @@ import { findDestructive, gateInjectedContext, gatedCapability } from './approva
 import { quoteUntrusted } from './core/untrusted.js';
 import { formatOrchestrationForChat } from './core/orchestrateRuntime.js';
 import {
-  DEFAULT_ORCHESTRATOR_AGENT, DEFAULT_ORCHESTRATOR_MODEL,
   resolveDefaultOrchestrator,
   resolveBackupOrchestrator,
 } from './core/orchestrateRoster.js';
@@ -137,7 +136,7 @@ export class ReplSession {
   private readonly sessionId: string | null;
   private readonly createdAt: number;
   private readonly orchAgent: string;
-  private readonly orchModel: string;
+  private readonly orchModel: string | null;
   private readonly approve: boolean;
   private readonly approveContext: boolean;
   private readonly onProgress?: (line: string) => void;
@@ -156,7 +155,7 @@ export class ReplSession {
     this.orchMode = opts.orchMode ?? true;
     const orch = resolveDefaultOrchestrator();
     this.orchAgent = orch.agent;
-    this.orchModel = orch.model ?? DEFAULT_ORCHESTRATOR_MODEL;
+    this.orchModel = orch.model;
     this.approve = opts.approve ?? false;
     this.approveContext = opts.approveContext ?? false;
     this.onProgress = opts.onProgress;
@@ -188,9 +187,6 @@ export class ReplSession {
               : names.includes('claude')
                 ? 'claude'
                 : (names.find((n) => n !== 'dry_run') ?? names[0] ?? 'codex'));
-    if (this.current === 'codex' && !this.models.has('codex')) {
-      this.models.set('codex', DEFAULT_ORCHESTRATOR_MODEL);
-    }
     // Seed model from prefs when present.
     if (prefs?.orchestrator?.agent === this.current && prefs.orchestrator.model) {
       this.models.set(this.current, prefs.orchestrator.model);
@@ -221,7 +217,7 @@ export class ReplSession {
   }
 
   orchestratorLabel(): string {
-    return `orch(${this.orchAgent}/${this.orchModel})`;
+    return `orch(${this.orchAgent}/${this.orchModel ?? 'agent default'})`;
   }
 
   attachUI(hooks: ReplUIHooks): void {
@@ -506,7 +502,7 @@ export class ReplSession {
 
     this.ui.onOrchDone?.(result.plan.steps.length);
 
-    const lines = formatOrchestrationForChat(result, `${this.orchAgent}/${this.orchModel}`);
+    const lines = formatOrchestrationForChat(result, `${this.orchAgent}/${this.orchModel ?? 'agent default'}`);
     let answer = result.synthesis
       ?? (result.outcomes.length > 0 && result.outcomes.every((o) => o.ok)
         ? result.outcomes[result.outcomes.length - 1]!.output
@@ -636,12 +632,14 @@ export class ReplSession {
         this.transcript.length = 0;
         this.transcript.push(...kept);
         this.native.delete(a);
+        this.persistNow();
         this.ui.onSystem?.(`reset ${a}`);
         return { outputs: this.uiMode ? [] : [`reset ${a}`] };
       }
       this.transcript.length = 0;
       this.ledger.reset();
       this.native.clear();
+      this.persistNow();
       this.ui.onClear?.();
       const note = 'New chat — transcript cleared. Direct agent: '
         + `${this.current}. /help for commands.`;
@@ -705,7 +703,7 @@ export class ReplSession {
 
     if (this.orchMode) {
       if (!this.tui) {
-        this.onProgress?.(color.dim(`→ orchestrating (${this.orchAgent}/${this.orchModel})…`));
+        this.onProgress?.(color.dim(`→ orchestrating (${this.orchAgent}/${this.orchModel ?? 'agent default'})…`));
       }
       const lines = await this.orchestrate(s);
       return { outputs: lines };
@@ -765,7 +763,7 @@ export async function startRepl(
 
 async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
   const orch = resolveDefaultOrchestrator();
-  const orchLabel = `${orch.agent}/${orch.model ?? DEFAULT_ORCHESTRATOR_MODEL}`;
+  const orchLabel = `${orch.agent}/${orch.model ?? 'agent default'}`;
   const printFooter = () => {
     const cols = process.stdout.columns ?? 80;
     for (const l of renderChatFooter({

@@ -52,11 +52,12 @@ export function loadPreferences(home = agentctlHome()): Preferences | null {
   try {
     const raw = parseYaml(readFileSync(path, 'utf8'));
     return preferencesSchema.parse(raw);
-  } catch (e) {
-    throw new Error(
-      `Invalid ${path}: ${e instanceof Error ? e.message : String(e)}. `
-        + 'Fix it or run `agentctl setup --reset` then `agentctl setup`.',
+  } catch {
+    process.stderr.write(
+      `Warning: could not read valid preferences from ${path}; using defaults. `
+        + 'Fix it or run `agentctl setup --reset` then `agentctl setup`.\n',
     );
+    return null;
   }
 }
 
@@ -100,7 +101,8 @@ export function preferredOrchestrator(
   if (!prefs?.orchestrator?.agent) return fallback;
   return {
     agent: prefs.orchestrator.agent,
-    model: prefs.orchestrator.model ?? fallback.model,
+    model: prefs.orchestrator.model
+      ?? (prefs.orchestrator.agent === fallback.agent ? fallback.model : null),
   };
 }
 

@@ -36,15 +36,15 @@ const COPY_REPLY_KEY_NAMES = ['C-S-c', 'M-S-c'];
 /** Ctrl chords often fail on macOS terminals; keep Meta/F-keys + slash fallbacks. */
 const JUMP_KEY_NAMES = ['C-g', 'M-g', 'M-j', 'f3'];
 const FIND_KEY_NAMES = ['C-r', 'M-r', 'M-f', 'f4'];
-const OVERLAY_KEYS = [...JUMP_KEY_NAMES, ...FIND_KEY_NAMES, 'C-p', 'f1'];
+const OVERLAY_KEYS = [...JUMP_KEY_NAMES, ...FIND_KEY_NAMES, 'C-p', 'f1', 'C-o'];
 
 const IS_DARWIN = process.platform === 'darwin';
 
 function keysHintLine(): string {
   if (IS_DARWIN) {
-    return 'keys: ↑↓ history · F3 jump · F4 find · F1 · Tab then g|/';
+    return 'keys: ↑↓ history · o/⌃O expand · F3 jump · F4 find · F1';
   }
-  return 'keys: ↑↓ history · Ctrl+G jump · Ctrl+R search · F3/F4 · o collapse';
+  return 'keys: ↑↓ history · o/Ctrl+O expand · Ctrl+G jump · F3/F4 · F1';
 }
 
 type InputBox = {
@@ -556,8 +556,13 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
       else focusInput();
     });
 
-    const toggleActiveMessage = () => {
-      if (inputFocused || overlayOpen || busy) return;
+    const toggleActiveMessage = (opts: { force?: boolean } = {}): boolean => {
+      if (overlayOpen || busy) return false;
+      // From the input box: only steal `o` when the draft is empty (else type normally).
+      if (!opts.force && inputFocused) {
+        const draft = (input as unknown as InputBox).value ?? '';
+        if (draft.length > 0) return false;
+      }
       const base = (transcript as unknown as { childBase?: number }).childBase ?? 0;
       const src = pickCollapseTarget(
         transcriptBuffer, activeSourceLine, sourceLineMap, base, pageLines(),
@@ -568,12 +573,15 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
           ? '(message collapsed)'
           : '(message expanded)';
         refreshStatus();
-      } else {
-        selectHint = '(click a long reply, then press o)';
-        refreshStatus();
+        return true;
       }
+      selectHint = '(no long reply to expand — need >8 lines)';
+      refreshStatus();
+      return false;
     };
-    transcript.key(['o'], toggleActiveMessage);
+    transcript.key(['o'], () => { toggleActiveMessage(); });
+    // Ctrl+O always expands/collapses from the input (even with a draft).
+    screen.program.key(['C-o'], () => { toggleActiveMessage({ force: true }); });
 
     transcript.on('click', () => focusTranscript());
 
@@ -655,8 +663,8 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
 
     appendSystem(
       IS_DARWIN
-        ? 'Welcome to agentctl. Type a task, or press F1 for commands.\nJump: F3 or Tab then g (⌥G if Option is Meta). Find: F4 or Tab then /.\nUse @agent for a direct reply; /orch off switches to direct chat.'
-        : 'Welcome to agentctl. Type a task, or press F1 for commands.\nUse @agent for a direct reply; /orch off switches to direct chat.\nTab focuses the conversation; o expands a long reply. Ctrl+G jumps to a message.',
+        ? 'Welcome to agentctl. Type a task, or press F1 for commands.\nJump: F3 · Find: F4 · Expand long reply: o (empty input) or Ctrl+O · /orch off for direct chat.'
+        : 'Welcome to agentctl. Type a task, or press F1 for commands.\nExpand long reply: o (empty input) or Ctrl+O. Tab focuses transcript. /orch off for direct chat.',
     );
     refreshStatus();
     focusInput();
@@ -768,6 +776,10 @@ export async function startBlessedRepl(session: ReplSession): Promise<void> {
     input.on('keypress', (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean }) => {
       if (overlayOpen) return;
       if (key.ctrl || key.meta || ['enter', 'return', 'escape', 'tab', 'up', 'down'].includes(key.name ?? '')) return;
+      // Empty draft + `o` expands/collapses the last long reply (otherwise type normally).
+      if ((key.name === 'o' || ch === 'o') && !((input as unknown as InputBox).value ?? '')) {
+        if (toggleActiveMessage()) return;
+      }
       // Typing a new draft abandons history browse position.
       if (historyIndex !== -1 && ch && ch.length > 0) {
         historyIndex = -1;
