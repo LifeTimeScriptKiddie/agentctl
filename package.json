@@ -41,6 +41,7 @@
     "check": "tsc --noEmit && vitest run"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "commander": "^12.1.0",
     "execa": "^9.5.0",
     "neo-blessed": "^0.2.0",

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { registerUsageCommand } from './usage/command.js';
 import { registerMemoryCommands } from './memory/command.js';
 import { registerConfigCommands } from './config/command.js';
+import { registerJobsCommands } from './jobs/command.js';
 import { registerSetupCommands } from './setup/command.js';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
@@ -49,6 +50,18 @@ export function buildProgram(): Command {
   registerMemoryCommands(program);
   registerUsageCommand(program);
   registerConfigCommands(program);
+  registerJobsCommands(program);
+  program
+    .command('mcp')
+    .description('run agentctl as an MCP server on stdio (for Claude Code, Cursor, Codex, Pi)')
+    .option('--caller <agents>', 'the calling agent(s), kept out of routing (e.g. claude, cursor, codex, pi)')
+    .option('--allow-approve', 'expose approve/approve_context to the client (operator opt-in)', false)
+    .option('--max-wait <seconds>', 'longest a single tool call may block', '50')
+    .action(async (o: { caller?: string; allowApprove: boolean; maxWait: string }) => {
+      const { startMcpStdioServer } = await import('./mcp/server.js');
+      const caller = (o.caller ?? process.env.AGENTCTL_CALLER ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      await startMcpStdioServer({ caller, allowApprove: o.allowApprove, maxWaitSeconds: Number(o.maxWait) });
+    });
   program
     .name('agentctl')
     .description(

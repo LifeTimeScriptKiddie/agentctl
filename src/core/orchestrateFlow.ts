@@ -116,6 +116,12 @@ export interface RunOrchestrateGoalOpts {
   hooks?: OrchestrateHooks;
   shouldAbort?: () => boolean;
   signal?: AbortSignal;
+  /**
+   * Workers that must not receive steps — typically the calling agent itself
+   * (`--caller cursor`), so an agent that delegated work never gets it back.
+   * The orchestrator (planner/verifier) is chosen separately.
+   */
+  excludeAgents?: string[];
 }
 
 export async function runOrchestrateGoal(
@@ -126,7 +132,8 @@ export async function runOrchestrateGoal(
   const health = await registry.healthcheck();
   const approve = opts.approve ?? false;
   const enabledNames = registry.names().filter((name) => isAgentEnabled(prefs, name));
-  const workerNames = orchestrationWorkerNames(registry, enabledNames, approve);
+  const excluded = new Set(opts.excludeAgents ?? []);
+  const workerNames = orchestrationWorkerNames(registry, enabledNames, approve).filter((n) => !excluded.has(n));
   const agents: RouterAgent[] = workerNames.map((name) => ({
     name,
     capabilities: registry.get(name).capabilities(),
