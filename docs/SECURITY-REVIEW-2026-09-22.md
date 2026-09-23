@@ -399,7 +399,7 @@ I only read the code (Read/Grep/Glob). I didn't run `tsc` or `vitest`, and I did
 
 # Final verification pass (Opus 5.5, after S1–S7)
 
-Claude confirmed D by experiment: with the packaged claude argv, a `UserPromptSubmit` hook in a project `.claude/settings.json` ran a shell command; adding `--setting-sources user` stopped it. A `.cursor/hooks.json` hook did not run under `cursor-agent -p --mode ask` in the same test (not observed, not proven absent).
+Claude confirmed D by experiment: with the packaged claude argv, a `UserPromptSubmit` hook in a project `.claude/settings.json` ran a shell command; adding `--setting-sources user` stopped it. Correction: that first Cursor run (and a first Codex run) was invalid, because macOS has no `timeout` binary (exit 127). Re-run with stdin closed: a `.cursor/hooks.json` `beforeSubmitPrompt`/`stop` hook did not run under `cursor-agent -p --mode ask --trust`, and a project `.codex/config.toml` MCP server was not started by `codex exec -s read-only` in an untrusted repo. Both answered normally.
 
 I re-read the code on `arch-review-fixes` for this pass, using only Read, Grep and Glob. I didn't run `tsc` or `vitest`. S5–S7 closed all the High items. Three Medium gaps remain, plus one item that needs confirmation and could be High. Only the `run`-loop gap works in the default setup.
 
@@ -524,3 +524,16 @@ Fix A and confirm D before merging. The rest can follow.
   - `review.ts` parses the YAML and highlights by parsed key path (`commandTemplate`/`healthProbe`/`environment`), not by line regex.
   - Path warnings also cover bare repo-relative arguments that exist as files in the repo, and arguments with spaces.
   - Environment warnings also cover `NODE_OPTIONS`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `DYLD_*`, `PYTHONPATH` and `PYTHONSTARTUP`.
+
+
+## S8 status (implemented by Claude Opus 5.5 directly; Cursor's Opus quota was exhausted)
+
+- **D:** `claude.yaml` passes `--setting-sources user`. Verified end to end: `agentctl ask --to claude` inside a repo with a hostile `.claude/settings.json` hook answered normally and the hook did not run. Codex and Cursor findings are recorded in their preset comments.
+- **A:** the run-loop evaluator is gated too; read-only roles reject `canRunShell`/`canWriteFiles`; the candidate is quoted.
+- **B:** `util/listenerOwner.ts` (shared with the browser). The owner token is sent only to a loopback listener owned by this user; otherwise it is withheld with a warning.
+- **C:** `run_model` is owner-only unless the caller is in `AGENTCTL_SERVE_RUN_MODEL_USERS` (never anonymous). The agent must lack file, network and browser tools (`AGENTCTL_SERVE_MODEL_AGENT_ALLOW_TOOLS=1` overrides) and runs in an empty temp folder. `dry_run` declares no tools.
+- **E:** function replacers in planner templates and in `buildInvocation`. The second one was an argv bug found during S8.
+- **F:** REPL `/all` is scanned and skips gated lanes without `--approve`; the summarizer quotes the transcript and uses only a non-gated lane.
+- **G:** owner attribution is forced to the caller; self-commit needs `AGENTCTL_MEMORY_ALLOW_SELF_COMMIT=1`; legacy proposals need `AGENTCTL_MEMORY_ALLOW_LEGACY_ACCEPT=1`; the legacy shared token logs a deprecation warning.
+- **N8 residual:** highlighting uses the parsed YAML; warnings cover bare repo-relative scripts, spaced paths and code-loading environment variables.
+- **Not done:** codex/agy per-run MCP disabling. Neither CLI has a working flag; the TODOs stay.

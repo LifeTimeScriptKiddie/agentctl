@@ -32,6 +32,10 @@ models:
   flag: -m
   default: gpt-5.6-luna
   options: [gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol, gpt-6-astra, gpt-daybreak-blue-latest]
+# Project config (security review D, verified 2026-09-22, codex-cli 0.156.0):
+# in an untrusted repo a project .codex/config.toml MCP server was NOT started
+# by `codex exec -s read-only`. A repo the user marked trusted in ~/.codex may
+# load project config; do not mark untrusted clones as trusted.
 # TODO(security review N5): disable MCP servers for this read-only lane once a
 # flag is confirmed. `codex exec --help` (codex-cli 0.156.0) has no MCP switch;
 # `-c mcp_servers={}` is accepted but `codex mcp list -c 'mcp_servers={}'` still
