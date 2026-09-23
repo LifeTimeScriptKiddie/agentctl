@@ -2,7 +2,7 @@ import type { AdapterRequest, AdapterResult, AdapterCapabilities } from '../sche
 import type { Preset } from '../schema/agents.js';
 import type { AgentAdapter, HealthStatus, InvokeOptions } from './protocol.js';
 import { okResult, failResult } from './protocol.js';
-import { parseByMode, extractSessionId, extractUsage } from './parsers.js';
+import { providerErrorMessage, parseByMode, extractSessionId, extractUsage } from './parsers.js';
 import { run, type RunOptions } from '../util/exec.js';
 import {
   detectUsageLimit, nextModel, onLadder, addUsage, ZERO_USAGE, DEFAULT_COOLDOWN_MS,
@@ -265,7 +265,18 @@ export class SubprocessAdapter implements AgentAdapter {
       if (next === null) {
         // Nowhere left to step. Only relabel when this agent actually has a
         // ladder we walked; otherwise the original failure is the honest answer.
-        if (!onLadder(ladder, model)) return { ...result, usage };
+        if (!onLadder(ladder, model)) {
+          // No ladder to walk, but the detector saw a usage limit: label it so
+          // callers can fall back to another agent instead of retrying here.
+          const resets = limit.resetAt ? ` (resets ${limit.resetAt.toISOString()})` : '';
+          const reason = `usage limit hit on ${this.name}${model ? `/${model}` : ''}${resets}`;
+          return {
+            ...result,
+            usage,
+            failureClass: 'usage_limit',
+            stderr: [reason, result.stderr].filter((x) => x.trim()).join('\n'),
+          };
+        }
         const walked = [...skipped, ...tried].join(' → ');
         const reason = `usage limit hit on every model tried (${walked})`;
         return {
@@ -327,15 +338,19 @@ export class SubprocessAdapter implements AgentAdapter {
       // it reported: the ladder sums attempts, so dropping this under-bills the
       // walk. Also keep the JSON envelope — it carries the structured error
       // type the limit detector prefers over sniffing prose.
+      // Lead with the provider's own error (e.g. a usage-limit message in
+      // codex's JSON events) rather than incidental stderr chatter such as
+      // "Reading prompt from stdin...", so callers see the real cause.
+      const providerError = providerErrorMessage(outcome.stdout);
       return {
         ...failResult({
           adapter: this.name,
           transport: this.transport,
           failureClass: 'nonzero_exit',
           durationMs,
-          reason: `${this.name} exited ${outcome.exitCode}`,
+          reason: providerError ?? `${this.name} exited ${outcome.exitCode}`,
           stdout: outcome.stdout,
-          stderr: outcome.stderr,
+          stderr: providerError ? [providerError, outcome.stderr].filter((x) => x.trim()).join('\n') : outcome.stderr,
           exitCode: outcome.exitCode,
           model,
           steppedDown,

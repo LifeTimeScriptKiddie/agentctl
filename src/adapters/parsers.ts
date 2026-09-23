@@ -219,6 +219,46 @@ export function extractModelUsage(mode: ParseMode, json: Record<string, unknown>
     attribution: reported ? 'reported' : requestedModel ? 'requested' : 'unknown', usage}];
 }
 
+/**
+ * The provider's own error message from a failed call's stdout, if it printed
+ * one as JSON: codex JSONL (`{type:"error",message}` / `{type:"turn.failed",
+ * error:{message}}`), or a claude/cursor envelope with `is_error: true`.
+ * Item-level notices (codex `item.completed` errors such as config warnings)
+ * are ignored. Returns the last top-level error, or null.
+ */
+export function providerErrorMessage(stdout: string): string | null {
+  let found: string | null = null;
+  const consider = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const o = value as Record<string, unknown>;
+    if (o.type === 'error' && typeof o.message === 'string') found = o.message;
+    else if (o.type === 'turn.failed') {
+      const err = o.error as { message?: unknown } | undefined;
+      if (typeof err?.message === 'string') found = err.message;
+    } else if (o.is_error === true && typeof o.result === 'string' && o.result.trim()) found = o.result;
+  };
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+  try {
+    const whole = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(whole)) whole.forEach(consider);
+    else consider(whole);
+    return found;
+  } catch {
+    /* not a single JSON document: fall through to JSON lines */
+  }
+  for (const line of trimmed.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{')) continue;
+    try {
+      consider(JSON.parse(t) as unknown);
+    } catch {
+      /* skip non-JSON lines */
+    }
+  }
+  return found;
+}
+
 export function parseByMode(mode: ParseMode, stdout: string): ParseResult {
   switch (mode) {
     case 'cursor_json':

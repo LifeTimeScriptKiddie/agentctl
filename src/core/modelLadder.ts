@@ -10,7 +10,7 @@ import { NULL_USAGE } from '../schema/result.js';
  * discuss rate limiting can never trigger a step-down.
  */
 const USAGE_LIMIT_RE =
-  /(usage limit reached|limit reached|rate[ _-]?limit|quota (?:exceeded|exhausted)|out of (?:credits|quota)|insufficient (?:credits|quota)|too many requests|\b429\b|upgrade to increase|weekly cap|resets? at)/i;
+  /(usage limit reached|(?:hit|reached|exceeded) (?:your |the )?usage limit|limit reached|rate[ _-]?limit|quota (?:exceeded|exhausted)|out of (?:credits|quota)|insufficient (?:credits|quota)|too many requests|\b429\b|upgrade to increase|weekly cap|resets? at|try again (?:at|in) )/i;
 
 /** Error types/codes that mean "this tier is spent", not "this request was bad". */
 const LIMIT_ERROR_TYPES = new Set([

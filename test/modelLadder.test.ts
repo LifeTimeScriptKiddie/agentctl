@@ -203,7 +203,24 @@ describe('SubprocessAdapter step-down', () => {
     const r = await adapter.invoke(req({ model: 'composer-2.5' }));
 
     expect(runMock).toHaveBeenCalledTimes(1);
-    expect(r.failureClass).toBe('nonzero_exit');
+    // Still no step-down, but the detected limit is labeled so callers can fall back.
+    expect(r.failureClass).toBe('usage_limit');
+    expect(r.stderr).toMatch(/^usage limit hit on cursor\/composer-2\.5/);
+  });
+
+  it('reports codex\'s JSON usage-limit event instead of stderr chatter', async () => {
+    const events = [
+      '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 2 unrecognized configuration settings."}}',
+      '{"type":"turn.started"}',
+      '{"type":"error","message":"You’ve hit your usage limit. Try again at 5:38 PM."}',
+      '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again at 5:38 PM."}}',
+    ].join('\n');
+    runMock.mockResolvedValue({ exitCode: 1, stdout: events, stderr: 'Reading prompt from stdin...', timedOut: false, failed: true });
+    const r = await new SubprocessAdapter(loadPreset('codex')).invoke(req({ model: 'gpt-5.6-luna' }));
+    expect(r.failureClass).toBe('usage_limit');
+    expect(r.stderr.split('\n')[0]).toMatch(/^usage limit hit on codex\/gpt-5\.6-luna/);
+    expect(r.stderr).toContain('You’ve hit your usage limit');
+    expect(r.stderr).not.toMatch(/^Reading prompt/);
   });
 });
 
