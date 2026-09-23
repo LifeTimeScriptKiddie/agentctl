@@ -368,6 +368,173 @@ export function registerMemoryCommands(program: Command): void {
         process.exitCode = 1;
       }
     });
+
+  memory.command('kb')
+    .description('tiered Markdown knowledge-base scaffold under $AGENTCTL_HOME/kb')
+    .command('init')
+    .description('create playbook/technique/engagement tree + evidence vault dir (pointers only; no secrets)')
+    .action(async () => {
+      try {
+        const { initTeamKb } = await import('./teamKb.js');
+        console.log(JSON.stringify(initTeamKb(), null, 2));
+      } catch (e) {
+        console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        process.exitCode = 1;
+      }
+    });
+
+  const evidence = memory.command('evidence')
+    .description('evidence pointers (vault paths / hashes / ticket URLs — never raw artifacts or secrets)');
+  const evidenceAdd = evidence.command('add')
+    .requiredOption('--workspace <id>')
+    .requiredOption('--label <text>')
+    .requiredOption('--uri <pointer>', 'vault path, file URI, or https URL')
+    .requiredOption('--source <reference>')
+    .option('--sha256 <hex>', 'optional content hash')
+    .option('--content-type <type>', 'optional MIME / kind label')
+    .option('--key <key>', 'idempotency key');
+  authOptions(evidenceAdd);
+  memoryAccessOptions(evidenceAdd);
+  evidenceAdd.action(async o => run(async s => s.registerEvidence({
+    workspace: o.workspace,
+    label: o.label,
+    uri: o.uri,
+    source: o.source,
+    sha256: o.sha256,
+    contentType: o.contentType,
+    key: o.key,
+    ...parseSaveAccess(o),
+  }), o));
+  const evidenceShow = evidence.command('show').argument('<id>').requiredOption('--workspace <id>');
+  authOptions(evidenceShow);
+  evidenceShow.action(async (id, o) => run(async s => ({ evidence: await Promise.resolve(s.getEvidence(o.workspace, id)) }), o));
+  const evidenceList = evidence.command('list').requiredOption('--workspace <id>');
+  authOptions(evidenceList);
+  evidenceList.action(async o => run(async s => ({ evidence: await Promise.resolve(s.listEvidence(o.workspace)) }), o));
+
+  const finding = memory.command('finding')
+    .description('structured findings tracker (ownership, severity, remediation, evidence links)');
+  const findingCreate = finding.command('create')
+    .requiredOption('--workspace <id>')
+    .requiredOption('--title <text>')
+    .requiredOption('--source <reference>')
+    .option('--finding-key <id>', 'human id e.g. RT-2026-014 (auto if omitted)')
+    .option('--engagement <text>')
+    .option('--severity <level>', 'critical|high|medium|low|info', 'medium')
+    .option('--business-impact <text>')
+    .option('--affected-scope <text>')
+    .option('--attack-path <text>', 'short non-sensitive narrative')
+    .option('--evidence <ids>', 'comma-separated evidence pointer UUIDs', '')
+    .option('--attck <ids>', 'comma-separated ATT&CK technique ids', '')
+    .option('--detection <result>', 'detected|partially_detected|not_detected|not_tested', 'not_tested')
+    .option('--remediation-owner <name>', 'remediation owner display name')
+    .option('--remediation <text>')
+    .option('--due <YYYY-MM-DD>')
+    .option('--retest <result>', 'open|fixed_pending_validation|validated|risk_accepted', 'open')
+    .option('--retention <YYYY-MM-DD>')
+    .option('--status <status>', 'draft|open|in_remediation|closed', 'draft')
+    .option('--key <key>', 'idempotency key');
+  authOptions(findingCreate);
+  memoryAccessOptions(findingCreate);
+  findingCreate.action(async o => run(async s => s.saveFinding({
+    workspace: o.workspace,
+    title: o.title,
+    source: o.source,
+    findingKey: o.findingKey,
+    engagement: o.engagement,
+    severity: o.severity,
+    businessImpact: o.businessImpact,
+    affectedScope: o.affectedScope,
+    attackPathSummary: o.attackPath,
+    evidenceRefs: o.evidence ? o.evidence.split(',').map((v: string) => v.trim()).filter(Boolean) : [],
+    attckMapping: o.attck ? o.attck.split(',').map((v: string) => v.trim()).filter(Boolean) : [],
+    detectionResult: o.detection,
+    owner: o.remediationOwner,
+    remediation: o.remediation,
+    dueDate: o.due,
+    retestResult: o.retest,
+    retentionDate: o.retention,
+    status: o.status,
+    key: o.key,
+    ...parseSaveAccess(o),
+  }), o));
+  const findingShow = finding.command('show').argument('<id-or-key>').requiredOption('--workspace <id>');
+  authOptions(findingShow);
+  findingShow.action(async (id, o) => run(async s => ({ finding: await Promise.resolve(s.getFinding(o.workspace, id)) }), o));
+  const findingList = finding.command('list').requiredOption('--workspace <id>')
+    .option('--status <status>')
+    .option('--severity <level>');
+  authOptions(findingList);
+  findingList.action(async o => run(async s => ({
+    findings: await Promise.resolve(s.listFindings(o.workspace, { status: o.status, severity: o.severity })),
+  }), o));
+  const findingUpdate = finding.command('update')
+    .argument('<id>')
+    .requiredOption('--workspace <id>')
+    .requiredOption('--revision <n>')
+    .requiredOption('--source <reference>')
+    .option('--title <text>')
+    .option('--engagement <text>')
+    .option('--severity <level>')
+    .option('--business-impact <text>')
+    .option('--affected-scope <text>')
+    .option('--attack-path <text>')
+    .option('--evidence <ids>', 'replace evidence pointer list')
+    .option('--attck <ids>')
+    .option('--detection <result>')
+    .option('--remediation-owner <name>')
+    .option('--remediation <text>')
+    .option('--due <YYYY-MM-DD>')
+    .option('--retest <result>')
+    .option('--retention <YYYY-MM-DD>')
+    .option('--status <status>')
+    .option('--allowed-groups <list>', 'replace ACL groups')
+    .option('--classification <level>')
+    .option('--visibility <scope>')
+    .option('--acl-owner <userId>', 'ACL owner_user_id');
+  authOptions(findingUpdate);
+  findingUpdate.action(async (id, o) => run(async s => s.updateFinding({
+    id,
+    workspace: o.workspace,
+    revision: Number(o.revision),
+    source: o.source,
+    title: o.title,
+    engagement: o.engagement,
+    severity: o.severity,
+    businessImpact: o.businessImpact,
+    affectedScope: o.affectedScope,
+    attackPathSummary: o.attackPath,
+    evidenceRefs: o.evidence === undefined
+      ? undefined
+      : o.evidence.split(',').map((v: string) => v.trim()).filter(Boolean),
+    attckMapping: o.attck === undefined
+      ? undefined
+      : o.attck.split(',').map((v: string) => v.trim()).filter(Boolean),
+    detectionResult: o.detection,
+    owner: o.remediationOwner,
+    remediation: o.remediation,
+    dueDate: o.due,
+    retestResult: o.retest,
+    retentionDate: o.retention,
+    status: o.status,
+    allowedGroups: o.allowedGroups === undefined
+      ? undefined
+      : o.allowedGroups.split(',').map((v: string) => v.trim()).filter(Boolean),
+    classification: o.classification,
+    visibility: o.visibility,
+    ownerUserId: o.aclOwner === undefined ? undefined : o.aclOwner,
+  }), o));
+  const findingLink = finding.command('link-evidence')
+    .argument('<finding-id>')
+    .requiredOption('--workspace <id>')
+    .requiredOption('--evidence <uuid>')
+    .requiredOption('--revision <n>')
+    .requiredOption('--source <reference>');
+  authOptions(findingLink);
+  findingLink.action(async (id, o) => run(async s => s.linkEvidenceToFinding(
+    o.workspace, id, o.evidence, Number(o.revision), o.source,
+  ), o));
+
   const sessiongraph = memory.command('sessiongraph')
     .description('Nightly memory-plane export + external SessionGraph analysis (set AGENTCTL_SESSIONGRAPH_ROOT)');
   sessiongraph.command('export')

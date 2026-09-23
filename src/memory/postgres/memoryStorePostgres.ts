@@ -33,11 +33,23 @@ import type {
   TaskCheckpointInput,
 } from '../store.js';
 import { memoryInputSchema } from '../store.js';
+import {
+  type EvidencePointer,
+  type EvidencePointerInput,
+  type Finding,
+  type FindingInput,
+  type FindingUpdateInput,
+  findingUpdateSchema,
+  nextFindingKey,
+  validateEvidencePointerInput,
+  validateFindingInput,
+} from '../teamKb.js';
 import { assertPostgresConfig } from '../backendConfig.js';
 import { runPostgresMigrations } from './migrate.js';
 import { loadPgPool, sqliteFtsMatchToTsQuery, type PgPool, type PgQueryable } from './pgClient.js';
 
 const label = z.string().trim().min(1).max(200);
+const classificationEnum = z.enum(['public', 'internal', 'confidential']);
 
 function jsonField(value: unknown): unknown {
   if (value === null || value === undefined) return value;
@@ -46,7 +58,6 @@ function jsonField(value: unknown): unknown {
 }
 
 function decodeRow(row: Record<string, unknown>): Memory {
-  const classification = z.enum(['public', 'internal', 'confidential']);
   return {
     id: String(row.id),
     workspace: String(row.workspace),
@@ -59,9 +70,57 @@ function decodeRow(row: Record<string, unknown>): Memory {
     kind: String(row.kind ?? 'decision'),
     ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
     allowedGroups: jsonField(row.allowed_groups ?? '[]') as string[],
-    classification: classification.parse(row.classification ?? 'internal'),
+    classification: classificationEnum.parse(row.classification ?? 'internal'),
     visibility: (row.visibility === 'private' ? 'private' : 'team') as Memory['visibility'],
     proposedBy: row.proposed_by ? String(row.proposed_by) : null,
+    evidenceRefs: (jsonField(row.evidence_refs ?? '[]') as string[]) ?? [],
+  };
+}
+
+function decodeEvidence(row: Record<string, unknown>): EvidencePointer {
+  return {
+    id: String(row.id),
+    workspace: String(row.workspace),
+    label: String(row.label),
+    uri: String(row.uri),
+    sha256: row.sha256 ? String(row.sha256) : null,
+    contentType: row.content_type ? String(row.content_type) : null,
+    classification: classificationEnum.parse(row.classification ?? 'confidential'),
+    ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
+    allowedGroups: (jsonField(row.allowed_groups ?? '[]') as string[]) ?? [],
+    visibility: (row.visibility === 'private' ? 'private' : 'team') as EvidencePointer['visibility'],
+    source: String(row.source),
+    createdAt: Number(row.created_at),
+  };
+}
+
+function decodeFinding(row: Record<string, unknown>): Finding {
+  return {
+    id: String(row.id),
+    findingKey: String(row.finding_key),
+    workspace: String(row.workspace),
+    revision: Number(row.revision),
+    title: String(row.title),
+    engagement: row.engagement ? String(row.engagement) : null,
+    severity: row.severity as Finding['severity'],
+    businessImpact: row.business_impact ? String(row.business_impact) : null,
+    affectedScope: row.affected_scope ? String(row.affected_scope) : null,
+    attackPathSummary: row.attack_path_summary ? String(row.attack_path_summary) : null,
+    evidenceRefs: (jsonField(row.evidence_refs ?? '[]') as string[]) ?? [],
+    attckMapping: (jsonField(row.attck_mapping ?? '[]') as string[]) ?? [],
+    detectionResult: row.detection_result as Finding['detectionResult'],
+    owner: row.owner ? String(row.owner) : null,
+    remediation: row.remediation ? String(row.remediation) : null,
+    dueDate: row.due_date ? String(row.due_date) : null,
+    retestResult: row.retest_result as Finding['retestResult'],
+    retentionDate: row.retention_date ? String(row.retention_date) : null,
+    status: row.status as Finding['status'],
+    classification: classificationEnum.parse(row.classification ?? 'confidential'),
+    ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
+    allowedGroups: (jsonField(row.allowed_groups ?? '[]') as string[]) ?? [],
+    visibility: (row.visibility === 'private' ? 'private' : 'team') as Finding['visibility'],
+    source: String(row.source),
+    updatedAt: Number(row.updated_at),
   };
 }
 
@@ -227,13 +286,14 @@ export class PostgresMemoryStore {
       await client.query(
         `INSERT INTO memories
           (id, workspace, revision, text, source, providers, state, updated_at, request_key, initial_input,
-           kind, owner_user_id, allowed_groups, classification, visibility, proposed_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+           kind, owner_user_id, allowed_groups, classification, visibility, proposed_by, evidence_refs)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
         [
           id, input.workspace, 1, input.text, input.source, JSON.stringify(input.providers),
           input.state, Date.now(), input.key, serialized,
           input.kind, input.ownerUserId ?? null, JSON.stringify(input.allowedGroups),
           input.classification, input.visibility, this.auth?.userId ?? null,
+          JSON.stringify(input.evidenceRefs ?? []),
         ],
       );
       await this.snapshot(client, id);
@@ -664,6 +724,248 @@ export class PostgresMemoryStore {
         forgottenTotal,
         checkpoints,
       };
+    });
+  }
+
+  async registerEvidence(raw: EvidencePointerInput): Promise<EvidencePointer> {
+    operatorOnly();
+    const input = validateEvidencePointerInput(raw);
+    input.allowedGroups = [...new Set(input.allowedGroups)].sort();
+    if (input.visibility === 'private') {
+      input.ownerUserId = input.ownerUserId ?? this.auth?.userId ?? null;
+      if (!input.ownerUserId) throw new Error('Private evidence requires --owner or AGENTCTL_USER_ID.');
+    }
+    assertCanWriteScope(
+      { visibility: input.visibility, ownerUserId: input.ownerUserId ?? null },
+      this.auth,
+    );
+    const key = input.key ?? randomUUID();
+    return this.transaction(async (client) => {
+      const existing = await client.query(
+        'SELECT * FROM evidence_pointers WHERE workspace = $1 AND request_key = $2',
+        [input.workspace, key],
+      );
+      if (existing.rows[0]) return decodeEvidence(existing.rows[0]);
+      const id = randomUUID();
+      await client.query(
+        `INSERT INTO evidence_pointers
+          (id, workspace, label, uri, sha256, content_type, classification, owner_user_id,
+           allowed_groups, visibility, source, request_key, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [
+          id, input.workspace, input.label, input.uri, input.sha256 ?? null, input.contentType ?? null,
+          input.classification, input.ownerUserId ?? null, JSON.stringify(input.allowedGroups),
+          input.visibility, input.source, key, Date.now(),
+        ],
+      );
+      const { rows } = await client.query(
+        'SELECT * FROM evidence_pointers WHERE workspace = $1 AND id = $2',
+        [input.workspace, id],
+      );
+      return decodeEvidence(rows[0]!);
+    });
+  }
+
+  async getEvidence(workspace: string, id: string): Promise<EvidencePointer | null> {
+    operatorOnly();
+    label.parse(workspace); label.parse(id);
+    return this.withClient(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM evidence_pointers WHERE workspace = $1 AND id = $2',
+        [workspace, id],
+      );
+      if (!rows[0]) return null;
+      const pointer = decodeEvidence(rows[0]);
+      if (!canReadMemory(pointer, this.auth)) return null;
+      return pointer;
+    });
+  }
+
+  async listEvidence(workspace: string): Promise<EvidencePointer[]> {
+    operatorOnly();
+    label.parse(workspace);
+    return this.withClient(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM evidence_pointers WHERE workspace = $1 ORDER BY created_at DESC',
+        [workspace],
+      );
+      return rows.map(decodeEvidence).filter(p => canReadMemory(p, this.auth));
+    });
+  }
+
+  async saveFinding(raw: FindingInput): Promise<Finding> {
+    operatorOnly();
+    const input = validateFindingInput(raw);
+    input.allowedGroups = [...new Set(input.allowedGroups)].sort();
+    input.attckMapping = [...new Set(input.attckMapping)].sort();
+    input.evidenceRefs = [...new Set(input.evidenceRefs)];
+    if (input.visibility === 'private') {
+      input.ownerUserId = input.ownerUserId ?? this.auth?.userId ?? null;
+      if (!input.ownerUserId) throw new Error('Private finding requires --owner or AGENTCTL_USER_ID.');
+    }
+    assertCanWriteScope(
+      { visibility: input.visibility, ownerUserId: input.ownerUserId ?? null },
+      this.auth,
+    );
+    for (const evidenceId of input.evidenceRefs) {
+      if (!(await this.getEvidence(input.workspace, evidenceId))) {
+        throw new Error(`Unknown or inaccessible evidence pointer: ${evidenceId}`);
+      }
+    }
+    const key = input.key ?? randomUUID();
+    return this.transaction(async (client) => {
+      const existing = await client.query(
+        'SELECT * FROM findings WHERE workspace = $1 AND request_key = $2',
+        [input.workspace, key],
+      );
+      if (existing.rows[0]) return decodeFinding(existing.rows[0]);
+      const keysRes = await client.query(
+        'SELECT finding_key FROM findings WHERE workspace = $1',
+        [input.workspace],
+      );
+      const keys = keysRes.rows.map(r => String(r.finding_key));
+      const findingKey = input.findingKey ?? nextFindingKey(keys);
+      if (keys.includes(findingKey)) throw new Error(`Finding key already exists: ${findingKey}`);
+      const id = randomUUID();
+      await client.query(
+        `INSERT INTO findings
+          (id, finding_key, workspace, revision, title, engagement, severity, business_impact,
+           affected_scope, attack_path_summary, evidence_refs, attck_mapping, detection_result,
+           owner, remediation, due_date, retest_result, retention_date, status, classification,
+           owner_user_id, allowed_groups, visibility, source, request_key, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+        [
+          id, findingKey, input.workspace, 1, input.title, input.engagement ?? null, input.severity,
+          input.businessImpact ?? null, input.affectedScope ?? null, input.attackPathSummary ?? null,
+          JSON.stringify(input.evidenceRefs), JSON.stringify(input.attckMapping), input.detectionResult,
+          input.owner ?? null, input.remediation ?? null, input.dueDate ?? null, input.retestResult,
+          input.retentionDate ?? null, input.status, input.classification, input.ownerUserId ?? null,
+          JSON.stringify(input.allowedGroups), input.visibility, input.source, key, Date.now(),
+        ],
+      );
+      const { rows } = await client.query(
+        'SELECT * FROM findings WHERE workspace = $1 AND id = $2',
+        [input.workspace, id],
+      );
+      return decodeFinding(rows[0]!);
+    });
+  }
+
+  async getFinding(workspace: string, idOrKey: string): Promise<Finding | null> {
+    operatorOnly();
+    label.parse(workspace); label.parse(idOrKey);
+    return this.withClient(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM findings WHERE workspace = $1 AND (id = $2 OR finding_key = $2)',
+        [workspace, idOrKey],
+      );
+      if (!rows[0]) return null;
+      const finding = decodeFinding(rows[0]);
+      if (!canReadMemory(finding, this.auth)) return null;
+      return finding;
+    });
+  }
+
+  async listFindings(workspace: string, opts: { status?: string; severity?: string } = {}): Promise<Finding[]> {
+    operatorOnly();
+    label.parse(workspace);
+    return this.withClient(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM findings WHERE workspace = $1 ORDER BY updated_at DESC',
+        [workspace],
+      );
+      return rows.map(decodeFinding)
+        .filter(f => canReadMemory(f, this.auth))
+        .filter(f => !opts.status || f.status === opts.status)
+        .filter(f => !opts.severity || f.severity === opts.severity);
+    });
+  }
+
+  async updateFinding(raw: FindingUpdateInput): Promise<Finding> {
+    operatorOnly();
+    const patch = findingUpdateSchema.parse(raw);
+    return this.transaction(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM findings WHERE workspace = $1 AND id = $2',
+        [patch.workspace, patch.id],
+      );
+      if (!rows[0]) throw new Error('Finding not found.');
+      const current = decodeFinding(rows[0]);
+      if (!canReadMemory(current, this.auth)) throw new Error('Finding not found.');
+      if (current.revision !== patch.revision) throw new Error('Revision conflict');
+      const merged: FindingInput = {
+        workspace: patch.workspace,
+        findingKey: patch.findingKey ?? current.findingKey,
+        title: patch.title ?? current.title,
+        engagement: patch.engagement === undefined ? (current.engagement ?? undefined) : patch.engagement,
+        severity: patch.severity ?? current.severity,
+        businessImpact: patch.businessImpact === undefined
+          ? (current.businessImpact ?? undefined) : patch.businessImpact,
+        affectedScope: patch.affectedScope === undefined
+          ? (current.affectedScope ?? undefined) : patch.affectedScope,
+        attackPathSummary: patch.attackPathSummary === undefined
+          ? (current.attackPathSummary ?? undefined) : patch.attackPathSummary,
+        evidenceRefs: patch.evidenceRefs ?? current.evidenceRefs,
+        attckMapping: patch.attckMapping ?? current.attckMapping,
+        detectionResult: patch.detectionResult ?? current.detectionResult,
+        owner: patch.owner === undefined ? (current.owner ?? undefined) : patch.owner,
+        remediation: patch.remediation === undefined
+          ? (current.remediation ?? undefined) : patch.remediation,
+        dueDate: patch.dueDate === undefined ? (current.dueDate ?? undefined) : patch.dueDate,
+        retestResult: patch.retestResult ?? current.retestResult,
+        retentionDate: patch.retentionDate === undefined
+          ? (current.retentionDate ?? undefined) : patch.retentionDate,
+        status: patch.status ?? current.status,
+        classification: patch.classification ?? current.classification,
+        ownerUserId: patch.ownerUserId === undefined ? current.ownerUserId : patch.ownerUserId,
+        allowedGroups: patch.allowedGroups ?? current.allowedGroups,
+        visibility: patch.visibility ?? current.visibility,
+        source: patch.source,
+      };
+      const input = validateFindingInput(merged);
+      for (const evidenceId of input.evidenceRefs) {
+        const ev = await client.query(
+          'SELECT * FROM evidence_pointers WHERE workspace = $1 AND id = $2',
+          [input.workspace, evidenceId],
+        );
+        if (!ev.rows[0] || !canReadMemory(decodeEvidence(ev.rows[0]), this.auth)) {
+          throw new Error(`Unknown or inaccessible evidence pointer: ${evidenceId}`);
+        }
+      }
+      await client.query(
+        `UPDATE findings SET
+          revision=$1, title=$2, engagement=$3, severity=$4, business_impact=$5, affected_scope=$6,
+          attack_path_summary=$7, evidence_refs=$8, attck_mapping=$9, detection_result=$10, owner=$11,
+          remediation=$12, due_date=$13, retest_result=$14, retention_date=$15, status=$16,
+          classification=$17, owner_user_id=$18, allowed_groups=$19, visibility=$20, source=$21, updated_at=$22
+         WHERE workspace=$23 AND id=$24`,
+        [
+          current.revision + 1, input.title, input.engagement ?? null, input.severity,
+          input.businessImpact ?? null, input.affectedScope ?? null, input.attackPathSummary ?? null,
+          JSON.stringify(input.evidenceRefs), JSON.stringify(input.attckMapping), input.detectionResult,
+          input.owner ?? null, input.remediation ?? null, input.dueDate ?? null, input.retestResult,
+          input.retentionDate ?? null, input.status, input.classification, input.ownerUserId ?? null,
+          JSON.stringify(input.allowedGroups), input.visibility, input.source, Date.now(),
+          patch.workspace, patch.id,
+        ],
+      );
+      const updated = await client.query(
+        'SELECT * FROM findings WHERE workspace = $1 AND id = $2',
+        [patch.workspace, patch.id],
+      );
+      return decodeFinding(updated.rows[0]!);
+    });
+  }
+
+  async linkEvidenceToFinding(
+    workspace: string, findingId: string, evidenceId: string, revision: number, source: string,
+  ): Promise<Finding> {
+    const finding = await this.getFinding(workspace, findingId);
+    if (!finding) throw new Error('Finding not found.');
+    if (!(await this.getEvidence(workspace, evidenceId))) throw new Error('Evidence pointer not found.');
+    const refs = [...new Set([...finding.evidenceRefs, evidenceId])];
+    return this.updateFinding({
+      workspace, id: finding.id, revision, source, evidenceRefs: refs,
     });
   }
 }

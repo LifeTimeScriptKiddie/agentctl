@@ -129,7 +129,16 @@ describe('sqlite proposedBy and self-accept', () => {
     store.close();
 
     const check = new DatabaseSync(path);
-    expect(Number(check.prepare('PRAGMA user_version').get()?.user_version)).toBe(4);
+    expect(Number(check.prepare('PRAGMA user_version').get()?.user_version)).toBe(5);
+    const memoryCols = new Set(
+      (check.prepare(`SELECT name FROM pragma_table_info('memories')`).all() as Array<{ name: string }>)
+        .map(c => c.name),
+    );
+    expect(memoryCols.has('proposed_by')).toBe(true);
+    expect(memoryCols.has('evidence_refs')).toBe(true);
+    expect(
+      check.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='findings'").get(),
+    ).toBeTruthy();
     check.close();
     // reopening an up-to-date database is a no-op
     (await MemoryStore.open(path, { auth: null })).close();

@@ -48,6 +48,16 @@ kinds:
     description: Tools, procedures, tradecraft notes (short claims)
     default_workspace: team-techniques
     briefing_default: true
+  playbook:
+    label: Playbook / methodology
+    description: Pointer to an approved Markdown playbook page under $AGENTCTL_HOME/kb
+    default_workspace: team-playbooks
+    briefing_default: true
+  lesson:
+    label: Lesson learned
+    description: Sanitized reusable observation (no client-sensitive detail)
+    default_workspace: team-lessons
+    briefing_default: true
   preference:
     label: Explicit preference
     briefing_default: false
