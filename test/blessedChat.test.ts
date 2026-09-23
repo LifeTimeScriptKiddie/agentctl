@@ -5,6 +5,43 @@ import { startBlessedRepl } from '../src/tui/blessedChat.js';
 import { ReplSession } from '../src/repl.js';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 
+it('types initial o normally unless a long reply can be toggled', async () => {
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 30, isTTY: true });
+  output.resume();
+  const factory = blessed.screen;
+  let screen: blessed.Widgets.Screen;
+  const spy = vi.spyOn(blessed, 'screen').mockImplementation((options) => {
+    screen = factory({ ...options, input, output, terminal: 'xterm-256color' });
+    return screen;
+  });
+  const session = new ReplSession(AdapterRegistry.fromPackaged(), { orchMode: false });
+  const running = startBlessedRepl(session);
+  const key = (ch: string, name = ch, full = name) =>
+    screen!.program.emit('keypress', ch, { name, full });
+  try {
+    await new Promise(setImmediate);
+    const editor = screen!.children.find((child) => child.type === 'textarea') as blessed.Widgets.TextareaElement;
+    const ui = (session as unknown as { ui: { onAssistant?: (agent: string, text: string) => void } }).ui;
+    ui.onAssistant?.('codex', 'short reply');
+    for (const ch of 'ok thanks') key(ch);
+    expect(editor.getValue()).toBe('ok thanks');
+    editor.setValue('');
+    ui.onAssistant?.('codex', Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n'));
+    key('o');
+    expect(editor.getValue()).toBe('');
+    editor.setValue('hell');
+    key('o');
+    expect(editor.getValue()).toBe('hello');
+  } finally {
+    key('\x03', 'c', 'C-c');
+    await running;
+    spy.mockRestore();
+    input.destroy();
+    output.destroy();
+  }
+});
+
 it('jump and search overlays accept keyboard input', async () => {
   const input = new PassThrough();
   const output = Object.assign(new PassThrough(), { columns: 100, rows: 30, isTTY: true });

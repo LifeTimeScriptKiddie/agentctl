@@ -239,7 +239,7 @@ export function displayRowToSource(
   return sourceLineForDisplay[displayRow] ?? displayRow;
 }
 
-/** Choose the long message affected by `o`: clicked line first, then a visible collapsed reply. */
+/** Choose the long message affected by `o`: clicked line, else last long assistant reply. */
 export function pickCollapseTarget(
   buffer: TranscriptBuffer,
   activeSourceLine: number | null,
@@ -248,6 +248,13 @@ export function pickCollapseTarget(
   visibleRows: number,
 ): number {
   if (activeSourceLine != null) return activeSourceLine;
+  const msgs = buffer.messageList;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.role === 'assistant' && m.lineCount > TranscriptBuffer.COLLAPSE_LINES) {
+      return m.startLine;
+    }
+  }
   const end = Math.min(sourceLineForDisplay.length, displayBase + visibleRows);
   return sourceLineForDisplay
     .slice(displayBase, end)

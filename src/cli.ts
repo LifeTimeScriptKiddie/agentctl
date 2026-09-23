@@ -49,7 +49,6 @@ export function buildProgram(): Command {
   registerMemoryCommands(program);
   registerUsageCommand(program);
   registerConfigCommands(program);
-  const defaultOrch = resolveDefaultOrchestrator().agent;
   program
     .name('agentctl')
     .description(
@@ -112,13 +111,13 @@ export function buildProgram(): Command {
     .option('--max-replans <n>', 'revise the plan up to N times on a step failure', '0')
     .option('--resume', 'continue a prior run of this goal, skipping passed steps', false)
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '180')
-    .option('--orchestrator <agent>', `agent for plan/verify/synth (default: ${defaultOrch})`, defaultOrch)
+    .option('--orchestrator <agent>', 'agent for plan/verify/synth (defaults to preferences, otherwise codex)')
     .option('--orchestrator-model <model>', 'model override (otherwise the selected agent uses its configured default)')
     .option('--backup', 'use orchestratorBackup from preferences (stronger/expensive model)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (goalArg: string | undefined, opts: {
       dryPlan: boolean; synth: boolean; approve: boolean; budget?: string; maxReplans: string;
-      resume: boolean; timeout: string; orchestrator: string; orchestratorModel?: string; backup: boolean; format: string;
+      resume: boolean; timeout: string; orchestrator?: string; orchestratorModel?: string; backup: boolean; format: string;
     }) => {
       const goal = (goalArg ?? (await readStdin())).trim();
       if (!goal) {
@@ -128,16 +127,17 @@ export function buildProgram(): Command {
       }
       let orchAgent = opts.orchestrator;
       let orchModel = opts.orchestratorModel;
-      if (opts.backup) {
+      if (opts.backup && !opts.orchestrator) {
         const backup = resolveBackupOrchestrator();
         if (!backup) {
-          stdio.err('no orchestratorBackup in preferences — run `agentctl setup` (or pass --orchestrator-model)');
+          stdio.err('no orchestratorBackup in preferences — run `agentctl setup` (or pass --orchestrator)');
           process.exitCode = 2;
           return;
         }
         orchAgent = backup.agent;
-        orchModel = backup.model ?? undefined;
+        orchModel = opts.orchestratorModel ?? backup.model ?? undefined;
       }
+      orchAgent ??= resolveDefaultOrchestrator().agent;
       process.exitCode = await cmdOrchestrate(
         loadRegistry(),
         {
