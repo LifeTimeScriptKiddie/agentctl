@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { LoopTaskRef } from '../core/orchestrateLoop.js';
 import { fileURLToPath } from 'node:url';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { agentAsk, agentDelegate, agentOrchestrate } from '../api.js';
@@ -34,6 +35,13 @@ export interface JobInput {
   approveContext?: boolean;
   briefingWorkspace?: string;
   excludeAgents?: string[];
+  /** Orchestrate only: 'strict' selects plan→verify; default is the loop engine. */
+  engine?: 'loop' | 'strict';
+}
+
+/** Graph node ids only (never instruction text). */
+function taskFields(task: LoopTaskRef | undefined): Record<string, unknown> {
+  return task ? { task: task.id, round: task.round, dependsOn: task.dependsOn } : {};
 }
 
 /** Content-free worker outcome for job events (no prompt or answer text). */
@@ -124,6 +132,7 @@ export async function runJob(
         ...(input.budgetUsd != null ? { budgetUsd: input.budgetUsd } : {}),
         ...(input.maxReplans != null ? { maxReplans: input.maxReplans } : {}),
         ...(input.excludeAgents?.length ? { excludeAgents: input.excludeAgents } : {}),
+        ...(input.engine ? { engine: input.engine } : {}),
         signal,
         hooks: {
           onOrchCallStart: (phase) => appendJobEvent(id, { type: 'orchestrator', phase }),
@@ -131,12 +140,18 @@ export async function runJob(
             type: 'orchestrator_result', phase, agent: r.agent, model: r.model, ok: r.ok,
             failureClass: r.failureClass, costUsd: r.costUsd, steppedDown: r.steppedDown,
           }),
-          onDispatchStart: (agent, model, effort) => appendJobEvent(id, { type: 'dispatch', agent, model, effort }),
-          onDispatch: (r) => appendJobEvent(id, { type: 'worker_result', ...workerFields(r, signal.aborted) }),
+          // Loop-engine calls carry their graph node, so exports can draw the real DAG.
+          onDispatchStart: (agent, model, effort, task) => appendJobEvent(id, {
+            type: 'dispatch', agent, model, effort, ...taskFields(task),
+          }),
+          onDispatch: (r, task) => appendJobEvent(id, {
+            type: 'worker_result', ...workerFields(r, signal.aborted), ...taskFields(task),
+          }),
         },
         onStep: (outcome) => appendJobEvent(id, {
           type: 'step', step: outcome.id, agent: outcome.agent, model: outcome.model, ok: outcome.ok,
           attempts: outcome.attempts, costUsd: outcome.costUsd, note: outcome.note,
+          ...('dependsOn' in outcome ? { dependsOn: outcome.dependsOn } : {}),
         }),
       });
       writeJobResult(id, r);

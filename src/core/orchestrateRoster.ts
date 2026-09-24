@@ -75,6 +75,44 @@ export function resolveWorkerModel(
   return preset?.models?.default ?? preset?.model ?? null;
 }
 
+/**
+ * Lane policy for delegated loop work: subagents run fast (cheap model, low
+ * effort); the lead may ask for the stronger model on a hard task. Names that
+ * aren't in the lane's curated options are ignored, so a preset change can
+ * never smuggle an unlisted model in.
+ */
+const FAST_WORKER_MODELS: Record<string, string> = {
+  cursor: 'composer-2.5-fast',
+  codex: 'gpt-5.6-luna',
+  codex_write: 'gpt-5.6-luna',
+  pi: 'openai-codex/gpt-5.6-luna',
+  claude: 'claude-sonnet-5',
+};
+const STRONG_WORKER_MODELS: Record<string, string> = {
+  cursor: 'composer-2.5',
+  codex: 'gpt-5.6-sol',
+  codex_write: 'gpt-5.6-sol',
+  pi: 'openai-codex/gpt-5.6-sol',
+  claude: 'claude-opus-5-5',
+};
+
+export interface WorkerLane {
+  workerModel: string | null;
+  strongModel: string | null;
+  workerEffort: string | null;
+}
+
+export function loopWorkerLane(registry: AdapterRegistry, agent: string): WorkerLane {
+  const preset = registry.getPreset(agent);
+  const options = preset?.models?.options ?? [];
+  const listed = (m: string | undefined) => (m && options.includes(m) ? m : null);
+  return {
+    workerModel: listed(FAST_WORKER_MODELS[agent]) ?? resolveWorkerModel(registry, agent),
+    strongModel: listed(STRONG_WORKER_MODELS[agent]),
+    workerEffort: preset?.effort?.options?.includes('low') ? 'low' : null,
+  };
+}
+
 export function buildAgentRoster(
   registry: AdapterRegistry,
   health: Record<string, HealthStatus>,

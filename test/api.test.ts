@@ -318,14 +318,14 @@ describe('delegation approval boundaries', () => {
     });
 
     const blocked = await runOrchestrateGoal(registry, {
-      goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', noSynth: true, approve: false,
+      goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', engine: 'strict', noSynth: true, approve: false,
     });
     expect(blocked.status).toBe('failed');
     expect(blocked.outcomes[0]?.note).toMatch(/canPublish/);
     expect(invoke).toHaveBeenCalledTimes(1);
 
     const approved = await runOrchestrateGoal(registry, {
-      goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', noSynth: true, approve: true,
+      goal: 'publish goal', timeoutSeconds: 5, orchestrator: 'publish_dry', engine: 'strict', noSynth: true, approve: true,
     });
     expect(approved.status).toBe('done');
   });
@@ -362,14 +362,14 @@ describe('delegation approval boundaries', () => {
     );
 
     const blocked = await runOrchestrateGoal(registry, {
-      goal: 'lint', timeoutSeconds: 5, orchestrator: 'dry_run', noSynth: true, approve: false,
+      goal: 'lint', timeoutSeconds: 5, orchestrator: 'dry_run', engine: 'strict', noSynth: true, approve: false,
     });
     expect(blocked.status).toBe('failed');
     expect(blocked.outcomes[0]?.note).toMatch(/codex_write.*unavailable/i);
     expect(writer).not.toHaveBeenCalled();
 
     const approved = await runOrchestrateGoal(registry, {
-      goal: 'lint', timeoutSeconds: 5, orchestrator: 'dry_run', noSynth: true, approve: true,
+      goal: 'lint', timeoutSeconds: 5, orchestrator: 'dry_run', engine: 'strict', noSynth: true, approve: true,
     });
     expect(approved.status).toBe('done');
     expect(writer).toHaveBeenCalledTimes(1);
@@ -395,6 +395,7 @@ describe('delegation approval boundaries', () => {
       goal: 'can you access local files in this project?',
       timeoutSeconds: 5,
       orchestrator: 'dry_run',
+      engine: 'strict',
       noSynth: true,
       approve: false,
     });
@@ -418,7 +419,7 @@ describe('delegation approval boundaries', () => {
     });
 
     const blocked = await runOrchestrateGoal(registry, {
-      goal: 'readme', timeoutSeconds: 5, orchestrator: 'dry_run', noSynth: true, approve: false,
+      goal: 'readme', timeoutSeconds: 5, orchestrator: 'dry_run', engine: 'strict', noSynth: true, approve: false,
     });
     expect(blocked.status).toBe('blocked');
     expect(workerPrompts).toEqual(['summarize README']);
@@ -466,7 +467,7 @@ describe('delegation approval boundaries', () => {
     const io = { out: vi.fn(), err: vi.fn() };
     expect(await cmdOrchestrate(registry, {
       goal, dryPlan: false, approve: false, noSynth: true, timeoutSeconds: 5,
-      orchestrator: 'dry_run', format: 'json',
+      orchestrator: 'dry_run', format: 'json', engine: 'strict',
     }, io)).toBe(1);
     expect(existsSync(orchestrationRunPath({ goal, orchestrator: 'dry_run' }))).toBe(true);
 

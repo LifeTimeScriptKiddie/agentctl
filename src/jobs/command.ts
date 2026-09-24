@@ -42,11 +42,13 @@ export function registerJobsCommands(program: Command): void {
     .option('--max-replans <n>', '', '0')
     .option('--no-synth', 'skip the final synthesis step')
     .option('--dry-plan', 'plan only', false)
+    .option('--strict', 'plan up front and verify every step instead of the lead loop', false)
     .option('--approve', 'allow shell/repo-write/publish steps', false)
     .option('--caller <agents>', 'calling agent(s) to keep out of worker routing (or AGENTCTL_CALLER)')
     .action((goal: string, o: Record<string, string | boolean | undefined>) => guard('start', () => {
       const input: JobInput = {
         kind: 'orchestrate', goal,
+        ...(o.strict === true ? { engine: 'strict' as const } : {}),
         timeoutSeconds: Number(o.timeout),
         maxReplans: Number(o.maxReplans),
         noSynth: o.synth === false,
