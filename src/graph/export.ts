@@ -71,6 +71,7 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: Job
   });
   /** Requested task nodes (caller-led graphs): spec node id per task id. */
   const specOf = new Map<string, string>();
+  const requestedDeps = new Map((prompt?.graph?.tasks ?? []).map((t) => [t.id, t.deps] as const));
   for (const t of prompt?.graph?.tasks ?? []) {
     if (specOf.has(t.id)) continue; // duplicate ids: the runner refuses the graph; keep the first
     const id = `${record.id}:spec:${t.id}`;
@@ -102,6 +103,10 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: Job
   let lastLead: string | null = null;
   const taskResult = new Map<string, string>();
   let unread: string[] = [];
+  /** Where parallel caller tasks branch from, each task's settled step, and tasks other tasks read. */
+  let startId: string | null = null;
+  const taskStep = new Map<string, string>();
+  const dependedOn = new Set<string>();
   const taskOf = (e: JobEvent) => (typeof e.task === 'string' ? e.task : null);
   const depsOf = (e: JobEvent) => (Array.isArray(e.dependsOn) ? e.dependsOn.filter((d): d is string => typeof d === 'string') : []);
   const withParents = (ev: GenericEvent, parents: string[]): GenericEvent => {
@@ -118,6 +123,7 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: Job
         return;
       case 'started':
         ev = { id, parent_id: previous, kind: 'job_start', role: 'system', name: String(e.kind ?? record.kind) };
+        startId = id;
         break;
       case 'route':
         // For delegate/ask the routed worker call is the action whose result follows.
@@ -153,14 +159,23 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: Job
           arguments: { model: e.model ?? null, effort: e.effort ?? null, ...(task ? { task } : {}) },
         };
         if (task) {
+          // Tasks branch from the lead decision (loop) or the job start (caller graph), never from a
+          // sibling dispatched just before: parallel tasks must not look like a chain.
+          for (const d of depsOf(e)) dependedOn.add(d);
           const deps = depsOf(e).map((d) => taskResult.get(d)).filter((x): x is string => !!x);
+          const retried = taskResult.get(task); // an earlier failed attempt: retry or re-route
           const spec = specOf.get(task);
-          const first = lastLead ?? previous;
-          const parents = [...new Set([first, ...(spec ? [spec] : []), ...deps])];
-          if (parents.length > 1) {
-            const relation = (p: string) => (p === spec ? 'specifies' : deps.includes(p) ? 'reads' : lastLead ? 'decides' : 'precedes');
-            ev = { ...ev, parent_id: parents[0]!, parent_ids: parents, parent_relations: Object.fromEntries(parents.map((p) => [p, relation(p)])) };
-          }
+          // A dependent task hangs off the results it reads; only root tasks hang off the start.
+          const base = retried ?? lastLead ?? (deps.length ? null : startId ?? previous);
+          const parents = [...new Set([...(base ? [base] : []), ...deps, ...(spec ? [spec] : [])])];
+          const relation = (p: string) => (p === retried ? 'retries' : p === spec ? 'specifies' : deps.includes(p) ? 'reads'
+            : p === lastLead ? 'decides' : 'precedes');
+          const typed = parents.some((p) => relation(p) !== 'precedes');
+          ev = {
+            ...ev, parent_id: parents[0]!,
+            ...(parents.length > 1 ? { parent_ids: parents } : {}),
+            ...(parents.length > 1 || typed ? { parent_relations: Object.fromEntries(parents.map((p) => [p, relation(p)])) } : {}),
+          };
         }
         // Parallel tasks can share an agent, so loop-engine calls pair by task.
         open(task ? `task:${task}` : `worker:${e.agent}`, id);
@@ -174,25 +189,62 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: Job
           is_error: e.ok === false, arguments: { failureClass: e.failureClass ?? null, model: e.model ?? null },
           ...(usageOf(e) ? { usage: usageOf(e)! } : {}),
         };
-        if (task) { taskResult.set(task, id); unread.push(id); }
+        if (task) {
+          const earlier = taskResult.get(task);
+          if (earlier) unread = unread.filter((x) => x !== earlier); // superseded by this attempt
+          taskResult.set(task, id);
+          unread.push(id);
+        }
         break;
       }
-      case 'step':
+      case 'step': {
+        const task = typeof e.step === 'string' ? e.step : null;
+        // Older or partial events may omit dependsOn; the requested DAG still knows it.
+        const stepDeps = depsOf(e).length ? depsOf(e) : (task ? requestedDeps.get(task) ?? [] : []);
         ev = {
-          id, parent_id: (typeof e.step === 'string' ? taskResult.get(e.step) : undefined) ?? previous,
+          id, parent_id: (task ? taskResult.get(task) : undefined) ?? previous,
           kind: 'step', role: 'system', name: `step:${e.agent ?? 'none'}`,
           is_error: e.ok === false, arguments: { attempts: e.attempts ?? null },
           ...(usageOf(e) ? { usage: usageOf(e)! } : {}),
         };
+        for (const d of stepDeps) dependedOn.add(d);
+        if (task && !taskResult.has(task) && e.attempts === 0) {
+          // Never ran: the failure cascaded from its dependencies (or it was blocked); tie it to its spec.
+          const upstream = stepDeps.map((d) => taskStep.get(d)).filter((x): x is string => !!x);
+          const spec = specOf.get(task);
+          const parents = [...new Set([...(upstream.length ? upstream : [startId ?? previous]), ...(spec ? [spec] : [])])];
+          const relation = (p: string) => (upstream.includes(p) ? 'cascades' : p === spec ? 'specifies' : 'precedes');
+          ev = {
+            ...ev, parent_id: parents[0]!, ...(parents.length > 1 ? { parent_ids: parents } : {}),
+            parent_relations: Object.fromEntries(parents.map((p) => [p, relation(p)])),
+          };
+          unread.push(id); // a branch end nobody reads
+          taskResult.set(task, id);
+        }
+        if (task) taskStep.set(task, id);
         break;
+      }
       case 'cancel_requested':
         ev = { id, parent_id: previous, kind: 'message', role: 'user', name: 'cancel' };
         break;
       case 'succeeded':
       case 'failed':
       case 'cancelled':
-        ev = { id, parent_id: previous, kind: 'finish', role: 'system', name: e.type, is_error: e.type !== 'succeeded' };
+      {
+        // The finish joins every branch end: settled tasks that no later task or lead read.
+        const readByNoOne = new Set(unread);
+        const sinks = [...taskStep].filter(([task]) => !dependedOn.has(task) && readByNoOne.has(taskResult.get(task) ?? ''))
+          .map(([, step]) => step);
+        const parents = [...new Set([previous, ...sinks])];
+        ev = {
+          id, parent_id: previous, kind: 'finish', role: 'system', name: e.type, is_error: e.type !== 'succeeded',
+          ...(parents.length > 1 ? {
+            parent_ids: parents,
+            parent_relations: Object.fromEntries(parents.map((p) => [p, sinks.includes(p) ? 'settles' : 'precedes'])),
+          } : {}),
+        };
         break;
+      }
       default:
         ev = { id, parent_id: previous, kind: 'event', role: 'system', name: String(e.type) };
     }
