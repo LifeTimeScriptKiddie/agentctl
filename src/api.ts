@@ -23,6 +23,8 @@ import {
 } from './core/sessionFlow.js';
 import {
   runOrchestrateGoal,
+  runTaskGraphGoal,
+  resolveLeadFor,
   orchestrationRunPath,
   logRoute,
   logHallucinationIncidents,
@@ -133,6 +135,30 @@ export interface OrchestrateOptions {
   onStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
   /** 'loop' (default) or 'strict' plan→verify; dry-plan/resume/budget/replans imply strict. */
   engine?: OrchestrateEngine;
+  /** Untrusted background from the caller (files read, decisions), quoted for the lead/planner. */
+  context?: string;
+}
+
+export interface RunTasksOptions {
+  /** What the tasks are for (results and job summaries only). */
+  goal?: string;
+  /** Caller-built task graph; see `runTaskGraphGoal`. */
+  tasks: unknown;
+  /** Shared, untrusted context every worker receives (quoted). */
+  context?: string;
+  timeoutSeconds?: number;
+  approve?: boolean;
+  signal?: AbortSignal;
+  excludeAgents?: string[];
+  hooks?: OrchestrateHooks;
+  onStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
+}
+
+export interface RunTasksCommandResult {
+  exitCode: number;
+  warnings: string[];
+  orchestration: OrchestrationResult;
+  error?: string;
 }
 
 export interface OrchestrateCommandResult {
@@ -545,7 +571,9 @@ export async function agentOrchestrate(
   opts: OrchestrateOptions,
 ): Promise<OrchestrateCommandResult> {
   const warnings: string[] = [];
-  const orchName = opts.orchestrator ?? resolveDefaultOrchestrator().agent;
+  // The calling agent (--caller) is never its own lead; see resolveLeadFor.
+  const lead = resolveLeadFor(registry, opts.orchestrator, opts.orchestratorModel, new Set(opts.excludeAgents ?? []));
+  const orchName = lead.agent;
   if (!registry.has(orchName)) {
     return {
       exitCode: 2,
@@ -580,7 +608,7 @@ export async function agentOrchestrate(
     }
   }
 
-  const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
+  const orchModel = lead.model;
   // Resume continues a saved plan, which only the strict engine has.
   const engine = opts.engine ?? (opts.resume ? 'strict' : undefined);
   let orchestration: OrchestrationResult;
@@ -602,6 +630,7 @@ export async function agentOrchestrate(
       ...(opts.signal ? { signal: opts.signal, shouldAbort: () => opts.signal!.aborted } : {}),
       ...(opts.excludeAgents?.length ? { excludeAgents: opts.excludeAgents } : {}),
       ...(engine ? { engine } : {}),
+      ...(opts.context ? { context: opts.context } : {}),
       ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
       ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),
     });
@@ -641,6 +670,42 @@ export async function agentOrchestrate(
     orchestrator: orchName,
     orchestratorModel: orchModel,
   };
+}
+
+/**
+ * Caller-led task graph: the calling agent is the lead and supplies the tasks;
+ * agentctl runs them on fast lanes (parallel where independent, re-routed when
+ * a lane is capped) and returns every task's result. No lead model is called.
+ * Exit 0 all done, 3 a task needs approval, 1 some task failed, 2 invalid graph.
+ */
+export async function agentRunTasks(
+  registry: AdapterRegistry,
+  opts: RunTasksOptions,
+): Promise<RunTasksCommandResult> {
+  const warnings: string[] = [];
+  const goal = opts.goal?.trim() || 'caller-led tasks';
+  let orchestration: OrchestrationResult;
+  try {
+    orchestration = await runTaskGraphGoal(registry, {
+      goal,
+      tasks: opts.tasks,
+      timeoutSeconds: opts.timeoutSeconds ?? 300,
+      approve: opts.approve ?? false,
+      ...(opts.context ? { context: opts.context } : {}),
+      ...(opts.excludeAgents?.length ? { excludeAgents: opts.excludeAgents } : {}),
+      ...(opts.hooks ? { hooks: opts.hooks } : {}),
+      ...(opts.onStep ? { onStep: opts.onStep } : {}),
+      ...(opts.signal ? { signal: opts.signal, shouldAbort: () => opts.signal!.aborted } : {}),
+    });
+  } catch (e) {
+    return {
+      exitCode: 2, warnings, orchestration: emptyOrchestration(goal),
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+  logRoute({ tasks: true, goal, count: orchestration.plan.steps.length, status: orchestration.status });
+  const exitCode = orchestration.status === 'done' ? 0 : orchestration.status === 'blocked' ? 3 : 1;
+  return { exitCode, warnings, orchestration };
 }
 
 /** List configured agents with optional live health probes. */

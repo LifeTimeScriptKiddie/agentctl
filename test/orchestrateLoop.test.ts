@@ -3,10 +3,12 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  parseLeadDecision, runLoopOrchestration, validateBatch,
+  parseLeadDecision, parseTaskBatch, runLoopOrchestration, runTaskGraph, validateBatch,
   type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
 } from '../src/core/orchestrateLoop.js';
-import { runOrchestrateGoal, selectEngine } from '../src/core/orchestrateFlow.js';
+import { resolveLeadFor, runOrchestrateGoal, selectEngine } from '../src/core/orchestrateFlow.js';
+import { agentOrchestrate, agentRunTasks } from '../src/api.js';
+import { compactForCaller } from '../src/core/callerResult.js';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 import { failResult, okResult } from '../src/adapters/protocol.js';
 import { savePreferences } from '../src/core/preferences.js';
@@ -379,5 +381,117 @@ describe('task graph export', () => {
       for (const p of e.parent_ids ?? [e.parent_id]) if (p) expect(byId.has(p)).toBe(true);
     }
     expect(JSON.stringify(out)).not.toContain('secret goal');
+  });
+});
+
+describe('caller-led task graph (the caller is the lead)', () => {
+  const full = (x: ReturnType<typeof t>, dependsOn: string[] = []) => ({ ...x, type: 'reason' as const, needs: [], acceptance: '', dependsOn });
+
+  it('runs the graph without any lead call and returns every result', async () => {
+    const h = harness([], (_a, prompt, task) => ok(`${task.id} saw ${prompt.includes('shared note') ? 'context' : 'nothing'}`));
+    const r = await runTaskGraph('g', [full(t('a')), full(t('b', 'claude')), full(t('c', 'cursor'), ['a', 'b'])], h.deps,
+      { context: 'shared note' });
+    expect(h.leadPrompts).toHaveLength(0);
+    expect(h.maxInFlight()).toBe(2);
+    expect(r).toMatchObject({ engine: 'loop', status: 'done', synthesis: null, rounds: 1 });
+    expect(r.outcomes.map((o) => o.output)).toEqual(['a saw context', 'b saw context', 'c saw context']);
+    expect(h.calls.find((c) => c.task === 'c')!.prompt).toContain('a saw context');
+  });
+
+  it('reports failed when any task fails, keeping the others', async () => {
+    const h = harness([], (agent) => (agent === 'claude' ? fail('nonzero_exit') : ok('fine')));
+    const r = await runTaskGraph('g', [full(t('a')), full(t('b', 'claude'))], h.deps);
+    expect(r.status).toBe('failed');
+    expect(r.outcomes.map((o) => o.ok)).toEqual([true, false]);
+  });
+
+  it('throws on an invalid graph before any worker runs', async () => {
+    const h = harness([]);
+    await expect(runTaskGraph('g', [full(t('a', 'nobody'))], h.deps)).rejects.toThrow(/not on the worker roster/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('parses caller task lists and explains the first problem', () => {
+    expect(parseTaskBatch([{ id: 'a', agent: 'codex', instruction: 'x' }])).toMatchObject({ tasks: [{ id: 'a', dependsOn: [] }] });
+    expect(parseTaskBatch([{ id: 'bad id!', agent: 'codex', instruction: 'x' }])).toMatchObject({ error: expect.stringMatching(/tasks\.0\.id/) });
+    expect(parseTaskBatch([])).toMatchObject({ error: expect.any(String) });
+  });
+});
+
+describe('harness integration', () => {
+  let home: string;
+  let registry: AdapterRegistry;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agentctl-harness-'));
+    vi.stubEnv('AGENTCTL_HOME', home);
+    savePreferences({
+      version: 1, updatedAt: '2026-09-24', source: 'manual', tier: 'balanced',
+      orchestrator: { agent: 'cursor', model: 'composer-2.5' },
+      orchestratorBackup: { agent: 'codex', model: 'gpt-5.6-sol' },
+      agents: { comet: { enabled: false }, agy: { enabled: false } },
+    });
+    registry = AdapterRegistry.fromPackaged();
+    vi.spyOn(registry, 'healthcheck').mockImplementation(async (name?: string) => Object.fromEntries(
+      (name ? [name] : registry.names()).map((n) => [n, { available: true, detail: 'test', checkedVia: 'test' }]),
+    ));
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
+
+  it('never makes the calling agent its own lead', () => {
+    expect(resolveLeadFor(registry, undefined, undefined, new Set())).toEqual({ agent: 'cursor', model: 'composer-2.5' });
+    expect(resolveLeadFor(registry, undefined, undefined, new Set(['cursor']))).toEqual({ agent: 'codex', model: 'gpt-5.6-sol' });
+    expect(resolveLeadFor(registry, 'claude', null, new Set(['claude'])).agent).toBe('claude'); // an explicit choice wins
+  });
+
+  it('orchestrate called from Cursor uses the backup lead, not Cursor', async () => {
+    const cursor = vi.spyOn(registry.get('cursor'), 'invoke');
+    const codex = vi.spyOn(registry.get('codex'), 'invoke').mockResolvedValue(
+      okResult({ adapter: 'codex', transport: 'subprocess', normalizedText: 'Answer from codex lead.', durationMs: 0 }));
+    const r = await agentOrchestrate(registry, { goal: 'q', excludeAgents: ['cursor'], timeoutSeconds: 5 });
+    expect(r).toMatchObject({ exitCode: 0, orchestrator: 'codex', orchestratorModel: 'gpt-5.6-sol' });
+    expect(cursor).not.toHaveBeenCalled();
+    expect(codex.mock.calls[0]![0].model).toBe('gpt-5.6-sol');
+  });
+
+  it('routes a caller task that names no lane to an available worker', async () => {
+    const invoked: string[] = [];
+    for (const name of registry.names()) {
+      vi.spyOn(registry.get(name), 'invoke').mockImplementation(async () => {
+        invoked.push(name);
+        return okResult({ adapter: name, transport: 'subprocess', normalizedText: `${name} did it`, durationMs: 0 });
+      });
+    }
+    const r = await agentRunTasks(registry, {
+      tasks: [{ id: 'a', instruction: 'review this design document and write feedback' }], excludeAgents: ['cursor'],
+    });
+    expect(r.exitCode).toBe(0);
+    const agent = r.orchestration.outcomes[0]!.agent;
+    expect(agent).toBeTruthy();
+    expect(agent).not.toBe('cursor');
+    expect(invoked).toEqual([agent]);
+  });
+
+  it('returns exit 2 with the reason for an invalid caller graph', async () => {
+    const r = await agentRunTasks(registry, { tasks: [{ id: 'a', instruction: 'x', agent: 'codex', dependsOn: ['zzz'] }] });
+    expect(r).toMatchObject({ exitCode: 2, error: expect.stringMatching(/unknown dependency 'zzz'/) });
+  });
+
+  it('compacts results for callers: per-task output or note, clipped long text, no internals', () => {
+    const long = 'x'.repeat(10_000);
+    const compact = compactForCaller({
+      exitCode: 1, warnings: [], orchestration: {
+        engine: 'loop', status: 'failed', synthesis: null, totalCostUsd: null, replans: 0, rounds: 1,
+        plan: { goal: 'g', steps: [] },
+        outcomes: [
+          { id: 'a', agent: 'codex', model: 'gpt-5.6-luna', effort: 'low', ok: true, attempts: 1, output: long, note: 'done', costUsd: null, fingerprint: 'f' },
+          { id: 'b', agent: 'claude', model: null, effort: null, ok: false, attempts: 1, output: '', note: 'claude failed (timeout)', costUsd: null },
+        ],
+        graph: { nodes: [], edges: [] },
+      },
+    }, 'job_abcdefgh1') as { tasks: Array<Record<string, unknown>>; full_result: string };
+    expect(String(compact.tasks[0]!.output).length).toBeLessThan(6100);
+    expect(compact.tasks[0]).not.toHaveProperty('fingerprint');
+    expect(compact.tasks[1]).toMatchObject({ status: 'failed', note: 'claude failed (timeout)' });
+    expect(compact.full_result).toContain('job_abcdefgh1');
   });
 });

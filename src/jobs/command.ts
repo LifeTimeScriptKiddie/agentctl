@@ -2,6 +2,25 @@ import type { Command } from 'commander';
 import { buildJsonEnvelope } from '../format/output.js';
 import { getJob, listJobs, pruneJobs, readJobEvents, readJobResult, isJobId } from './store.js';
 import { cancelJob, runJob, startJob, waitForJob, type JobInput } from './runner.js';
+import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
+
+/** Read `--json` as inline JSON, `-` for stdin, or `@path` for a file. */
+async function readJsonArg(value: string): Promise<unknown> {
+  let text = value;
+  if (value === '-') {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Buffer));
+    text = Buffer.concat(chunks).toString('utf8');
+  } else if (value.startsWith('@')) {
+    const { readFileSync } = await import('node:fs');
+    text = readFileSync(value.slice(1), 'utf8');
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error('--json must be a JSON array of tasks (inline, - for stdin, or @file)');
+  }
+}
 
 /** Every jobs subcommand prints one JSON envelope (agents are the primary callers). */
 function emit(command: string, exitCode: number, result?: unknown, error?: string): void {
@@ -43,12 +62,14 @@ export function registerJobsCommands(program: Command): void {
     .option('--no-synth', 'skip the final synthesis step')
     .option('--dry-plan', 'plan only', false)
     .option('--strict', 'plan up front and verify every step instead of the lead loop', false)
+    .option('--context <text>', 'background the lead may use (quoted as untrusted)')
     .option('--approve', 'allow shell/repo-write/publish steps', false)
     .option('--caller <agents>', 'calling agent(s) to keep out of worker routing (or AGENTCTL_CALLER)')
     .action((goal: string, o: Record<string, string | boolean | undefined>) => guard('start', () => {
       const input: JobInput = {
         kind: 'orchestrate', goal,
         ...(o.strict === true ? { engine: 'strict' as const } : {}),
+        ...(typeof o.context === 'string' && o.context.trim() ? { context: o.context } : {}),
         timeoutSeconds: Number(o.timeout),
         maxReplans: Number(o.maxReplans),
         noSynth: o.synth === false,
@@ -58,6 +79,28 @@ export function registerJobsCommands(program: Command): void {
         ...(o.orchestrator ? { orchestrator: String(o.orchestrator) } : {}),
         ...(o.orchestratorModel ? { orchestratorModel: String(o.orchestratorModel) } : {}),
         ...(o.budget != null ? { budgetUsd: Number(o.budget) } : {}),
+      };
+      emit('start', 0, startJob(input, { caller: parseCaller(o.caller as string | undefined).join(',') || null }));
+    })());
+
+  start.command('tasks')
+    .description('run a caller-built task graph on fast lanes (you are the lead); returns each task\'s result')
+    .requiredOption('--json <tasks>', 'JSON array of {id, instruction, agent?, dependsOn?, needs?, type?, model?, effort?, acceptance?}; - for stdin, @file')
+    .option('--goal <text>', 'what the tasks are for (results/summary only)')
+    .option('--context <text>', 'shared background every worker receives (quoted as untrusted)')
+    .option('--timeout <seconds>', 'per-worker timeout', '300')
+    .option('--approve', 'allow shell/repo-write/publish tasks', false)
+    .option('--caller <agents>', 'calling agent(s) to keep out of worker routing (or AGENTCTL_CALLER)')
+    .action((o: Record<string, string | boolean | undefined>) => guard('start', async () => {
+      const tasks = await readJsonArg(String(o.json));
+      if (!Array.isArray(tasks)) throw new Error('--json must be a JSON array of tasks');
+      const input: JobInput = {
+        kind: 'tasks', tasks,
+        timeoutSeconds: Number(o.timeout),
+        approve: o.approve === true,
+        excludeAgents: parseCaller(o.caller as string | undefined),
+        ...(typeof o.goal === 'string' && o.goal.trim() ? { goal: o.goal } : {}),
+        ...(typeof o.context === 'string' && o.context.trim() ? { context: o.context } : {}),
       };
       emit('start', 0, startJob(input, { caller: parseCaller(o.caller as string | undefined).join(',') || null }));
     })());
@@ -96,19 +139,29 @@ export function registerJobsCommands(program: Command): void {
 
   jobs.command('wait').argument('<id>')
     .option('--timeout <seconds>', 'give up waiting after this long (the job keeps running)', '60')
+    .option('--compact', 'caller-sized result (status, answer, per-task outcome) and progress while running', false)
     .description('block until the job finishes or the timeout passes; returns the result when done')
-    .action((id: string, o: { timeout: string }) => guard('wait', async () => {
+    .action((id: string, o: { timeout: string; compact: boolean }) => guard('wait', async () => {
       const r = await waitForJob(requireId(id), Number(o.timeout) * 1000);
-      emit('wait', r.done ? (r.record.exitCode ?? 1) : 0, { job: r.record, done: r.done, result: r.result });
+      const exit = r.done ? (r.record.exitCode ?? 1) : 0;
+      if (!o.compact) {
+        emit('wait', exit, { job: r.record, done: r.done, result: r.result });
+        return;
+      }
+      emit('wait', exit, {
+        job_id: id, status: r.record.status, done: r.done,
+        ...(r.done ? { result: compactForCaller(r.result, id) } : { progress: progressFromEvents(readJobEvents(id).events) }),
+      });
     })());
 
   jobs.command('result').argument('<id>').description('the finished job\'s api result')
-    .action((id: string) => guard('result', () => {
+    .option('--compact', 'caller-sized result (status, answer, per-task outcome)', false)
+    .action((id: string, o: { compact: boolean }) => guard('result', () => {
       const record = getJob(requireId(id));
       if (!record) throw new Error(`no job '${id}'`);
       const result = readJobResult(id);
       if (result === null) throw new Error(`job '${id}' is ${record.status}; no result yet`);
-      emit('result', record.exitCode ?? 1, { job: record, result });
+      emit('result', record.exitCode ?? 1, o.compact ? { job_id: id, status: record.status, result: compactForCaller(result, id) } : { job: record, result });
     })());
 
   jobs.command('events').argument('<id>')

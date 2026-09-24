@@ -17,8 +17,11 @@ import {
 } from './orchestrateRoster.js';
 import { isAgentEnabled, loadPreferences } from './preferences.js';
 import {
-  runLoopOrchestration, REROUTABLE_FAILURES, type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
+  parseTaskBatch, runLoopOrchestration, runTaskGraph, REROUTABLE_FAILURES,
+  type GraphDeps, type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
 } from './orchestrateLoop.js';
+import { route } from './router.js';
+import type { HealthStatus } from '../adapters/protocol.js';
 import { exhaustedUntil, loadLimits, markExhausted, updateLimits } from './limitStore.js';
 import { DEFAULT_COOLDOWN_MS } from './modelLadder.js';
 
@@ -159,46 +162,14 @@ function loopCall(r: AskResult): LoopCallResult {
   return { ok: r.ok, text: r.text, failureClass: r.failureClass, costUsd: r.costUsd, model: r.model };
 }
 
-/** Real adapters behind the loop engine: lead with one backup, fast workers, remembered caps. */
-export function createLoopDeps(
+/** Worker lanes as the loop engine sees them: fast/strong model, availability, known caps. */
+export function buildLoopLanes(
   registry: AdapterRegistry,
-  workerNames: string[],
+  names: string[],
   health: Record<string, { available: boolean }>,
-  timeoutSeconds: number,
-  orchName: string,
-  orchModel: string | null,
-  hooks: OrchestrateHooks = {},
-  signal?: AbortSignal,
-): LoopDeps {
-  let limits = loadLimits();
-  const isCapped = (agent: string, model: string | null) => exhaustedUntil(limits, agent, model) !== null;
-  const remember = (agent: string, model: string | null, text: string) => {
-    const until = reportedReset(text) ?? new Date(Date.now() + DEFAULT_COOLDOWN_MS);
-    limits = updateLimits((map) => markExhausted(map, agent, model, until, 'orchestrate'));
-  };
-  const prefs = loadPreferences();
-  const backupLead = () => {
-    const b = resolveBackupOrchestrator();
-    if (!b || !registry.has(b.agent) || !isAgentEnabled(prefs, b.agent)) return null;
-    if (gatedCapability(registry.get(b.agent).capabilities())) return null;
-    return { agent: b.agent, model: resolveOrchestratorModel(registry, b.agent, b.model) };
-  };
-  let lead = { agent: orchName, model: orchModel };
-  let backupUsed = false;
-  // A lead already known to be capped goes straight to the backup.
-  const initialBackup = isCapped(orchName, orchModel) ? backupLead() : null;
-  if (initialBackup && initialBackup.agent !== orchName) { lead = initialBackup; backupUsed = true; }
-  const leadEffort = (agent: string) => (registry.getPreset(agent)?.effort?.options?.includes('medium') ? 'medium' : null);
-  const askLead = async (prompt: string, phase: OrchCallPhase) => {
-    hooks.onOrchCallStart?.(phase);
-    const r = await askOne(registry.resolveRole('chat', lead.agent), prompt, timeoutSeconds, lead.model, null,
-      leadEffort(lead.agent), signal);
-    hooks.onOrchCall?.(phase, r);
-    if (r.failureClass === 'usage_limit') remember(lead.agent, lead.model, r.text);
-    return r;
-  };
-
-  const agents: LoopAgent[] = workerNames.map((name) => {
+  limits = loadLimits(),
+): LoopAgent[] {
+  return names.map((name) => {
     const lane = loopWorkerLane(registry, name);
     const preset = registry.getPreset(name);
     const capped = exhaustedUntil(limits, name, lane.workerModel);
@@ -212,11 +183,96 @@ export function createLoopDeps(
       ...(capped ? { note: `usage limit until ${capped.toISOString()}` } : {}),
     };
   });
+}
+
+/** Worker side of the loop engine: fast lanes, remembered caps, task-tagged hooks. */
+export function createWorkerDeps(
+  registry: AdapterRegistry,
+  workerNames: string[],
+  health: Record<string, { available: boolean }>,
+  timeoutSeconds: number,
+  hooks: OrchestrateHooks = {},
+  signal?: AbortSignal,
+): GraphDeps & { remember: (agent: string, model: string | null, text: string) => void } {
+  let limits = loadLimits();
+  const remember = (agent: string, model: string | null, text: string) => {
+    const until = reportedReset(text) ?? new Date(Date.now() + DEFAULT_COOLDOWN_MS);
+    limits = updateLimits((map) => markExhausted(map, agent, model, until, 'orchestrate'));
+  };
+  return {
+    agents: buildLoopLanes(registry, workerNames, health, limits),
+    isCapped: (agent, model) => exhaustedUntil(limits, agent, model) !== null,
+    onCapped: (agent, model, r) => remember(agent, model, r.text),
+    remember,
+    dispatch: async (agent, prompt, model, effort, task) => {
+      hooks.onDispatchStart?.(agent, model, effort, task);
+      const r = await askOne(registry.resolveRole('chat', agent), prompt, timeoutSeconds, model, null, effort, signal);
+      hooks.onDispatch?.(r, task);
+      return loopCall(r);
+    },
+  };
+}
+
+/**
+ * Lead for an orchestration. An explicit choice wins. Otherwise the configured
+ * lead, unless it is the calling agent (`--caller`): a harness that hands work
+ * to agentctl should not get itself back as a second, context-free lead, so
+ * the backup lead takes over.
+ */
+export function resolveLeadFor(
+  registry: AdapterRegistry,
+  requested: string | undefined,
+  requestedModel: string | null | undefined,
+  excluded: ReadonlySet<string> = new Set(),
+): { agent: string; model: string | null } {
+  if (requested) return { agent: requested, model: resolveOrchestratorModel(registry, requested, requestedModel) };
+  const def = resolveDefaultOrchestrator();
+  if (excluded.has(def.agent)) {
+    const b = resolveBackupOrchestrator();
+    if (b && !excluded.has(b.agent) && registry.has(b.agent)) {
+      return { agent: b.agent, model: resolveOrchestratorModel(registry, b.agent, requestedModel ?? b.model) };
+    }
+  }
+  return { agent: def.agent, model: resolveOrchestratorModel(registry, def.agent, requestedModel) };
+}
+
+/** Real adapters behind the loop engine: lead with one backup, fast workers, remembered caps. */
+export function createLoopDeps(
+  registry: AdapterRegistry,
+  workerNames: string[],
+  health: Record<string, { available: boolean }>,
+  timeoutSeconds: number,
+  orchName: string,
+  orchModel: string | null,
+  hooks: OrchestrateHooks = {},
+  signal?: AbortSignal,
+  excluded: ReadonlySet<string> = new Set(),
+): LoopDeps {
+  const workers = createWorkerDeps(registry, workerNames, health, timeoutSeconds, hooks, signal);
+  const prefs = loadPreferences();
+  const backupLead = () => {
+    const b = resolveBackupOrchestrator();
+    if (!b || excluded.has(b.agent) || !registry.has(b.agent) || !isAgentEnabled(prefs, b.agent)) return null;
+    if (gatedCapability(registry.get(b.agent).capabilities())) return null;
+    return { agent: b.agent, model: resolveOrchestratorModel(registry, b.agent, b.model) };
+  };
+  let lead = { agent: orchName, model: orchModel };
+  let backupUsed = false;
+  // A lead already known to be capped goes straight to the backup.
+  const initialBackup = workers.isCapped?.(orchName, orchModel) ? backupLead() : null;
+  if (initialBackup && initialBackup.agent !== orchName) { lead = initialBackup; backupUsed = true; }
+  const leadEffort = (agent: string) => (registry.getPreset(agent)?.effort?.options?.includes('medium') ? 'medium' : null);
+  const askLead = async (prompt: string, phase: OrchCallPhase) => {
+    hooks.onOrchCallStart?.(phase);
+    const r = await askOne(registry.resolveRole('chat', lead.agent), prompt, timeoutSeconds, lead.model, null,
+      leadEffort(lead.agent), signal);
+    hooks.onOrchCall?.(phase, r);
+    if (r.failureClass === 'usage_limit') workers.remember(lead.agent, lead.model, r.text);
+    return r;
+  };
 
   return {
-    agents,
-    isCapped,
-    onCapped: (agent, model, r) => remember(agent, model, r.text),
+    ...workers,
     lead: async (prompt, phase) => {
       let r = await askLead(prompt, phase);
       if (!r.ok && REROUTABLE_FAILURES.has(r.failureClass) && !backupUsed) {
@@ -229,41 +285,39 @@ export function createLoopDeps(
       }
       return loopCall(r);
     },
-    dispatch: async (agent, prompt, model, effort, task) => {
-      hooks.onDispatchStart?.(agent, model, effort, task);
-      const r = await askOne(registry.resolveRole('chat', agent), prompt, timeoutSeconds, model, null, effort, signal);
-      hooks.onDispatch?.(r, task);
-      return loopCall(r);
-    },
   };
 }
+
+/** Enabled, approval-appropriate worker lanes minus the calling agent(s), with live health. */
+async function workerPool(
+  registry: AdapterRegistry,
+  approve: boolean,
+  excludeAgents: string[] = [],
+): Promise<{ workerNames: string[]; health: Record<string, { available: boolean }> }> {
+  const prefs = loadPreferences();
+  const health = await registry.healthcheck();
+  const enabledNames = registry.names().filter((name) => isAgentEnabled(prefs, name));
+  const excluded = new Set(excludeAgents);
+  const workerNames = orchestrationWorkerNames(registry, enabledNames, approve).filter((n) => !excluded.has(n));
+  return { workerNames, health };
+}
+
+const approvalGate = (approve: boolean) =>
+  (step: Parameters<typeof stepApprovalBlock>[0], caps: Parameters<typeof stepApprovalBlock>[1], prompt: string) =>
+    approve || stepApprovalBlock(step, caps, prompt) === null;
 
 export async function runOrchestrateGoal(
   registry: AdapterRegistry,
   opts: RunOrchestrateGoalOpts,
 ) {
-  const prefs = loadPreferences();
-  const health = await registry.healthcheck();
   const approve = opts.approve ?? false;
-  const enabledNames = registry.names().filter((name) => isAgentEnabled(prefs, name));
+  const { workerNames, health } = await workerPool(registry, approve, opts.excludeAgents);
   const excluded = new Set(opts.excludeAgents ?? []);
-  const workerNames = orchestrationWorkerNames(registry, enabledNames, approve).filter((n) => !excluded.has(n));
-  const agents: RouterAgent[] = workerNames.map((name) => ({
-    name,
-    capabilities: registry.get(name).capabilities(),
-    available: health[name]?.available ?? false,
-    models: registry.getPreset(name)?.models?.options ?? [],
-    effortLevels: registry.getPreset(name)?.effort?.options ?? [],
-  }));
-  const roster = buildAgentRoster(registry, health).filter((a) => workerNames.includes(a.name));
-  const rosterText = formatRosterForPlanner(roster);
-  const orchName = opts.orchestrator ?? resolveDefaultOrchestrator().agent;
-  const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
-  const approveStep = (step: Parameters<typeof stepApprovalBlock>[0], caps: Parameters<typeof stepApprovalBlock>[1],
-    prompt: string) => approve || stepApprovalBlock(step, caps, prompt) === null;
+  const lead = resolveLeadFor(registry, opts.orchestrator, opts.orchestratorModel, excluded);
+  const approveStep = approvalGate(approve);
   if (selectEngine(opts) === 'loop') {
     const loopDeps = createLoopDeps(
-      registry, workerNames, health, opts.timeoutSeconds, orchName, orchModel, opts.hooks ?? {}, opts.signal,
+      registry, workerNames, health, opts.timeoutSeconds, lead.agent, lead.model, opts.hooks ?? {}, opts.signal, excluded,
     );
     return runLoopOrchestration(opts.goal, loopDeps, {
       approveStep,
@@ -272,8 +326,16 @@ export async function runOrchestrateGoal(
       ...(opts.shouldAbort ? { shouldAbort: opts.shouldAbort } : {}),
     });
   }
+  const agents: RouterAgent[] = workerNames.map((name) => ({
+    name,
+    capabilities: registry.get(name).capabilities(),
+    available: health[name]?.available ?? false,
+    models: registry.getPreset(name)?.models?.options ?? [],
+    effortLevels: registry.getPreset(name)?.effort?.options ?? [],
+  }));
+  const roster = buildAgentRoster(registry, health as Record<string, HealthStatus>).filter((a) => workerNames.includes(a.name));
   const deps = createOrchestrateDeps(
-    registry, agents, rosterText, opts.timeoutSeconds, orchName, orchModel, opts.noSynth ?? false,
+    registry, agents, formatRosterForPlanner(roster), opts.timeoutSeconds, lead.agent, lead.model, opts.noSynth ?? false,
     opts.hooks ?? {}, opts.signal, opts.context, !approve,
   );
   return runOrchestration(opts.goal, deps, {
@@ -284,6 +346,52 @@ export async function runOrchestrateGoal(
     shouldAbort: opts.shouldAbort,
     ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
     ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),
+  });
+}
+
+export interface RunTaskGraphGoalOpts {
+  /** What the tasks are for; shown in results and job summaries, not to workers. */
+  goal?: string;
+  /** Caller-built tasks (see `agentctl_run_tasks`). A task without `agent` is routed automatically. */
+  tasks: unknown;
+  /** Shared, untrusted context every worker receives (quoted). */
+  context?: string;
+  timeoutSeconds: number;
+  approve?: boolean;
+  excludeAgents?: string[];
+  hooks?: OrchestrateHooks;
+  onStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
+  shouldAbort?: () => boolean;
+  signal?: AbortSignal;
+}
+
+/**
+ * Caller-led graph: the calling agent is the lead. Fills in a lane for tasks
+ * that name none (deterministic router), validates the graph, and runs it on
+ * fast lanes. Throws on an invalid graph before any worker runs.
+ */
+export async function runTaskGraphGoal(registry: AdapterRegistry, opts: RunTaskGraphGoalOpts) {
+  if (!Array.isArray(opts.tasks)) throw new Error('tasks must be a list of task objects');
+  const approve = opts.approve ?? false;
+  const { workerNames, health } = await workerPool(registry, approve, opts.excludeAgents);
+  const workers = createWorkerDeps(registry, workerNames, health, opts.timeoutSeconds, opts.hooks ?? {}, opts.signal);
+  const routable = workers.agents.filter((a) => a.available).map((a) => ({
+    name: a.name, capabilities: a.capabilities, available: true,
+  }));
+  const filled = opts.tasks.map((t: unknown) => {
+    if (!t || typeof t !== 'object' || (t as { agent?: unknown }).agent) return t;
+    const task = t as { instruction?: unknown; type?: unknown };
+    const text = `${typeof task.type === 'string' ? task.type : 'reason'} ${String(task.instruction ?? '')}`;
+    return { ...task, agent: route(text, routable).agent ?? '' };
+  });
+  const parsed = parseTaskBatch(filled);
+  if ('error' in parsed) throw new Error(parsed.error);
+  const goal = opts.goal?.trim() || `${parsed.tasks.length} caller-led task(s)`;
+  return runTaskGraph(goal, parsed.tasks, workers, {
+    approveStep: approvalGate(approve),
+    ...(opts.context ? { context: opts.context } : {}),
+    ...(opts.onStep ? { onStep: opts.onStep } : {}),
+    ...(opts.shouldAbort ? { shouldAbort: opts.shouldAbort } : {}),
   });
 }
 

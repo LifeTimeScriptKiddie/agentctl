@@ -6,7 +6,7 @@ agentctl is a headless orchestrator. Claude Code, Cursor, Codex and Pi call it t
 |---|---|---|
 | **MCP server** | Claude Code, Cursor, Codex, any MCP client | `agentctl mcp --caller <you>` on stdio |
 | **Jobs CLI** | scripts, shells, agents without MCP | `agentctl jobs start … / wait / result` (JSON) |
-| **Pi extension** | Pi | `/agentctl orchestrate --run --bg …`, `/agentctl job …` |
+| **Pi extension** | Pi | model-callable tools (`agentctl_run_tasks`, `agentctl_orchestrate`, …); `/agentctl …` for humans |
 | **One-shot CLI** | quick calls | `agentctl delegate … --format json` |
 
 All four share one engine (`src/api.ts`), the same approval gates and the same JSON result shapes.
@@ -22,7 +22,23 @@ Nobody has to type `/agentctl`. Once agentctl is registered, the client's model 
 | Fast repository questions | `cursor` (Composer) |
 | Web research | `agy` |
 
-Model policy: GPT lanes use only `gpt-5.6-luna` and `gpt-5.6-sol` (no Terra, no GPT‑6 Astra). Claude uses only `claude-opus-5-5` and `claude-sonnet-5`. Cursor uses only Composer. Pi gets the same tools as native Pi tools (`agentctl_delegate`, `agentctl_orchestrate`, `agentctl_job_wait`, `agentctl_job_cancel`) through its extension.
+Model policy: GPT lanes use only `gpt-5.6-luna` and `gpt-5.6-sol` (no Terra, no GPT‑6 Astra). Claude uses only `claude-opus-5-5` and `claude-sonnet-5`. Cursor uses only Composer. Pi gets the same tools as native Pi tools (`agentctl_delegate`, `agentctl_run_tasks`, `agentctl_orchestrate`, `agentctl_job_wait`, `agentctl_job_cancel`) through its extension.
+
+Delegated tasks run on each lane's **fast** model by default (`gpt-5.6-luna` at low effort, `claude-sonnet-5`, `composer-2.5-fast`). A task may ask for the lane's **strong** model (`gpt-5.6-sol`, `claude-opus-5-5`, `composer-2.5`) when it is hard. `agentctl_agents` lists both per lane.
+
+## Who leads
+
+Pick the tool by who should lead the work:
+
+| Tool | Who leads | Use when |
+|---|---|---|
+| `agentctl_delegate` | you | one task for another agent |
+| `agentctl_run_tasks` | **you** | you can split the work: send a task graph, get every result back, decide the next step yourself |
+| `agentctl_orchestrate` | another model | you want someone else to plan, delegate and combine the work |
+
+`agentctl_run_tasks` is the default for agent harnesses. You already hold the context, so it skips a second lead model entirely. Independent tasks run in parallel (3 at a time), a task runs after its `depends_on` tasks and receives their results, and a lane that is capped, times out or is unreachable is re-routed once to another capable lane. Call it again with follow-up tasks if the results need more work.
+
+Pass what you already know (files read, decisions, constraints) in `context`. It reaches every worker (run_tasks) or the lead (orchestrate) as quoted, untrusted background, so workers do not rediscover it.
 
 ## Register the MCP server
 
@@ -52,29 +68,35 @@ If `agentctl` is not on the client's PATH, use `node /path/to/agentctl/dist/cli.
 
 | Tool | What it does | Blocks for |
 |---|---|---|
-| `agentctl_agents` | Agents, availability, capabilities, models; `routable: false` for the caller | Health probes only |
+| `agentctl_agents` | Lanes with availability, capabilities, `fast_model`/`strong_model`, any usage-limit cap; `routable: false` for the caller | Health probes only |
 | `agentctl_route` | Which agent/model/effort would run a task, with scores | No model call |
 | `agentctl_delegate` | Route (or `to`) and run one task | Up to `wait_seconds` (≤ `--max-wait`) |
-| `agentctl_orchestrate` | Plan → workers → verify → synthesize, as a job | `wait_seconds` (default 0) |
-| `agentctl_job_wait` | Wait for a job; returns the result when done | ≤ `--max-wait` |
-| `agentctl_job_status` / `_result` / `_events` | Poll status, read the result, page progress events | No |
+| `agentctl_run_tasks` | Run your task graph (≤ 12 tasks) on fast lanes; returns each task's result | Up to `wait_seconds` (default `--max-wait`) |
+| `agentctl_orchestrate` | A lead model answers or delegates a task graph, reads results, answers (`strict: true` for plan → verify) | Up to `wait_seconds` (default `--max-wait`) |
+| `agentctl_job_wait` | Wait for a job; compact result when done, progress otherwise | ≤ `--max-wait` |
+| `agentctl_job_status` / `_result` / `_events` | Poll status, read the full uncompacted result, page progress events | No |
 | `agentctl_job_cancel` | Cancel; in-flight worker processes are stopped | No |
 | `agentctl_jobs_list` | Recent jobs | No |
 
-**Long work never blocks the client.** A tool call returns within `--max-wait` seconds (default 50), which fits typical MCP tool timeouts. When work is still running, the reply is `{ "job_id": …, "done": false }`. Call `agentctl_job_wait` again until `done` is true. The job runs in its own detached process under `$AGENTCTL_HOME/jobs/<id>/` (private files), so it survives the client restarting.
+**Answers usually arrive in one call; long work never blocks the client.** A tool call waits up to `--max-wait` seconds (default 50, which fits typical MCP tool timeouts); most task graphs and plain questions finish inside that. When work is still running, the reply is `{ "job_id": …, "done": false, "progress": {…} }`. Call `agentctl_job_wait` again until `done` is true. The job runs in its own detached process under `$AGENTCTL_HOME/jobs/<id>/` (private files), so it survives the client restarting.
 
-Typical client loop:
+**Results are caller-sized.** A finished job returns `{ status, answer?, tasks: [{ id, agent, model, status, output | note, depends_on?, rerouted_from? }], rounds, cost_usd?, full_result }`. Long outputs are clipped at 6,000 characters; `agentctl_job_result` returns the full record.
+
+Typical client loop (you lead):
 
 ```text
-agentctl_orchestrate { goal }              → { job_id, done: false }
-agentctl_job_wait    { job_id }            → { done: false }   (repeat)
-agentctl_job_wait    { job_id }            → { done: true, result: { orchestration: {...} } }
+agentctl_agents    {}                                      → lanes, fast/strong models, caps
+agentctl_run_tasks { tasks: [                              → { done: true, result: { status: "done",
+    { id: "api",   agent: "codex",  instruction: "…" },          tasks: [ {id:"api",…,output}, {id:"review",…,output} ] } }
+    { id: "review", agent: "claude", instruction: "…", depends_on: ["api"] } ],
+  context: "files I read, decisions so far" }
+agentctl_run_tasks { tasks: [ follow-ups … ] }             → next round, if needed
 ```
 
 ## Safety rules for calling agents
 
 - **Approval stays with the human.** A calling agent cannot approve destructive or outward-facing work (push, publish, deploy, `rm -rf`, shell/repo-write lanes) on its own authority. Without `--allow-approve` the server removes the `approve` / `approve_context` parameters and refuses such requests with a message telling the human to run them with `--approve`. Start the server with `--allow-approve` only if you accept that the client model can approve these actions.
-- **No self-delegation.** `--caller` excludes the calling agent from routing and from orchestration workers. `to: <caller>` is refused.
+- **No self-delegation.** `--caller` excludes the calling agent from routing and from orchestration workers. `to: <caller>` and run_tasks tasks with `agent: <caller>` are refused. If the configured lead is the caller, `agentctl_orchestrate` uses the backup lead instead.
 - **No nesting.** Workers launched by agentctl run with `AGENTCTL_WORKER_DEPTH=1`. agentctl refuses to start jobs or call workers from inside a worker.
 - **Untrusted text stays quoted.** Worker outputs, memory and web results that reach other prompts are wrapped in nonce-delimited untrusted blocks (see `SECURITY-REVIEW-2026-09-22.md`).
 
@@ -94,9 +116,11 @@ Results carry `failureClass` per agent call. Useful values:
 Every `jobs` subcommand prints one JSON envelope `{ schemaVersion, ok, exitCode, command, warnings, result, error }`.
 
 ```bash
+agentctl jobs start tasks --caller claude --json '[{"id":"a","agent":"codex","instruction":"…"},{"id":"b","instruction":"…","dependsOn":["a"]}]'
+agentctl jobs start tasks --caller claude --json @tasks.json --context "what I already know"
 agentctl jobs start orchestrate --caller claude "migrate the parser to the new AST API"
 agentctl jobs start delegate --to cursor --caller claude "review src/router.ts for dead code"
-agentctl jobs wait   <job_id> --timeout 60     # result included when done
+agentctl jobs wait   <job_id> --timeout 60 --compact   # caller-sized result when done, progress otherwise
 agentctl jobs events <job_id> --after 0        # planner phases, dispatches, step outcomes
 agentctl jobs result <job_id>
 agentctl jobs cancel <job_id> [--force]
@@ -108,10 +132,13 @@ agentctl jobs prune --days 14
 
 ## Pi
 
-Pi has no MCP client. Use the extension:
+Pi has no MCP client; the extension gives Pi's model the same tools natively (`agentctl_run_tasks`, `agentctl_orchestrate`, `agentctl_delegate`, `agentctl_job_wait`, `agentctl_job_cancel`). They run through the jobs CLI as caller `pi`, wait for the answer (default 180 s) while streaming progress to Pi's UI, and cancel the job if you interrupt the tool call.
+
+For humans:
 
 ```text
-/agentctl orchestrate --run --bg <goal>    start as a background job, returns a job id
+/agentctl orchestrate <goal>               run now (lead from preferences); --strict for plan → verify
+/agentctl orchestrate --bg <goal>          start as a background job, returns a job id
 /agentctl job wait <job_id> [seconds]
 /agentctl job result <job_id>
 /agentctl job cancel <job_id>
