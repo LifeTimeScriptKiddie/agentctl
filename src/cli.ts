@@ -15,6 +15,7 @@ import { loadPreferences } from './core/preferences.js';
 import { looksLikeEphemeralAgentctlHome } from './core/agentHome.js';
 import { startRepl } from './repl.js';
 import { runSessiongraphCli } from './memory/sessiongraphBridge.js';
+import { directorySessionScope } from './core/sessionFlow.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { ChatMode } from './schema/session.js';
 import type { OutputFormat } from './format/output.js';
@@ -276,10 +277,12 @@ export function buildProgram(): Command {
       }
       let sess;
       try {
+        const chosenScope = opts.sessionScope ?? resolveBriefingWorkspace(opts.briefingWorkspace);
         sess = resolveSession({
           session: opts.ephemeral ? undefined : opts.session ?? randomUUID().slice(0, 8),
           resume: opts.resume,
-          scope: opts.sessionScope ?? resolveBriefingWorkspace(opts.briefingWorkspace) ?? process.cwd(),
+          scope: chosenScope ?? directorySessionScope(process.cwd()),
+          implicitScope: !chosenScope,
         });
       } catch (e) {
         stdio.err(e instanceof Error ? e.message : String(e));
@@ -291,7 +294,6 @@ export function buildProgram(): Command {
         process.exitCode = 2;
         return;
       }
-      if (sess) sess.persist(sess.record);
       await startRepl(
         loadRegistry(),
         stdio,

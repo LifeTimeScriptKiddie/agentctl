@@ -3,7 +3,8 @@ import {
   SessionWriteConflict, InvalidSessionIdError, boundTranscript,
 } from './session.js';
 import { resolveBriefingWorkspace } from '../memory/briefingEnv.js';
-import type { SessionRecord, SessionTurn } from '../schema/session.js';
+import { createHash } from 'node:crypto';
+import { SESSION_SCOPE_MAX, type SessionRecord, type SessionTurn } from '../schema/session.js';
 import type { AskResult } from './ask.js';
 import { redact } from './redact.js';
 
@@ -21,16 +22,34 @@ export function resolveSessionScope(opts: { sessionScope?: string; briefingWorks
 }
 
 /**
+ * A scope derived from a directory path, always within SESSION_SCOPE_MAX: long
+ * paths keep their tail plus a hash of the full path, so they stay distinct.
+ */
+export function directorySessionScope(dir: string): string {
+  if (dir.length <= SESSION_SCOPE_MAX) return dir;
+  const hash = createHash('sha256').update(dir).digest('hex').slice(0, 16);
+  return `…${dir.slice(-(SESSION_SCOPE_MAX - hash.length - 2))}#${hash}`;
+}
+
+/**
  * Resolve a durable session from CLI intent: `--resume` → most recent in scope;
  * `--session <name>` → load or create by name; neither → null (ephemeral).
  */
 export function resolveSession(
-  opts: { session?: string | undefined; resume?: boolean; scope?: string | null },
+  opts: {
+    session?: string | undefined; resume?: boolean; scope?: string | null;
+    /**
+     * The scope is a default (e.g. the working directory), not the user's choice:
+     * `--resume` falls back to the latest unscoped session, and a named session
+     * from another scope still opens.
+     */
+    implicitScope?: boolean;
+  },
   now: () => number = Date.now,
 ): ResolvedSession | null {
   let record: SessionRecord | null = null;
   if (opts.resume) {
-    record = latestSession(opts.scope);
+    record = latestSession(opts.scope) ?? (opts.implicitScope ? latestSession(undefined) : null);
     if (!record) return null;
   } else if (opts.session) {
     let existing: SessionRecord | null;
@@ -43,7 +62,7 @@ export function resolveSession(
           `Move or delete the file under ~/.agentctl/sessions/ to start fresh.`,
       );
     }
-    if (existing && opts.scope != null && existing.scope != null && existing.scope !== opts.scope) {
+    if (existing && !opts.implicitScope && opts.scope != null && existing.scope != null && existing.scope !== opts.scope) {
       throw new Error(
         `session '${opts.session}' belongs to scope '${existing.scope}', not '${opts.scope}'.`,
       );

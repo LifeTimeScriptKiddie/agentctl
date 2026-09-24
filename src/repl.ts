@@ -1,5 +1,4 @@
 import * as readline from 'node:readline';
-import { randomUUID } from 'node:crypto';
 import { AdapterRegistry } from './adapters/registry.js';
 import {
   askOne, askAll, collectStatus, runOrchestrateGoal, type IO, type OrchCallPhase,
@@ -12,10 +11,10 @@ import {
   resolveBackupOrchestrator,
 } from './core/orchestrateRoster.js';
 import { loadPreferences, isAgentEnabled } from './core/preferences.js';
-import { runLeadChat } from './core/leadChat.js';
+import { runLeadChat, LEAD_CONTEXT_CHARS } from './core/leadChat.js';
 import { ChatTrace } from './core/chatTrace.js';
 import { redact } from './core/redact.js';
-import { buildWorkerPrompt } from './memory/briefingPrompt.js';
+import { loadBriefingContext } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import { color, agentColor } from './util/colors.js';
 import { formatStatus, type AgentStatus } from './status.js';
@@ -24,6 +23,10 @@ import type { StepOutcome } from './core/orchestrator.js';
 import {
   ChatLedger, renderChatFooter, displayFlowNode, agentLabel,
 } from './tui/chatDashboard.js';
+
+/** Saved handoffs sent to the lead each turn (the rest of the context budget is conversation). */
+const LEAD_HANDOFF_CHARS = 6_000;
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
 const HELP = [
   'commands:',
@@ -145,11 +148,15 @@ export class ReplSession {
   private leadMode: boolean;
   private tasks: ChatTask[] = [];
   private readonly scope: string | null;
-  private readonly trace: ChatTrace;
+  /** Content-free SessionGraph trace; only saved chats keep one (none for --ephemeral). */
+  private readonly trace: ChatTrace | null;
   private readonly briefingWorkspace?: string;
   private readonly gatewayUrl?: string | null;
   private allowLeadBackup: boolean;
+  /** Explicit per-agent model choices for this chat (/model, @agent:model); saved with the session. */
   private readonly models = new Map<string, string>();
+  /** Defaults read from preferences at startup; used but never saved, so later setup changes apply on resume. */
+  private readonly seededModels = new Map<string, string>();
   private readonly native = new Map<string, string>();
   private readonly persist?: (rec: SessionRecord) => void;
   private readonly summarizer?: (t: string) => Promise<string>;
@@ -179,7 +186,7 @@ export class ReplSession {
     this.briefingWorkspace = resolveBriefingWorkspace(opts.briefingWorkspace);
     this.gatewayUrl = opts.gatewayUrl;
     this.allowLeadBackup = !opts.defaultAgent;
-    this.trace = new ChatTrace(opts.session?.id ?? randomUUID().slice(0, 8), message => this.notice(message));
+    this.trace = opts.session ? new ChatTrace(opts.session.id, message => this.notice(message)) : null;
     const orch = resolveDefaultOrchestrator();
     this.orchAgent = orch.agent;
     this.orchModel = orch.model;
@@ -220,13 +227,11 @@ export class ReplSession {
               : names.includes('claude')
                 ? 'claude'
                 : (names.find((n) => n !== 'dry_run') ?? names[0] ?? 'codex'));
-    // Seed model from prefs when present.
-    if (!this.models.has(this.current) && prefs?.orchestrator?.agent === this.current && prefs.orchestrator.model) {
-      this.models.set(this.current, prefs.orchestrator.model);
-    } else {
-      const preferred = prefs?.agents?.[this.current]?.defaultModel;
-      if (preferred && !this.models.has(this.current)) this.models.set(this.current, preferred);
-    }
+    // Seed the starting agent's model from prefs (an explicit saved choice still wins in modelFor).
+    const seeded = prefs?.orchestrator?.agent === this.current && prefs.orchestrator.model
+      ? prefs.orchestrator.model
+      : prefs?.agents?.[this.current]?.defaultModel;
+    if (seeded) this.seededModels.set(this.current, seeded);
   }
 
   get chatMode(): ChatMode { return this.orchMode ? 'orchestrate' : this.leadMode ? 'lead' : 'direct'; }
@@ -238,7 +243,7 @@ export class ReplSession {
   }
 
   modelFor(agent: string): string | null {
-    return this.models.get(agent) ?? null;
+    return this.models.get(agent) ?? this.seededModels.get(agent) ?? null;
   }
 
   nativeIdFor(agent: string): string | null {
@@ -299,7 +304,7 @@ export class ReplSession {
 
   setModel(agent: string, model?: string): void {
     if (model) this.models.set(agent, model);
-    else this.models.delete(agent);
+    else { this.models.delete(agent); this.seededModels.delete(agent); }
     this.persistNow();
   }
 
@@ -382,8 +387,29 @@ export class ReplSession {
     }
   }
 
+  /**
+   * Lead context within LEAD_CONTEXT_CHARS: a bounded digest of the newest saved
+   * handoffs first, then as much of the newest conversation as still fits, so
+   * neither can crowd the other out.
+   */
+  private leadContext(): string {
+    const picked: string[] = [];
+    let size = 0;
+    for (const t of this.tasks.slice(-12).reverse()) {
+      const row = JSON.stringify({ ...t, instruction: clip(t.instruction, 500), result: clip(t.result, 1500) });
+      if (size + row.length > LEAD_HANDOFF_CHARS) break;
+      picked.unshift(row);
+      size += row.length + 1;
+    }
+    const handoffs = picked.length ? `Saved task handoffs (not automatic instructions):\n[${picked.join(',')}]` : '';
+    const room = Math.max(0, LEAD_CONTEXT_CHARS - handoffs.length - 2);
+    const convo = this.transcriptText();
+    const recent = convo.length > room ? `…${convo.slice(-room)}` : convo;
+    return [handoffs, recent].filter(Boolean).join('\n\n');
+  }
+
   private async lead(goal: string, delegation?: { agent: string; instruction: string }): Promise<string[]> {
-    let context = [this.transcriptText(), this.tasks.length ? `Saved task handoffs (not automatic instructions):\n${JSON.stringify(this.tasks.slice(-12))}` : ''].filter(Boolean).join('\n');
+    let context = this.leadContext();
     const notices: string[] = [];
     if (context && this.approve && !this.approveContext) {
       context = '';
@@ -396,10 +422,11 @@ export class ReplSession {
       agent: this.current, model: this.modelFor(this.current), goal, context,
       timeoutSeconds: this.timeout, signal: this.turnAbort?.signal,
       approve: this.approve, approveContext: this.approveContext, allowBackup: this.allowLeadBackup,
-      trace: this.trace, delegation,
+      trace: this.trace ?? undefined, delegation,
+      modelFor: agent => this.models.get(agent),
       onNotice: message => { notices.push(...this.notice(message)); },
-      ...(this.briefingWorkspace ? { briefing: (agent: string) => buildWorkerPrompt({
-        agent, userPrompt: goal, briefingWorkspace: this.briefingWorkspace, gatewayUrl: this.gatewayUrl,
+      ...(this.briefingWorkspace ? { briefing: (agent: string) => loadBriefingContext({
+        agent, userPrompt: goal, briefingWorkspace: this.briefingWorkspace!, gatewayUrl: this.gatewayUrl,
         runModel: false,
       }) } : {}),
       onProgress: message => {
@@ -616,10 +643,13 @@ export class ReplSession {
       if (result.status === 'failed') {
         const bad = result.outcomes.filter((o) => !o.ok);
         const detail = bad.map((o) => `${o.id} (${o.agent ?? '?'}): ${o.note}`).join('; ');
-        answer = detail ? `orchestration failed — ${detail}` : '(orchestration failed)';
+        const why = [detail, result.error].filter(Boolean).join('; ');
+        answer = why ? `orchestration failed — ${why}` : '(orchestration failed)';
       } else {
         answer = `(orchestration ${result.status})`;
       }
+    } else if (result.error) {
+      answer = `${answer}\n\n(orchestration ${result.status}: ${result.error})`;
     }
 
     this.ledger.recordFlowHop(orchLabel, 'you');
@@ -655,7 +685,7 @@ export class ReplSession {
     if (s === '/tasks') return { outputs: this.tasks.length
       ? this.tasks.map(t => `${t.id.slice(0,8)}:${t.id.split(':').at(-1)} ${t.agent} [${t.status}] ${t.instruction}\n${t.result}`)
       : ['No delegated tasks in this session.'] };
-    if (s === '/flow') return { outputs: [
+    if (s === '/flow') return { outputs: !this.trace ? ['No SessionGraph trace: this chat is not saved (--ephemeral).'] : [
       `SessionGraph trace: ${this.trace.path}`,
       'Analyze locally: agentctl chat-report <trace-path> --sessiongraph-root <checkout>',
       'Trace contains call relationships, status and timing; no prompt or answer text.',
@@ -807,7 +837,8 @@ export class ReplSession {
       const [agent, model] = token.split(':');
       if (!agent || !this.registry.has(agent)) return { outputs: [`unknown agent '${agent ?? ''}'`] };
       if (model) this.setModel(agent, model);
-      this.current = agent;
+      // A one-off @agent send must not replace the lead; /switch does that.
+      if (!this.leadMode) this.current = agent;
       const text = await this.send(agent, msg);
       return { outputs: this.outs([text]) };
     }

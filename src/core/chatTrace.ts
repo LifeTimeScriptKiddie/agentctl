@@ -5,13 +5,22 @@ import { ensurePrivateDir, appendPrivate } from './privateFs.js';
 import { isValidSessionId } from '../schema/session.js';
 import type { Usage } from '../schema/result.js';
 
+export function chatTracesDir(): string {
+  return join(agentctlHome(), 'chat-traces');
+}
+
+/** Where a saved chat's trace lives (its `chat-report` output defaults to `<id>-report` beside it). */
+export function chatTracePath(sessionId: string): string {
+  return join(chatTracesDir(), `${sessionId}.jsonl`);
+}
+
 /** SessionGraph's generic JSONL contract. No prompt, answer, task text or file paths. */
 export class ChatTrace {
   readonly path: string;
   private failed = false;
   constructor(sessionId: string, private readonly warn: (message: string) => void = () => {}) {
     if (!isValidSessionId(sessionId)) throw new Error('invalid chat trace session id');
-    this.path = join(agentctlHome(), 'chat-traces', `${sessionId}.jsonl`);
+    this.path = chatTracePath(sessionId);
   }
 
   record(kind: string, name: string, parents: string[] = [], details: {
@@ -37,7 +46,7 @@ export class ChatTrace {
         coverage: 'agentctl call boundaries only; provider internal activity unobserved' },
     };
     try {
-      ensurePrivateDir(join(agentctlHome(), 'chat-traces'));
+      ensurePrivateDir(chatTracesDir());
       appendPrivate(this.path, JSON.stringify(row) + '\n');
     } catch {
       this.failed = true;

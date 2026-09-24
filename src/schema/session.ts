@@ -25,6 +25,9 @@ export function isValidSessionId(id: string): boolean {
   return SESSION_ID_PATTERN.test(id) && !id.startsWith('.');
 }
 
+/** Longest scope label a session file can hold. */
+export const SESSION_SCOPE_MAX = 200;
+
 export const SessionIdSchema = z.string().refine(isValidSessionId, {
   message: "session id must be 1-64 of [A-Za-z0-9._-] and must not start with '.'",
 });
@@ -40,7 +43,7 @@ export const SessionRecordSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   /** Optional project/workspace label; `--resume` only matches within the same scope. */
-  scope: z.string().max(200).nullable().optional().default(null),
+  scope: z.string().max(SESSION_SCOPE_MAX).nullable().optional().default(null),
   native: z.record(z.string(), z.string()).default({}),
   transcript: z.array(SessionTurnSchema).default([]),
   chat: z.object({

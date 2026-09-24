@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AdapterRegistry } from '../src/adapters/registry.js';
@@ -167,13 +167,44 @@ describe('selective lead chat', () => {
     expect(invoke).toHaveBeenCalledOnce();
   });
 
-  it('retrieves briefing separately for each receiving provider', async () => {
+  it('retrieves briefing separately for each receiving provider, once per turn', async () => {
     const briefing = vi.fn(async agent => `Memory allowed for ${agent}`);
     invoke.mockResolvedValueOnce(reply(batch(task('a')))).mockResolvedValueOnce(reply('done')).mockResolvedValueOnce(reply('summary'));
     await runLeadChat(registry, opts({ briefing }));
-    expect(briefing.mock.calls.map(c => c[0])).toEqual(['cursor','claude','cursor']);
+    expect(briefing.mock.calls.map(c => c[0])).toEqual(['cursor','claude']);
     expect(invoke.mock.calls[1]![1]).toContain('Memory allowed for claude');
     expect(invoke.mock.calls[1]![1]).not.toContain('Memory allowed for cursor');
+    expect(invoke.mock.calls[2]![1]).toContain('Memory allowed for cursor');
+  });
+
+  it('keeps an answer that quotes ordinary JSON with an "agentctl" key', async () => {
+    const answer = 'The bin entry is:\n```json\n{"bin": {"agentctl": "dist/cli.js"}}\n```';
+    invoke.mockResolvedValue(reply(answer));
+    const result = await runLeadChat(registry, opts());
+    expect(result).toMatchObject({ status: 'done', text: answer, tasks: [] });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(parseDelegation('{"agentctl": "1.0"} and {"agentctl":"2.0"}')).toBeNull();
+  });
+
+  it('parses an envelope whose protocol key is not the first key', () => {
+    const text = `Plan:\n{"tasks":[{"id":"a","agent":"claude","instruction":"Task a","dependsOn":[]}],"agentctl":"delegate.v1"}`;
+    expect(parseDelegation(text)?.tasks.map(t => t.id)).toEqual(['a']);
+  });
+
+  it('keeps the newest conversation when context and briefing are both large', async () => {
+    invoke.mockResolvedValue(reply('ok'));
+    const context = `${'old '.repeat(10_000)}\nnewest-turn-marker`;
+    await runLeadChat(registry, opts({ context, briefing: async () => `briefing-head-marker ${'b'.repeat(20_000)}` }));
+    const prompt = invoke.mock.calls[0]![1];
+    expect(prompt).toContain('newest-turn-marker');
+    expect(prompt).toContain('briefing-head-marker');
+    expect(prompt.length).toBeLessThan(40_000);
+  });
+
+  it("gives workers the chat's explicit model choice", async () => {
+    invoke.mockResolvedValueOnce(reply(batch(task('a', 'codex')))).mockResolvedValueOnce(reply('done')).mockResolvedValueOnce(reply('summary'));
+    await runLeadChat(registry, opts({ modelFor: agent => agent === 'codex' ? 'gpt-chosen-in-chat' : undefined }));
+    expect(invoke.mock.calls[1]![3]).toBe('gpt-chosen-in-chat');
   });
 
   it('isolates worker prompts from unrelated conversation and task history', async () => {
@@ -265,6 +296,46 @@ describe('lead session continuity', () => {
     const s = new ReplSession(registry, { session: record });
     expect((await s.handle('/tasks')).outputs.join('\n')).toContain('[interrupted]');
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps the conversation in the lead prompt when saved handoffs are large', async () => {
+    const record = newSession(Date.now(), 'big-handoffs', 'project');
+    record.chat = { mode: 'lead', agent: 'cursor', models: {}, tasks: Array.from({ length: 12 }, (_, i) => ({
+      id: `turn:t${i}`, turnId: 'turn', agent: 'claude', instruction: `task ${i}`, dependsOn: [], status: 'done' as const, result: 'r'.repeat(6000),
+    })) };
+    record.transcript = [{ role: 'user', agent: null, text: 'latest-conversation-marker' }];
+    const s = new ReplSession(registry, { session: record });
+    invoke.mockResolvedValue(reply('answer'));
+    await s.handle('Follow up on that');
+    const prompt = invoke.mock.calls[0]![1];
+    expect(prompt).toContain('latest-conversation-marker');
+    expect(prompt).toContain('task 11');
+  });
+
+  it('lets @agent send once without replacing the lead', async () => {
+    const s = new ReplSession(registry, { defaultAgent: 'cursor' });
+    invoke.mockResolvedValue(reply('direct answer'));
+    await s.handle('@claude quick question');
+    expect(invoke.mock.calls[0]![0].name).toBe('claude');
+    expect(s.currentAgent).toBe('cursor');
+  });
+
+  it('uses the preferences default model without saving it as a chat choice', async () => {
+    const record = newSession(Date.now(), 'seeded-model', 'project');
+    const s = new ReplSession(registry, { session: record, persist: r => saveSession(r, Date.now()) });
+    expect(s.modelFor('cursor')).toBe('composer-2.5');
+    await s.handle('/lead');
+    expect(loadSession(record.id)?.chat?.models).toEqual({});
+    await s.handle('/model cursor composer-2.5-fast');
+    expect(loadSession(record.id)?.chat?.models).toEqual({ cursor: 'composer-2.5-fast' });
+  });
+
+  it('does not write a flow trace for an unsaved chat', async () => {
+    const s = new ReplSession(registry, {});
+    invoke.mockResolvedValue(reply('answer'));
+    await s.handle('hello there');
+    expect((await s.handle('/flow')).outputs.join('\n')).toContain('not saved');
+    expect(existsSync(join(home, 'chat-traces'))).toBe(false);
   });
 
   it('clears persisted handoffs with the transcript', async () => {

@@ -12,12 +12,12 @@ lead's entire conversation or unrelated task history. Worker outputs remain evid
 not instructions or independently verified facts.
 
 ```sh
-agentctl chat                         # new saved session, scoped to this directory
-agentctl chat --resume                # latest session in this directory/scope
-agentctl chat --session project-x     # named conversation
+agentctl chat                         # new session, scoped to this directory (saved from the first turn)
+agentctl chat --resume                # latest session in this directory/scope, else the latest unscoped one
+agentctl chat --session project-x     # named conversation (opens from any directory)
 agentctl chat --mode direct           # one agent, no automatic delegation
 agentctl chat --mode orchestrate      # explicit heavy plan/verify workflow
-agentctl chat --ephemeral             # no saved transcript/task results
+agentctl chat --ephemeral             # nothing saved: no transcript, task results or flow trace
 agentctl chat --briefing-workspace team-atlas
 ```
 
@@ -30,7 +30,7 @@ Inside chat:
 | `/delegate codex <task>` | Assign one task explicitly; no lead planning call |
 | `/tasks` | Inspect saved task status and bounded results |
 | `/flow` | Locate the SessionGraph trace |
-| `@cursor <message>` or `/direct <message>` | Send directly |
+| `@cursor <message>` or `/direct <message>` | Send directly (in lead mode `@agent` is one-off and keeps the lead) |
 | `/orchestrate <goal>` | Run the full planner/worker/verifier flow explicitly |
 | `/orch off` | Use direct mode for subsequent messages |
 | `/clear` | Clear the conversation, task handoffs and native session IDs |
@@ -39,7 +39,8 @@ The input displays three lines on normal terminals. Shift+Enter adds a newline;
 Enter sends. Drafts entered while a reply is running are retained. Escape cancels
 the current TUI turn; Ctrl+C clears a draft and a second Ctrl+C quits. In `--plain`
 mode, Ctrl+C cancels a running turn or exits while idle. Resumed transcripts are
-rendered in the TUI. Mode, model overrides, task results and workspace scope persist.
+rendered in the TUI. Mode, explicit model choices (`/model`, `@agent:model`), task results
+and workspace scope persist; defaults from preferences are re-read on each start.
 Saving checks whether another chat changed the session and warns on detected stale
 writes. This is an optimistic version check, not a cross-process transaction lock.
 
@@ -70,16 +71,16 @@ does not include previous conversation/task history in lead planning.
 ## Memory and SessionGraph
 
 `--briefing-workspace` (or `AGENTCTL_BRIEFING_WORKSPACE`) opts into the existing local
-briefing or configured gateway. Retrieval happens separately for each provider and
+briefing or configured gateway. Retrieval happens once per receiving provider per turn and
 does not enable a second gateway model call. Jev/Laya remain optional server/operator
 settings; chat does not enable either automatically or accept memories automatically.
 
 Every lead turn writes a private, content-free generic SessionGraph JSONL trace under
 `$AGENTCTL_HOME/chat-traces/<session-id>.jsonl`. This includes actual call parent links,
 dependency/result links, terminal status, timestamps, durations, and reported usage.
-Prompts and answers are omitted. `--ephemeral` still records this operational trace;
-it omits the conversation and task-result files. `/clear` clears conversational state,
-not historical flow telemetry.
+Prompts and answers are omitted. `--ephemeral` chats record no trace. `/clear` clears
+conversational state, not historical flow telemetry; `agentctl sessions rm|prune` removes
+a session's trace and its default `-report` directory with it.
 
 ```sh
 agentctl chat-report /path/from/flow.jsonl \

@@ -573,6 +573,41 @@ describe('runOrchestration', () => {
     expect(result.status).toBe('cancelled');
   });
 
+  it('keeps outcomes when the verifier call fails, without re-running the worker', async () => {
+    const dispatch = vi.fn(async () => ({ ok: true, text: 'STEP OUTPUT' }));
+    const verify = vi.fn(async () => { throw new Error('cursor verify failed (timeout): slow'); });
+    const res = await runOrchestration('g', deps({ dispatch, verify }), { maxRetries: 2 });
+    expect(res.status).toBe('failed');
+    expect(res.outcomes[0]).toMatchObject({ id: 's1', ok: false });
+    expect(res.outcomes[0]!.note).toContain('verifier failed');
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('returns completed outcomes and the reason when synthesis fails', async () => {
+    const synthesize = async () => { throw new Error('cursor synth failed (usage_limit): quota'); };
+    const res = await runOrchestration('g', deps({ synthesize }), {});
+    expect(res).toMatchObject({ status: 'failed', synthesis: null });
+    expect(res.outcomes[0]).toMatchObject({ id: 's1', ok: true });
+    expect(res.error).toContain('usage_limit');
+  });
+
+  it('never reports an unaudited synthesis as done', async () => {
+    const synthesize = async () => 'FINAL';
+    const verifySynthesis = async () => { throw new Error('verify failed (timeout)'); };
+    const res = await runOrchestration('g', deps({ synthesize, verifySynthesis }), {});
+    expect(res).toMatchObject({ status: 'failed', synthesis: 'FINAL' });
+    expect(res.error).toContain('timeout');
+  });
+
+  it('keeps outcomes when the replan call fails', async () => {
+    const verify = async () => ({ passed: false, feedback: 'no' });
+    const replan = async () => { throw new Error('replan failed (transport_error)'); };
+    const res = await runOrchestration('g', deps({ verify, replan }), { maxReplans: 1, maxRetries: 0 });
+    expect(res.status).toBe('failed');
+    expect(res.outcomes).toHaveLength(1);
+    expect(res.error).toContain('transport_error');
+  });
+
   it('preserves planner call errors when not cancelled', async () => {
     const plan = async () => { throw new Error('provider unavailable'); };
     await expect(runOrchestration('g', deps({ plan }))).rejects.toThrow('provider unavailable');

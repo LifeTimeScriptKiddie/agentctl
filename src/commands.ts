@@ -218,6 +218,7 @@ function renderOrchestration(result: OrchestrateCommandResult, io: IO): void {
   if (orchestration.replans > 0) bits.push(`${orchestration.replans} replan(s)`);
   if (bits.length) io.out(color.dim(`\n(${bits.join(' · ')})`));
 
+  if (orchestration.error) io.err(color.red(`\n${orchestration.error}`));
   if (orchestration.status !== 'done') {
     io.err(color.red(`\norchestration ${orchestration.status}${orchestration.status === 'failed' || orchestration.status === 'budget' ? ' — re-run with --resume to continue' : ''}.`));
   }

@@ -10,11 +10,14 @@ import { redact } from './redact.js';
 import { PlanStepSchema } from '../schema/plan.js';
 import type { ChatTask } from '../schema/session.js';
 import type { ChatTrace } from './chatTrace.js';
-import { extractJson } from '../util/json.js';
 
 export const LEAD_MAX_TASKS = 3;
 export const LEAD_MAX_CALLS = 6;
 export const LEAD_TURN_TIMEOUT_MS = 300_000;
+/** Newest conversation/task context kept per prompt (the tail, so recent turns survive). */
+export const LEAD_CONTEXT_CHARS = 16_000;
+/** Memory briefing kept per prompt (the head, where the checkpoint and decisions are). */
+export const LEAD_BRIEFING_CHARS = 8_000;
 const Envelope = z.object({
   agentctl: z.literal('delegate.v1'),
   tasks: z.array(PlanStepSchema.extend({
@@ -26,15 +29,52 @@ const Envelope = z.object({
 }).strict();
 export type Delegation = z.infer<typeof Envelope>;
 
+/**
+ * The protocol marker is the `"agentctl": "delegate…"` pair, not the bare key:
+ * answers that quote ordinary JSON such as package.json's `"bin": {"agentctl": …}`
+ * must stay answers.
+ */
+const DELEGATION_MARKER = /"agentctl"\s*:\s*"delegate[^"]*"/g;
+
+/** End index (inclusive) of the JSON object opening at `open`, string-aware; -1 if never closed. */
+function objectEnd(text: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]!;
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** The innermost parseable JSON object around `at` that carries a top-level `agentctl` key. */
+function enclosingEnvelope(text: string, at: number): unknown {
+  // Bounded: an envelope is at most a few nested objects deep around its marker.
+  let tries = 0;
+  for (let open = text.lastIndexOf('{', at); open >= 0 && tries++ < 64; open = text.lastIndexOf('{', open - 1)) {
+    const end = objectEnd(text, open);
+    if (end < at) continue;
+    try {
+      const value: unknown = JSON.parse(text.slice(open, end + 1));
+      if (value && typeof value === 'object' && !Array.isArray(value) && 'agentctl' in value) return value;
+    } catch { /* keep widening */ }
+    if (open === 0) break;
+  }
+  return null;
+}
+
 /** Ordinary prose is a final answer. Only the explicit protocol can dispatch work. */
 export function parseDelegation(text: string): Delegation | null {
-  const markers = text.match(/"agentctl"\s*:/g) ?? [];
+  const markers = [...text.matchAll(DELEGATION_MARKER)];
   if (markers.length === 0) return null;
   if (markers.length !== 1) throw new Error('Lead returned ambiguous delegation requests; no tasks were started.');
-  const value = extractJson(text);
-  if (!value || typeof value !== 'object' || !('agentctl' in value)) {
-    throw new Error('Lead returned an incomplete delegation request; no tasks were started.');
-  }
+  const value = enclosingEnvelope(text, markers[0]!.index!);
+  if (value == null) throw new Error('Lead returned an incomplete delegation request; no tasks were started.');
   const parsed = Envelope.safeParse(value);
   if (!parsed.success) throw new Error('Lead returned an invalid delegation request; no tasks were started.');
   const seen = new Set<string>();
@@ -53,6 +93,8 @@ export interface LeadChatOptions {
   allowBackup?: boolean;
   trace?: ChatTrace;
   briefing?: (agent: string) => Promise<string>;
+  /** The user's explicit per-agent model choice for this chat (e.g. `/model`), if any. */
+  modelFor?: (agent: string) => string | null | undefined;
   onProgress?: (message: string) => void;
   onNotice?: (message: string) => void;
   onTasks?: (tasks: ChatTask[]) => void;
@@ -123,15 +165,31 @@ export async function runLeadChat(registry: AdapterRegistry, opts: LeadChatOptio
       throw e;
     }
   };
-  const injected = async (agent: string, context: string) => {
+  // One memory lookup per receiving agent per turn; the lead's respond call reuses its first.
+  const briefings = new Map<string, Promise<string>>();
+  const briefingFor = (agent: string, load: (agent: string) => Promise<string>) => {
+    let pending = briefings.get(agent);
+    if (!pending) { pending = load(agent); briefings.set(agent, pending); }
+    return pending;
+  };
+  /**
+   * Each part keeps its own budget so a large part cannot push out another:
+   * the newest end of the conversation context, all of this turn's worker
+   * evidence (bounded by LEAD_MAX_TASKS × result size), and the head of the briefing.
+   */
+  const injected = async (agent: string, context: string, evidence = '') => {
     signal.throwIfAborted();
     let briefing = '';
     if (opts.briefing) {
-      try { briefing = await waitFor(opts.briefing(agent), signal); }
+      try { briefing = await waitFor(briefingFor(agent, opts.briefing), signal); }
       catch { if (!signal.aborted) notice(`Memory briefing unavailable for ${agent}; continuing with session context.`); }
     }
     signal.throwIfAborted();
-    const content = [context, briefing].filter(Boolean).join('\n').slice(-24_000);
+    const content = [
+      context.length > LEAD_CONTEXT_CHARS ? `…${context.slice(-LEAD_CONTEXT_CHARS)}` : context,
+      evidence,
+      briefing.length > LEAD_BRIEFING_CHARS ? `${briefing.slice(0, LEAD_BRIEFING_CHARS)}…` : briefing,
+    ].filter(Boolean).join('\n\n');
     const gate = gateInjectedContext({ context: content, agent, caps: registry.get(agent).capabilities(),
       approve: opts.approve, approveContext: opts.approveContext });
     if (gate.action === 'block') throw gate.error;
@@ -148,7 +206,7 @@ export async function runLeadChat(registry: AdapterRegistry, opts: LeadChatOptio
       backupUsed = true;
       notice(`${lead} failed (${response.failureClass}); using configured backup ${backup.agent} once.`);
       lead = backup.agent;
-      model = backup.model ?? resolveWorkerModel(registry, lead);
+      model = resolveWorkerModel(registry, lead, backup.model ?? opts.modelFor?.(lead));
       return call(lead, await makePrompt(lead), phase, model);
     }
     return response;
@@ -227,7 +285,7 @@ export async function runLeadChat(registry: AdapterRegistry, opts: LeadChatOptio
         task.acceptance ? `Expected evidence:\n${task.acceptance}` : '',
       ].filter(Boolean).join('\n\n');
       const result = await call(task.agent, prompt, `task ${i + 1}/${tasks.length}`,
-        resolveWorkerModel(registry, task.agent, task.model),
+        resolveWorkerModel(registry, task.agent, task.model ?? opts.modelFor?.(task.agent)),
         [decisionEvent, ...task.dependsOn.map(id => results.get(id)!).filter(Boolean)]);
       results.set(task.id, lastEvent);
       saved.status = result.ok ? 'done' : 'failed';
@@ -239,7 +297,7 @@ export async function runLeadChat(registry: AdapterRegistry, opts: LeadChatOptio
     const final = await leadCall(async agent => [
       'Respond to the user using the completed worker evidence. Do not delegate again.',
       'Distinguish completed work, failed/blocked work, and unverified claims. Do not claim independent verification.',
-      await injected(agent, `${opts.context ?? ''}\n\nWorker handoffs:\n${evidence}`),
+      await injected(agent, opts.context ?? '', `Worker handoffs:\n${evidence}`),
       `User request:\n${opts.goal}`,
     ].join('\n\n'), 'respond', [...results.values()]);
     if (!final.ok) throw new Error(`${lead} response failed (${final.failureClass}): ${redact(final.text).slice(0,500)}`);
