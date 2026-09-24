@@ -63,8 +63,8 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         + 'being asked, when another agent fits the work better than you or an independent opinion helps: '
         + 'codex_write (GPT Luna/Sol) for code edits, tests and shell work in the repo; claude (Opus 5.5 for deep '
         + 'review/hard reasoning, Sonnet otherwise) for review and writing; cursor (Composer) for fast repository '
-        + 'questions; agy for web research. Use agentctl_delegate for one task, agentctl_orchestrate for multi-step '
-        + 'plan → workers → verify. Do not use it for simple edits or questions you can handle directly. '
+        + 'questions; agy for web research. Use agentctl_delegate for one task, agentctl_orchestrate when a lead should '
+        + 'split work across workers (parallel where independent) and combine the results. Do not use it for simple edits or questions you can handle directly. '
         + 'Long work returns a job_id: poll agentctl_job_wait until done, then read the result. '
         + (opts.allowApprove
           ? 'approve/approve_context are available; set them only when the human has explicitly approved the action.'
@@ -207,7 +207,8 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   server.registerTool('agentctl_orchestrate', {
     title: 'Orchestrate a multi-step goal',
     description:
-      'Plan → route each step to a worker → verify → synthesize, as a durable background job. '
+      'A lead model answers directly or delegates a task graph to fast worker agents (independent tasks run in '
+      + 'parallel), reads their results, and decides again until it can answer. Runs as a durable background job. '
       + 'Returns a job_id; poll agentctl_job_wait, read progress with agentctl_job_events.',
     inputSchema: withoutApproval({
       goal: z.string().min(1).describe('The overall goal, with the context workers need.'),
@@ -215,6 +216,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       orchestrator_model: z.string().optional(),
       budget_usd: z.number().positive().optional().describe('Stop once reported cost exceeds this.'),
       max_replans: z.number().int().min(0).max(5).optional(),
+      strict: z.boolean().optional().describe('Plan up front and verify every step (slower; implied by dry_plan/budget/max_replans).'),
       dry_plan: z.boolean().optional().describe('Return the plan without executing it.'),
       no_synth: z.boolean().optional(),
       timeout_seconds: z.number().int().min(10).max(3600).optional().describe('Per-agent timeout (default 180).'),
@@ -232,6 +234,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       ...(args.orchestrator_model ? { orchestratorModel: args.orchestrator_model } : {}),
       ...(args.budget_usd != null ? { budgetUsd: args.budget_usd } : {}),
       ...(args.max_replans != null ? { maxReplans: args.max_replans } : {}),
+      ...(args.strict ? { engine: 'strict' as const } : {}),
       dryPlan: args.dry_plan ?? false,
       noSynth: args.no_synth ?? false,
       timeoutSeconds: args.timeout_seconds ?? 180,

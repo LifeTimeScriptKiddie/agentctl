@@ -1,4 +1,5 @@
 import { PlanSchema, type Plan, type PlanStep } from '../schema/plan.js';
+import type { LoopGraph } from './orchestrateLoop.js';
 import { extractJson } from '../util/json.js';
 import { route, defaultWorkerModel, type RouterAgent } from './router.js';
 import { readPlannerRoutingRules } from '../assets.js';
@@ -121,6 +122,12 @@ export interface OrchestrationResult {
   totalCostUsd: number | null;
   /** how many times the plan was revised (replan edge). */
   replans: number;
+  /** Which engine produced this result; absent means the strict plan→verify engine. */
+  engine?: 'loop' | 'strict';
+  /** Loop engine: lead rounds used. */
+  rounds?: number;
+  /** Loop engine: the task graph (nodes + dependency edges) across all rounds. */
+  graph?: LoopGraph;
 }
 
 export interface DispatchResult {

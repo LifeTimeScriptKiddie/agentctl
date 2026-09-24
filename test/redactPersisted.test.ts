@@ -187,7 +187,7 @@ describe('N9: redaction applies to persisted copies only', () => {
       }
       return ok(`B saw ${GH}`);
     });
-    const opts = { goal, orchestrator: 'dry_run', noSynth: true, timeoutSeconds: 5, approve: false };
+    const opts = { goal, orchestrator: 'dry_run', engine: 'strict' as const, noSynth: true, timeoutSeconds: 5, approve: false };
 
     const first = await agentOrchestrate(registry, opts);
     expect(first.exitCode).toBe(1);

@@ -117,8 +117,9 @@ export function buildProgram(): Command {
 
   program
     .command('orchestrate')
-    .description('plan a goal with any configured agent, pick workers per step, execute + verify')
+    .description('lead answers or delegates a task graph to fast workers, then decides again (--strict: plan + verify every step)')
     .argument('[goal]', 'the goal (or piped via stdin)')
+    .option('--strict', 'plan up front and verify every step (implied by --dry-plan/--resume/--budget/--max-replans)', false)
     .option('--dry-plan', 'show the plan without executing anything', false)
     .option('--no-synth', 'skip the final synthesis step')
     .option('--approve', 'allow destructive/outward-facing steps', false)
@@ -131,7 +132,7 @@ export function buildProgram(): Command {
     .option('--backup', 'use orchestratorBackup from preferences (stronger/expensive model)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (goalArg: string | undefined, opts: {
-      dryPlan: boolean; synth: boolean; approve: boolean; budget?: string; maxReplans: string;
+      strict: boolean; dryPlan: boolean; synth: boolean; approve: boolean; budget?: string; maxReplans: string;
       resume: boolean; timeout: string; orchestrator?: string; orchestratorModel?: string; backup: boolean; format: string;
     }) => {
       const goal = (goalArg ?? (await readStdin())).trim();
@@ -158,6 +159,7 @@ export function buildProgram(): Command {
         {
           goal, dryPlan: opts.dryPlan, approve: opts.approve, noSynth: !opts.synth, timeoutSeconds: Number(opts.timeout),
           resume: opts.resume,
+          ...(opts.strict ? { engine: 'strict' as const } : {}),
           orchestrator: orchAgent,
           orchestratorModel: orchModel,
           ...(opts.budget != null ? { budgetUsd: Number(opts.budget) } : {}),

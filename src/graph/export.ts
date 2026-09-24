@@ -12,10 +12,16 @@ import { listMcpSessions, readMcpSession, type McpCallRecord } from '../mcp/trac
  *   the sequence of tool calls (delegate, job_wait polls, cancels) and outcomes.
  * Worker calls and their results are `tool_call` / `tool_result` pairs linked by
  * parent id, which is what SessionGraph's loop and dead-end detectors read.
+ * Loop-engine jobs tag worker events with their task node, so a job graph also
+ * carries the real task DAG in `parent_ids`: a worker call descends from the
+ * lead decision that created it and from its dependencies' results, and the
+ * next lead call descends from every result it read.
  */
 export interface GenericEvent {
   id: string;
   parent_id: string | null;
+  /** All declared parents; SessionGraph requires parent_ids[0] === parent_id. */
+  parent_ids?: string[];
   kind: string;
   role?: string;
   name?: string;
@@ -53,6 +59,16 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[]): GenericEven
     const id = list?.shift() ?? null;
     return id;
   };
+  /** Task-graph bookkeeping (loop engine): lead decision, result per task, results since the last lead call. */
+  let lastLead: string | null = null;
+  const taskResult = new Map<string, string>();
+  let unread: string[] = [];
+  const taskOf = (e: JobEvent) => (typeof e.task === 'string' ? e.task : null);
+  const depsOf = (e: JobEvent) => (Array.isArray(e.dependsOn) ? e.dependsOn.filter((d): d is string => typeof d === 'string') : []);
+  const withParents = (ev: GenericEvent, parents: string[]): GenericEvent => {
+    const unique = [...new Set(parents)];
+    return unique.length > 1 ? { ...ev, parent_id: unique[0]!, parent_ids: unique } : ev;
+  };
 
   events.forEach((e, i) => {
     const id = `${record.id}:e${i + 1}`;
@@ -74,7 +90,11 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[]): GenericEven
         if (e.agent != null) open(`worker:${e.agent}`, id);
         break;
       case 'orchestrator':
-        ev = { id, parent_id: previous, kind: 'tool_call', role: 'assistant', name: `orchestrator:${e.phase}` };
+        ev = withParents(
+          { id, parent_id: previous, kind: 'tool_call', role: 'assistant', name: `orchestrator:${e.phase}` },
+          [previous, ...unread],
+        );
+        unread = [];
         open(`orchestrator:${e.phase}`, id);
         break;
       case 'orchestrator_result': {
@@ -84,27 +104,39 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[]): GenericEven
           is_error: e.ok === false, arguments: { failureClass: e.failureClass ?? null, model: e.model ?? null },
           ...(usageOf(e) ? { usage: usageOf(e)! } : {}),
         };
+        if (e.phase === 'lead' || e.phase === 'final') lastLead = id;
         break;
       }
-      case 'dispatch':
+      case 'dispatch': {
+        const task = taskOf(e);
         ev = {
           id, parent_id: previous, kind: 'tool_call', role: 'assistant', name: `worker:${e.agent}`,
-          arguments: { model: e.model ?? null, effort: e.effort ?? null },
+          arguments: { model: e.model ?? null, effort: e.effort ?? null, ...(task ? { task } : {}) },
         };
-        open(`worker:${e.agent}`, id);
+        if (task) {
+          const deps = depsOf(e).map((d) => taskResult.get(d)).filter((x): x is string => !!x);
+          const parents = [lastLead ?? previous, ...deps];
+          ev = { ...ev, parent_id: parents[0]!, ...(parents.length > 1 ? { parent_ids: [...new Set(parents)] } : {}) };
+        }
+        // Parallel tasks can share an agent, so loop-engine calls pair by task.
+        open(task ? `task:${task}` : `worker:${e.agent}`, id);
         break;
+      }
       case 'worker_result': {
-        const parent = close(`worker:${e.agent}`) ?? previous;
+        const task = taskOf(e);
+        const parent = close(task ? `task:${task}` : `worker:${e.agent}`) ?? previous;
         ev = {
           id, parent_id: parent, kind: 'tool_result', role: 'tool', name: `worker:${e.agent}`,
           is_error: e.ok === false, arguments: { failureClass: e.failureClass ?? null, model: e.model ?? null },
           ...(usageOf(e) ? { usage: usageOf(e)! } : {}),
         };
+        if (task) { taskResult.set(task, id); unread.push(id); }
         break;
       }
       case 'step':
         ev = {
-          id, parent_id: previous, kind: 'step', role: 'system', name: `step:${e.agent ?? 'none'}`,
+          id, parent_id: (typeof e.step === 'string' ? taskResult.get(e.step) : undefined) ?? previous,
+          kind: 'step', role: 'system', name: `step:${e.agent ?? 'none'}`,
           is_error: e.ok === false, arguments: { attempts: e.attempts ?? null },
           ...(usageOf(e) ? { usage: usageOf(e)! } : {}),
         };

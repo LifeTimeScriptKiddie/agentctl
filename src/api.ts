@@ -28,6 +28,7 @@ import {
   logHallucinationIncidents,
   writeOrchestrationRun,
   type OrchestrateHooks,
+  type OrchestrateEngine,
 } from './core/orchestrateFlow.js';
 import { collectStatus } from './core/loadRegistry.js';
 import type { AskResult } from './core/ask.js';
@@ -130,6 +131,8 @@ export interface OrchestrateOptions {
   /** Progress callbacks for job runners and MCP progress notifications. */
   hooks?: OrchestrateHooks;
   onStep?: (outcome: StepOutcome, all: StepOutcome[]) => void;
+  /** 'loop' (default) or 'strict' plan→verify; dry-plan/resume/budget/replans imply strict. */
+  engine?: OrchestrateEngine;
 }
 
 export interface OrchestrateCommandResult {
@@ -532,7 +535,11 @@ function emptyOrchestration(goal: string): OrchestrationResult {
   };
 }
 
-/** Plan, execute, verify, and synthesize a multi-step goal. */
+/**
+ * Orchestrate a goal. Default loop engine: a lead answers or delegates a task
+ * graph to fast workers and decides again on the results. `engine: 'strict'`
+ * plans up front, verifies every step, and synthesizes.
+ */
 export async function agentOrchestrate(
   registry: AdapterRegistry,
   opts: OrchestrateOptions,
@@ -574,6 +581,8 @@ export async function agentOrchestrate(
   }
 
   const orchModel = resolveOrchestratorModel(registry, orchName, opts.orchestratorModel);
+  // Resume continues a saved plan, which only the strict engine has.
+  const engine = opts.engine ?? (opts.resume ? 'strict' : undefined);
   let orchestration: OrchestrationResult;
   try {
     orchestration = await runOrchestrateGoal(registry, {
@@ -592,6 +601,7 @@ export async function agentOrchestrate(
       ...(opts.hooks ? { hooks: opts.hooks } : {}),
       ...(opts.signal ? { signal: opts.signal, shouldAbort: () => opts.signal!.aborted } : {}),
       ...(opts.excludeAgents?.length ? { excludeAgents: opts.excludeAgents } : {}),
+      ...(engine ? { engine } : {}),
       ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
       ...(opts.maxReplans != null ? { maxReplans: opts.maxReplans } : {}),
     });

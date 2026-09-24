@@ -167,13 +167,16 @@ function renderOrchestration(result: OrchestrateCommandResult, io: IO): void {
   }
 
   const orchestration = result.orchestration;
-  io.out(color.bold(
-    `plan (${orchestration.plan.steps.length} steps, orchestrator ${result.orchestrator}/${result.orchestratorModel ?? 'cli-default'}):`,
-  ));
+  const loop = orchestration.engine === 'loop';
+  const lead = `${result.orchestrator}/${result.orchestratorModel ?? 'cli-default'}`;
+  io.out(color.bold(loop
+    ? `lead ${lead}: ${orchestration.rounds ?? 0} round(s), ${orchestration.plan.steps.length} delegated task(s)`
+    : `plan (${orchestration.plan.steps.length} steps, orchestrator ${lead}):`));
   for (const s of orchestration.plan.steps) {
     const needs = s.needs.length ? color.dim(` needs:[${s.needs.join(',')}]`) : '';
     const who = s.agent ? color.dim(` → ${s.agent}${s.model ? `(${s.model})` : ''}`) : '';
-    io.out(`  ${color.dim(s.id)} ${color.dim(`[${s.type}]`)} ${s.instruction}${who}${needs}`);
+    const deps = loop && s.dependsOn.length ? color.dim(` after:[${s.dependsOn.join(',')}]`) : '';
+    io.out(`  ${color.dim(s.id)} ${color.dim(`[${s.type}]`)} ${s.instruction}${who}${needs}${deps}`);
   }
 
   if (orchestration.status === 'planned') {
@@ -198,7 +201,7 @@ function renderOrchestration(result: OrchestrateCommandResult, io: IO): void {
         io.out(color.dim(`    why: ${claim.why}${claim.confidence == null ? '' : ` (${Math.round(claim.confidence * 100)}%)`}`));
       }
     });
-    if (outcome.ok && outcome.output) io.out(outcome.output);
+    if (!loop && outcome.ok && outcome.output) io.out(outcome.output);
   }
 
   if (orchestration.synthesis) {
@@ -219,7 +222,10 @@ function renderOrchestration(result: OrchestrateCommandResult, io: IO): void {
   if (bits.length) io.out(color.dim(`\n(${bits.join(' · ')})`));
 
   if (orchestration.status !== 'done') {
-    io.err(color.red(`\norchestration ${orchestration.status}${orchestration.status === 'failed' || orchestration.status === 'budget' ? ' — re-run with --resume to continue' : ''}.`));
+    const hint = orchestration.status === 'blocked' ? ' — a task needs --approve'
+      : loop ? ''
+        : orchestration.status === 'failed' || orchestration.status === 'budget' ? ' — re-run with --resume to continue' : '';
+    io.err(color.red(`\norchestration ${orchestration.status}${hint}.`));
   }
 }
 
@@ -431,7 +437,7 @@ export async function cmdOrchestrate(
   args: {
     goal: string; dryPlan: boolean; approve: boolean; noSynth: boolean; timeoutSeconds: number;
     budgetUsd?: number; maxReplans?: number; resume?: boolean;
-    orchestrator?: string; orchestratorModel?: string; format?: OutputFormat;
+    orchestrator?: string; orchestratorModel?: string; format?: OutputFormat; engine?: 'loop' | 'strict';
   },
   io: IO,
 ): Promise<number> {
@@ -446,6 +452,7 @@ export async function cmdOrchestrate(
     resume: args.resume,
     orchestrator: args.orchestrator,
     orchestratorModel: args.orchestratorModel,
+    ...(args.engine ? { engine: args.engine } : {}),
   });
   if (args.format === 'json') {
     emitJson(io, buildJsonEnvelope('orchestrate', r.exitCode, r.warnings, r.orchestration, r.error));
