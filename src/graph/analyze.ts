@@ -6,6 +6,8 @@ import { writePrivateFile, ensurePrivateDir } from '../core/privateFs.js';
 import { readJobEvents, getJob } from '../jobs/store.js';
 import { readMcpSession } from '../mcp/trace.js';
 import { exportGraphs, type ExportSummary } from './export.js';
+import { analyzePromptBehavior, joinJob, type JobPromptBehavior, type PromptBehaviorAnalysis } from './promptBehavior.js';
+import { guidanceFor } from './specRules.js';
 
 /** How to invoke the SessionGraph analyzer on this machine. */
 export interface AnalyzerCommand {
@@ -69,6 +71,8 @@ export interface GraphAnalysis {
   sessions: SessionAnalysis[];
   findingCounts: Record<string, number>;
   hotspots: Hotspots;
+  /** Prompt side joined with behavior: caller task-graph failure rates and spec-issue lift. */
+  promptBehavior: PromptBehaviorAnalysis;
 }
 
 function emptyLane(): LaneStats {
@@ -163,9 +167,11 @@ export async function analyzeGraphs(outDir: string, opts: { sinceMs?: number; an
   }
   const findingCounts: Record<string, number> = {};
   for (const s of sessions) for (const f of s.findings) findingCounts[f.code] = (findingCounts[f.code] ?? 0) + 1;
+  const joined = exported.jobs.map(joinJob).filter((j): j is JobPromptBehavior => j !== null);
   const result: GraphAnalysis = {
     schema: 'agentctl.graph-analysis.v1', createdAt: new Date().toISOString(),
     analyzer: analyzer?.via ?? null, exported, sessions, findingCounts, hotspots: computeHotspots(exported),
+    promptBehavior: analyzePromptBehavior(joined),
   };
   writePrivateFile(join(outDir, 'analysis.json'), JSON.stringify(result, null, 2));
   writePrivateFile(join(outDir, 'summary.md'), formatSummary(result));
@@ -194,7 +200,30 @@ export function formatSummary(a: GraphAnalysis): string {
     `- Client polling: max ${h.pollsPerJob.max} job_wait calls for one job, mean ${h.pollsPerJob.mean}; ${h.pollsPerJob.jobsPolledOver3} job(s) polled more than 3 times`,
     `- MCP requests refused or failed at the gate: ${h.mcpRefusals}`,
     '',
+    ...formatPromptBehavior(a.promptBehavior),
+    '',
     'Next: `agentctl graph improve` turns these into code-change proposals.',
   ];
   return `${lines.filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n')}\n`;
+}
+
+function formatPromptBehavior(pb: PromptBehaviorAnalysis | undefined): string[] {
+  if (!pb) return [];
+  const g = pb.taskGraphs.overall;
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  const lines = [
+    '## Prompt ↔ behavior',
+    `- Caller task graphs: ${g.graphs} (${g.succeeded} ok, ${g.failed} with failed tasks, ${g.rejected} refused, ${g.cancelled} cancelled) — fail rate ${pct(g.failRate)}; ${g.taskFailures} task failure(s), ${g.cascadeSkips} cascade skip(s), ${g.rerouted} re-route(s)`,
+    ...Object.entries(pb.taskGraphs.byCaller).map(([c, s]) =>
+      `- Caller ${c}: ${s.graphs} graph(s), fail rate ${pct(s.failRate)}${Object.keys(s.rejections).length ? `; refused: ${Object.entries(s.rejections).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`),
+    `- Units (tasks and single prompts): ${pb.units.total}, ${pb.units.failed} failed (${pct(pb.units.failRate)})`,
+  ];
+  const issues = Object.entries(pb.issues).sort((x, y) => y[1].failed - x[1].failed || y[1].units - x[1].units);
+  if (issues.length) {
+    lines.push('', '| Spec issue | Units | Failed | Fail rate | Lift | Fix |', '| --- | --- | --- | --- | --- | --- |');
+    for (const [code, s] of issues) {
+      lines.push(`| ${code} | ${s.units} | ${s.failed} | ${pct(s.failRate)} | ${s.lift ?? '—'} | ${guidanceFor(code)} |`);
+    }
+  }
+  return lines;
 }

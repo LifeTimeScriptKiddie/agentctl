@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { run } from '../util/exec.js';
 import { writePrivateFile } from '../core/privateFs.js';
 import type { AnalyzerCommand, GraphAnalysis, Hotspots } from './analyze.js';
+import { RUN_TASKS_ACTIVE_HINTS, SPEC_RULES, guidanceFor } from './specRules.js';
 
 /**
  * Graph engineering: turn observed structure (SessionGraph findings plus
@@ -117,6 +118,8 @@ export function proposeImprovements(a: GraphAnalysis): Proposal[] {
     });
   }
 
+  out.push(...proposeSpecTightening(a));
+
   const deadEnds = a.findingCounts.dead_end ?? 0;
   if (deadEnds > 0) {
     out.push({
@@ -134,9 +137,94 @@ export function proposeImprovements(a: GraphAnalysis): Proposal[] {
   return out.sort((x, y) => order[x.severity] - order[y.severity]);
 }
 
+/** Thresholds for acting on prompt-side evidence (small samples stay quiet). */
+export const SPEC_THRESHOLDS = {
+  /** A caller needs this many finished graphs before its fail rate counts. */
+  minGraphs: 3,
+  /** Caller graph fail rate that calls for tightening. */
+  callerFailRate: 0.2,
+  /** Refusals of one code that call for tightening regardless of rate. */
+  minRejections: 2,
+  /** Issue-lift evidence: units carrying the issue, failures among them, and lift. */
+  minIssueUnits: 3,
+  minIssueFailures: 2,
+  minLift: 1.5,
+  /** Fail rate that counts when units without the issue never failed (lift undefined). */
+  failRateWithoutBaseline: 0.3,
+} as const;
+
+/**
+ * Prompt-side graph engineering: when callers' task graphs fail, find the spec
+ * rules the evidence implicates and tighten what callers read. A code not yet
+ * in RUN_TASKS_ACTIVE_HINTS is added to the run_tasks description (rung 2); a
+ * code already there that still fails is enforced at the gate (rung 3).
+ */
+export function proposeSpecTightening(a: GraphAnalysis, active: readonly string[] = RUN_TASKS_ACTIVE_HINTS): Proposal[] {
+  const pb = a.promptBehavior;
+  if (!pb) return [];
+  const t = SPEC_THRESHOLDS;
+  const out: Proposal[] = [];
+  const evidence = new Map<string, { text: string[]; metric: Proposal['metric']; weight: number }>();
+  const note = (code: string, text: string, metric: Proposal['metric'], weight: number) => {
+    const e = evidence.get(code);
+    if (e) { e.text.push(text); e.weight += weight; } else evidence.set(code, { text: [text], metric, weight });
+  };
+
+  for (const [code, n] of Object.entries(pb.taskGraphs.overall.rejections)) {
+    if (n < t.minRejections) continue;
+    const callers = Object.entries(pb.taskGraphs.byCaller).filter(([, s]) => s.rejections[code]).map(([c, s]) => `${c} ${s.rejections[code]}`);
+    note(code, `${n} caller graph(s) refused for ${code} (${callers.join(', ')}).`,
+      { key: `promptBehavior.taskGraphs.overall.rejections.${code}`, direction: 'down', baseline: n }, n * 2);
+  }
+  for (const [code, s] of Object.entries(pb.issues)) {
+    const lifted = s.lift !== null ? s.lift >= t.minLift : s.failRate >= t.failRateWithoutBaseline;
+    if (!SPEC_RULES[code] || s.units < t.minIssueUnits || s.failed < t.minIssueFailures || !lifted) continue;
+    note(code, `${s.failed} of ${s.units} unit(s) with ${code} failed (${Math.round(s.failRate * 100)}%, lift ${s.lift ?? 'n/a: no failures without it'}).`,
+      { key: `promptBehavior.issues.${code}.failRate`, direction: 'down', baseline: s.failRate }, s.failed);
+  }
+
+  const failingCallers = Object.entries(pb.taskGraphs.byCaller).filter(([, s]) =>
+    s.succeeded + s.failed + s.rejected >= t.minGraphs && s.failRate >= t.callerFailRate);
+
+  for (const [code, e] of [...evidence].sort((x, y) => y[1].weight - x[1].weight)) {
+    const enforce = active.includes(code);
+    const rule = SPEC_RULES[code]!;
+    out.push({
+      id: `${enforce ? 'enforce' : 'tighten-run-tasks'}-${code.replace(/_/g, '-')}`,
+      title: enforce
+        ? `Enforce "${code}" at the run_tasks gate (the description hint did not stop it)`
+        : `Tighten the agentctl_run_tasks description against "${code}"`,
+      severity: failingCallers.length ? 'high' : 'medium',
+      evidence: [...e.text, ...(failingCallers.length
+        ? [`Failing callers: ${failingCallers.map(([c, s]) => `${c} ${Math.round(s.failRate * 100)}% of ${s.graphs}`).join(', ')}.`] : [])].join(' '),
+      targets: enforce
+        ? ['src/mcp/server.ts (agentctl_run_tasks handler: refuse or repair before startJob)', 'src/graph/specRules.ts', 'test/mcpServer.test.ts']
+        : ['src/graph/specRules.ts (RUN_TASKS_ACTIVE_HINTS)', 'integrations/pi/agentctl.ts (agentctl_run_tasks description: same sentence)', 'test/graph.test.ts'],
+      change: enforce
+        ? `Callers still send "${code}" although the description says: "${rule.guidance}". Reject (or auto-repair, if lossless) such graphs in the MCP handler with that guidance as the error, before a job starts.`
+        : `Add '${code}' to RUN_TASKS_ACTIVE_HINTS so the agentctl_run_tasks MCP description states: "${guidanceFor(code)}", and append the same sentence to the Pi agentctl_run_tasks description. Change nothing else.`,
+      metric: e.metric,
+    });
+  }
+
+  for (const [caller, s] of failingCallers) {
+    if (evidence.size > 0) break; // the tightening proposals above already carry these callers
+    out.push({
+      id: `investigate-caller-${caller.replace(/[^a-z0-9]+/gi, '-')}-graphs`,
+      title: `Find why ${caller}'s task graphs fail`,
+      severity: 'medium',
+      evidence: `${s.failed + s.rejected} of ${s.graphs} ${caller} graph(s) failed (${s.taskFailures} task failure(s), ${s.cascadeSkips} cascade skip(s)); no spec issue crossed the lift threshold, so the cause is likely lanes, not the request.`,
+      targets: ['src/core/orchestrateLoop.ts (runTask re-route)', 'src/core/orchestrateFlow.ts (buildLoopLanes)'],
+      change: 'Compare with the lane hotspots: if failures sit on one lane, route around it; if dependents are skipped after one failure, re-route before cascading.',
+      metric: { key: `promptBehavior.taskGraphs.byCaller.${caller}.failRate`, direction: 'down', baseline: s.failRate },
+    });
+  }
+  return out;
+}
+
 /** Read a dotted metric path from an analysis (missing → 0). */
 export function readMetric(a: GraphAnalysis, key: string): number {
-  let v: unknown = { ...a.hotspots, findingCounts: a.findingCounts };
+  let v: unknown = { ...a.hotspots, findingCounts: a.findingCounts, promptBehavior: a.promptBehavior };
   for (const part of key.split('.')) {
     // hotspots keys are top-level; findingCounts is merged in above
     v = v && typeof v === 'object' ? (v as Record<string, unknown>)[part] : undefined;
@@ -204,6 +292,10 @@ export function compareAnalyses(before: GraphAnalysis, after: GraphAnalysis, met
   for (const code of codes) {
     const x = before.findingCounts[code] ?? 0, y = after.findingCounts[code] ?? 0;
     checks.push({ name: `findings.${code} (not higher)`, before: x, after: y, pass: y <= x });
+  }
+  if (before.promptBehavior && after.promptBehavior) {
+    const x = before.promptBehavior.taskGraphs.overall.failRate, y = after.promptBehavior.taskGraphs.overall.failRate;
+    checks.push({ name: 'promptBehavior.taskGraphs.overall.failRate (not higher)', before: x, after: y, pass: y <= x });
   }
   for (const m of metrics) {
     const x = readMetric(before, m.key), y = readMetric(after, m.key);

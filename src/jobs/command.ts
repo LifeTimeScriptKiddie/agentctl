@@ -3,6 +3,7 @@ import { buildJsonEnvelope } from '../format/output.js';
 import { getJob, listJobs, pruneJobs, readJobEvents, readJobResult, isJobId } from './store.js';
 import { cancelJob, runJob, startJob, waitForJob, type JobInput } from './runner.js';
 import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
+import { lintTaskGraph, specWarnings, type TaskSpecInput } from '../graph/specRules.js';
 
 /** Read `--json` as inline JSON, `-` for stdin, or `@path` for a file. */
 async function readJsonArg(value: string): Promise<unknown> {
@@ -102,7 +103,9 @@ export function registerJobsCommands(program: Command): void {
         ...(typeof o.goal === 'string' && o.goal.trim() ? { goal: o.goal } : {}),
         ...(typeof o.context === 'string' && o.context.trim() ? { context: o.context } : {}),
       };
-      emit('start', 0, startJob(input, { caller: parseCaller(o.caller as string | undefined).join(',') || null }));
+      const record = startJob(input, { caller: parseCaller(o.caller as string | undefined).join(',') || null });
+      const warnings = specWarnings(lintTaskGraph(tasks as TaskSpecInput[], input.context));
+      emit('start', 0, warnings.length ? { ...record, spec_warnings: warnings } : record);
     })());
 
   start.command('delegate')

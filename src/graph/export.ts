@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { writePrivateFile, ensurePrivateDir } from '../core/privateFs.js';
 import { getJob, listJobs, readJobEvents, type JobEvent, type JobRecord } from '../jobs/store.js';
 import { listMcpSessions, readMcpSession, type McpCallRecord } from '../mcp/trace.js';
+import { joinJob, type JobPromptBehavior } from './promptBehavior.js';
 
 /**
  * Export agentctl activity as SessionGraph generic JSONL (content-free):
@@ -16,6 +17,13 @@ import { listMcpSessions, readMcpSession, type McpCallRecord } from '../mcp/trac
  * carries the real task DAG in `parent_ids`: a worker call descends from the
  * lead decision that created it and from its dependencies' results, and the
  * next lead call descends from every result it read.
+ *
+ * The prompt side is in the same graph: the request node carries content-free
+ * prompt features (size, context, lint codes, graph shape), and a caller-led
+ * graph (`kind: tasks`) adds one `task_spec` node per requested task with its
+ * requested `depends_on` edges. Each worker call descends from its spec, so the
+ * requested DAG and the executed DAG can be compared node by node. Edges with
+ * several parents are typed in `parent_relations` (see docs/GRAPH-ENGINEERING.md).
  */
 export interface GenericEvent {
   id: string;
@@ -27,6 +35,8 @@ export interface GenericEvent {
   name?: string;
   timestamp?: string;
   is_error?: boolean;
+  /** Edge type per parent id: requests, depends_on, specifies, decides, reads. */
+  parent_relations?: Record<string, string>;
   arguments?: Record<string, unknown>;
   usage?: Record<string, number>;
 }
@@ -43,13 +53,42 @@ function usageOf(e: JobEvent): Record<string, number> | undefined {
   return Object.keys(u).length ? u : undefined;
 }
 
-export function jobToGeneric(record: JobRecord, events: JobEvent[]): GenericEvent[] {
+const sizeBucket = (n: number) => (n < 60 ? 'xs' : n < 400 ? 's' : n < 2000 ? 'm' : n < 6000 ? 'l' : 'xl');
+
+export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: JobPromptBehavior['prompt']): GenericEvent[] {
   const out: GenericEvent[] = [];
   const rootId = `${record.id}:request`;
+  const shape = prompt?.graph?.shape;
   out.push({
     id: rootId, parent_id: null, kind: 'message', role: 'user',
     name: `${record.caller ?? 'cli'}:${record.kind}`, timestamp: record.createdAt,
+    ...(prompt ? {
+      arguments: {
+        size: sizeBucket(prompt.chars), context: prompt.context, issues: prompt.issues,
+        ...(shape ? { tasks: shape.tasks, edges: shape.edges, depth: shape.depth, width: shape.width } : {}),
+      },
+    } : {}),
   });
+  /** Requested task nodes (caller-led graphs): spec node id per task id. */
+  const specOf = new Map<string, string>();
+  for (const t of prompt?.graph?.tasks ?? []) {
+    if (specOf.has(t.id)) continue; // duplicate ids: the runner refuses the graph; keep the first
+    const id = `${record.id}:spec:${t.id}`;
+    const deps = [...new Set(t.deps)].map((d) => specOf.get(d)).filter((x): x is string => !!x);
+    const parents = [rootId, ...deps];
+    out.push({
+      id, parent_id: rootId, kind: 'task_spec', role: 'user', name: `task:${t.id}`,
+      ...(parents.length > 1 ? {
+        parent_ids: parents,
+        parent_relations: Object.fromEntries(parents.map((p) => [p, p === rootId ? 'requests' : 'depends_on'])),
+      } : {}),
+      arguments: {
+        size: sizeBucket(t.chars), acceptance: t.acceptance, pinned_agent: t.pinnedAgent,
+        pinned_model: t.pinnedModel, deps: t.deps.length, issues: t.issues,
+      },
+    });
+    specOf.set(t.id, id);
+  }
   let previous = rootId;
   /** Open worker/orchestrator calls awaiting their result, by key. */
   const pending = new Map<string, string[]>();
@@ -115,8 +154,13 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[]): GenericEven
         };
         if (task) {
           const deps = depsOf(e).map((d) => taskResult.get(d)).filter((x): x is string => !!x);
-          const parents = [lastLead ?? previous, ...deps];
-          ev = { ...ev, parent_id: parents[0]!, ...(parents.length > 1 ? { parent_ids: [...new Set(parents)] } : {}) };
+          const spec = specOf.get(task);
+          const first = lastLead ?? previous;
+          const parents = [...new Set([first, ...(spec ? [spec] : []), ...deps])];
+          if (parents.length > 1) {
+            const relation = (p: string) => (p === spec ? 'specifies' : deps.includes(p) ? 'reads' : lastLead ? 'decides' : 'precedes');
+            ev = { ...ev, parent_id: parents[0]!, parent_ids: parents, parent_relations: Object.fromEntries(parents.map((p) => [p, relation(p)])) };
+          }
         }
         // Parallel tasks can share an agent, so loop-engine calls pair by task.
         open(task ? `task:${task}` : `worker:${e.agent}`, id);
@@ -168,6 +212,7 @@ export function mcpSessionToGeneric(session: string, calls: McpCallRecord[]): Ge
     // Polls of the same job share a signature, so repeated waiting shows up as a loop.
     if (c.job_id) args.job_id = c.job_id;
     if (c.to) args.to = c.to;
+    if (c.issues?.length) args.issues = c.issues;
     out.push({ id: callId, parent_id: previous, kind: 'tool_call', role: 'assistant', name: c.tool, timestamp: c.at, arguments: args });
     const resultId = `${session}:r${c.seq}`;
     out.push({
@@ -195,7 +240,7 @@ export function exportGraphs(outDir: string, opts: { sinceMs?: number; limit?: n
   for (const record of listJobs(opts.limit ?? 500)) {
     if (Date.parse(record.createdAt) < since) continue;
     const fresh = getJob(record.id) ?? record;
-    const lines = jobToGeneric(fresh, readJobEvents(record.id).events);
+    const lines = jobToGeneric(fresh, readJobEvents(record.id).events, joinJob(record.id)?.prompt);
     writePrivateFile(join(outDir, 'jobs', `${record.id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
     jobs.push(record.id);
   }
