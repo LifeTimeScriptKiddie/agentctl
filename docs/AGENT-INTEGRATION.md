@@ -155,8 +155,9 @@ Background jobs started from Pi use `--caller pi`.
 ## Improving agentctl from real usage (SessionGraph)
 
 agentctl records content-free traces of what happens:
+- **Prompt side:** what the caller asked for, as features and lint codes: size, `context` present, and for run_tasks the requested task DAG (depth, width, acceptance, pinned lanes). The text itself is never recorded.
 - **Harness behavior:** job events (routing, worker calls, failure classes, cost, tokens, orchestrator phases).
-- **Interaction:** each MCP client session's sequence of tool calls (delegates, polls, cancels).
+- **Interaction:** each MCP client session's sequence of tool calls (delegates, polls, cancels), with the lint codes of each request.
 
 No task, prompt or answer text is recorded. `agentctl graph` runs [SessionGraph](https://github.com/LifeTimeScriptKiddie/sessiongraph) on those traces and uses the structure it finds to change agentctl's own code:
 
@@ -173,4 +174,5 @@ agentctl graph compare <analysis-dir> <after-dir> --proposal <proposal-id>   # k
 - **Proposals:** each names its evidence (for example "3 of 5 codex calls failed with usage_limit"), the files it targets, and the metric that must move.
 - **`compare`:** keeps a change only if mean workflow health does not drop, no finding type grows, and the proposal's metric moves the right way.
 - **`apply`:** never merges. It needs `--approve`, because workers edit files on the new branch.
+- **Prompt ↔ behavior:** `analysis.json → promptBehavior` reports each caller's task-graph fail rate and which request mistakes raise the failure rate (lift). When callers' graphs fail, `improve` proposes tightening the `agentctl_run_tasks` description (`tighten-run-tasks-<code>`), then enforcing the rule at the gate (`enforce-<code>`). Every run_tasks result already carries `spec_warnings` with a fix for each problem. The node/edge model, metrics, rule catalog and agent playbook are in [GRAPH-ENGINEERING.md](GRAPH-ENGINEERING.md).
 - **Analyzer lookup:** `AGENTCTL_SESSIONGRAPH_ANALYZER`, then `sessiongraph` on PATH, then `uv run` in `AGENTCTL_SESSIONGRAPH_ROOT` or the Pi-installed package. Without it, `graph analyze` still reports the harness hotspots.

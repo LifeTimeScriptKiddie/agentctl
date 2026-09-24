@@ -10,6 +10,7 @@ import { cancelJob, startJob, waitForJob, type JobInput, type JobLauncher } from
 import { appendMcpCall, newMcpSessionId } from './trace.js';
 import { buildLoopLanes } from '../core/orchestrateFlow.js';
 import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
+import { RUN_TASKS_ACTIVE_HINTS, guidanceFor, lintPrompt, lintTaskGraph, specWarnings } from '../graph/specRules.js';
 
 /**
  * `agentctl mcp`: agentctl as a native tool server for Claude Code, Cursor,
@@ -107,16 +108,29 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         let parsed: Record<string, unknown> = {};
         try { parsed = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>; } catch { /* non-JSON */ }
         const args = (a[0] ?? {}) as Record<string, unknown>;
+        const issues = specIssues(name, args);
         appendMcpCall(traceSession, {
           seq: ++seq, tool: name, ok: result.isError !== true, ms: Date.now() - started, caller: caller.join(',') || null,
           job_id: (parsed.job_id ?? args.job_id ?? (parsed as { id?: unknown }).id ?? null) as string | null,
           ...(typeof parsed.done === 'boolean' ? { done: parsed.done } : {}),
           ...(typeof parsed.status === 'string' ? { status: parsed.status } : {}),
           ...(typeof args.to === 'string' ? { to: args.to } : {}),
+          ...(issues.length ? { issues } : {}),
         });
       }
       return result;
     }) as never)) as typeof server.registerTool;
+
+  /** Content-free lint codes of a request (prompt side of the trace). */
+  const specIssues = (tool: string, args: Record<string, unknown>): string[] => {
+    const context = typeof args.context === 'string' ? args.context : undefined;
+    if (tool === 'agentctl_run_tasks' && Array.isArray(args.tasks)) {
+      const lint = lintTaskGraph(args.tasks as never[], context);
+      return [...new Set([...lint.issues, ...lint.tasks.flatMap((t) => t.issues)])].sort();
+    }
+    const text = tool === 'agentctl_delegate' ? args.task : tool === 'agentctl_orchestrate' ? args.goal : undefined;
+    return typeof text === 'string' ? lintPrompt(text, context) : [];
+  };
 
   const gate = (text: string): string | null => {
     if (opts.allowApprove) return null;
@@ -141,6 +155,17 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         progress: progressFromEvents(readJobEvents(id).events),
         next: `call agentctl_job_wait with job_id "${id}" (repeat until done)`,
       });
+
+  /** Attach non-blocking spec warnings (code, tasks, fix) to a JSON tool result. */
+  const withWarnings = (warnings: ReturnType<typeof specWarnings>, result: ToolResult): ToolResult => {
+    if (!warnings.length) return result;
+    try {
+      const body = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+      return { ...result, content: [{ type: 'text', text: JSON.stringify({ ...body, spec_warnings: warnings }, null, 2) }] };
+    } catch {
+      return result;
+    }
+  };
 
   /** Destructive-intent scan over everything a task graph would send to workers. */
   const gateTasks = (tasks: Array<{ instruction: string }>, context?: string) =>
@@ -284,7 +309,9 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       'You are the lead: send a graph of self-contained tasks and get every task\'s result back to judge yourself. '
       + 'Independent tasks run in parallel on fast lanes (Luna/Sonnet/Composer-fast); a task runs after its depends_on '
       + 'tasks and receives their results; a lane that is capped, times out or is unreachable is re-routed once. '
-      + 'Call again with follow-up tasks if the results need more work. Waits up to wait_seconds, else returns a job_id.',
+      + 'Call again with follow-up tasks if the results need more work. Waits up to wait_seconds, else returns a job_id. '
+      + 'Results include spec_warnings for request problems that make tasks fail.'
+      + (RUN_TASKS_ACTIVE_HINTS.length ? ` Rules: ${RUN_TASKS_ACTIVE_HINTS.map(guidanceFor).join(' ')}` : ''),
     inputSchema: withoutApproval({
       tasks: z.array(taskShape).min(1).max(12),
       goal: z.string().max(2000).optional().describe('What the tasks are for (shown in results, not sent to workers).'),
@@ -301,14 +328,15 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
     const onCaller = args.tasks.find((t) => t.agent && caller.includes(t.agent));
     if (onCaller) return fail(`task '${onCaller.id}' targets '${onCaller.agent}', the calling agent; do that work directly or pick another lane.`);
     const approval = { approve: args.approve };
-    return startAndWait({
+    const warnings = specWarnings(lintTaskGraph(args.tasks, args.context));
+    return withWarnings(warnings, await startAndWait({
       kind: 'tasks',
       tasks: args.tasks.map(({ depends_on, ...t }) => ({ ...t, ...(depends_on ? { dependsOn: depends_on } : {}) })),
       ...(args.goal ? { goal: args.goal } : {}),
       ...(args.context ? { context: args.context } : {}),
       timeoutSeconds: args.timeout_seconds ?? 300,
       approve: opts.allowApprove ? approval.approve ?? false : false,
-    }, args.wait_seconds ?? maxWait);
+    }, args.wait_seconds ?? maxWait));
   });
 
   const jobIdShape = { job_id: z.string().describe('Id returned by agentctl_delegate / agentctl_run_tasks / agentctl_orchestrate.') };

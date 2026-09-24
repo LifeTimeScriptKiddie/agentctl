@@ -20,6 +20,8 @@ export interface McpCallRecord {
   done?: boolean;
   status?: string;
   to?: string;
+  /** Spec lint codes of the request (prompt side); never request text. */
+  issues?: string[];
 }
 
 const SESSION_RE = /^mcp_[a-z0-9]{8,40}$/;

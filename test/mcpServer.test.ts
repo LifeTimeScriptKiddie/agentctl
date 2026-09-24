@@ -138,6 +138,21 @@ describe('agentctl MCP server', () => {
     expect(payload(back).error).toMatch(/calling agent/);
   });
 
+  it('returns spec warnings with a task graph and traces its lint codes (never text)', async () => {
+    const client = await connect();
+    const r = payload(await client.callTool({ name: 'agentctl_run_tasks', arguments: {
+      tasks: [{ id: 'a', instruction: 'redo it as discussed', agent: 'dry_run' }],
+    } }));
+    expect(r).toMatchObject({ done: true });
+    const codes = (r.spec_warnings as Array<{ code: string; fix: string }>).map((w) => w.code);
+    expect(codes).toEqual(expect.arrayContaining(['single_task', 'no_acceptance', 'thin_instruction', 'refers_outside']));
+    const { listMcpSessions, readMcpSession } = await import('../src/mcp/trace.js');
+    const calls = listMcpSessions().flatMap((sid) => readMcpSession(sid));
+    const traced = calls.find((c) => c.tool === 'agentctl_run_tasks')!;
+    expect(traced.issues).toEqual(expect.arrayContaining(['refers_outside', 'single_task']));
+    expect(JSON.stringify(calls)).not.toContain('as discussed');
+  });
+
   it('reports an invalid task graph without running workers', async () => {
     const client = await connect();
     const r = payload(await client.callTool({ name: 'agentctl_run_tasks', arguments: {

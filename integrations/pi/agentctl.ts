@@ -309,7 +309,10 @@ async function startAndWait(
   const started = await runJobsCli(["start", ...argv, "--caller", "pi"], cwd);
   const id = (started.result as { id?: string } | undefined)?.id;
   if (!started.ok || !id) return { error: started.error ?? "could not start job" };
-  return waitCompact(id, cwd, waitSeconds, signal, onUpdate);
+  const done = await waitCompact(id, cwd, waitSeconds, signal, onUpdate);
+  // Request problems that make tasks fail (from agentctl's spec lint), passed through for the model.
+  const warnings = (started.result as { spec_warnings?: unknown } | undefined)?.spec_warnings;
+  return warnings && done && typeof done === "object" ? { ...(done as Record<string, unknown>), spec_warnings: warnings } : done;
 }
 
 export function registerAgentctlTools(pi: ExtensionAPI): void {
@@ -363,7 +366,7 @@ export function registerAgentctlTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "agentctl_run_tasks",
     label: "agentctl run tasks",
-    description: "You lead: run a graph of self-contained tasks on other local agents and get every result back. Independent tasks run in parallel on fast models; a task runs after its depends_on tasks and receives their results; a capped or unreachable lane is re-routed once.",
+    description: "You lead: run a graph of self-contained tasks on other local agents and get every result back. Independent tasks run in parallel on fast models; a task runs after its depends_on tasks and receives their results; a capped or unreachable lane is re-routed once. Results include spec_warnings for request problems that make tasks fail.",
     promptSnippet: "agentctl_run_tasks: run your own task graph across local agents in parallel and get each result",
     promptGuidelines: TOOL_GUIDELINES,
     parameters: {
