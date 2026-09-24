@@ -6,8 +6,9 @@ import { createJob, appendJobEvent, updateJob } from '../src/jobs/store.js';
 import { appendMcpCall, newMcpSessionId } from '../src/mcp/trace.js';
 import { classifyRejection, lintPrompt, lintTaskGraph, specWarnings, SPEC_RULES, RUN_TASKS_ACTIVE_HINTS } from '../src/graph/specRules.js';
 import { analyzePromptBehavior, behaviorOf, joinJob } from '../src/graph/promptBehavior.js';
-import { exportGraphs } from '../src/graph/export.js';
+import { exportGraphs, jobToGeneric } from '../src/graph/export.js';
 import { analyzeGraphs } from '../src/graph/analyze.js';
+import { overviewMermaid, workflowMermaid } from '../src/graph/render.js';
 import { compareAnalyses, proposeImprovements, proposeSpecTightening, readMetric } from '../src/graph/improve.js';
 
 let home: string;
@@ -156,6 +157,71 @@ describe('export: requested DAG next to executed DAG', () => {
     expect(text).not.toContain(GOOD);
   });
 
+  it('draws parallel caller tasks as branches from job_start that join at finish (not a chain)', () => {
+    const job = createJob({ kind: 'tasks', input: { kind: 'tasks', tasks: [
+      { id: 'pro', instruction: GOOD, acceptance: 'x' }, { id: 'con', instruction: GOOD, acceptance: 'y' },
+    ] }, summary: 's', caller: 'claude' });
+    const at = '2026-09-24T00:00:00Z';
+    const events = [
+      { at, type: 'started', kind: 'tasks' },
+      { at, type: 'dispatch', agent: 'codex', task: 'pro', dependsOn: [] },
+      { at, type: 'dispatch', agent: 'cursor', task: 'con', dependsOn: [] },
+      { at, type: 'worker_result', agent: 'codex', ok: true, task: 'pro' },
+      { at, type: 'step', step: 'pro', ok: true, attempts: 1 },
+      { at, type: 'worker_result', agent: 'cursor', ok: true, task: 'con' },
+      { at, type: 'step', step: 'con', ok: true, attempts: 1 },
+      { at, type: 'succeeded' },
+    ];
+    const out = jobToGeneric({ ...job, status: 'succeeded' }, events, joinJob(job.id)!.prompt);
+    const start = out.find((e) => e.kind === 'job_start')!.id;
+    const calls = out.filter((e) => e.kind === 'tool_call');
+    for (const c of calls) {
+      expect(c.parent_id).toBe(start);
+      expect(Object.values(c.parent_relations ?? {})).toContain('specifies');
+    }
+    const steps = out.filter((e) => e.kind === 'step').map((e) => e.id);
+    const finish = out.at(-1)!;
+    expect(new Set(finish.parent_ids)).toEqual(new Set(steps));
+    expect(Object.values(finish.parent_relations!).every((r) => r === 'settles')).toBe(true);
+  });
+
+  it('links a re-routed attempt to the failed one with a retries edge', () => {
+    const job = createJob({ kind: 'tasks', input: {}, summary: 's' });
+    const at = '2026-09-24T00:00:00Z';
+    const out = jobToGeneric({ ...job, status: 'succeeded' }, [
+      { at, type: 'started', kind: 'tasks' },
+      { at, type: 'dispatch', agent: 'codex', task: 'a' },
+      { at, type: 'worker_result', agent: 'codex', ok: false, failureClass: 'usage_limit', task: 'a' },
+      { at, type: 'dispatch', agent: 'claude', task: 'a' },
+      { at, type: 'worker_result', agent: 'claude', ok: true, task: 'a' },
+      { at, type: 'step', step: 'a', ok: true, attempts: 2 },
+      { at, type: 'succeeded' },
+    ]);
+    const failed = out.find((e) => e.kind === 'tool_result' && e.is_error)!;
+    const second = out.filter((e) => e.kind === 'tool_call')[1]!;
+    expect(second.parent_id).toBe(failed.id);
+    expect(second.parent_relations).toEqual({ [failed.id]: 'retries' });
+  });
+
+  it('draws a skipped dependent as a cascade from the failed step, and only true ends settle the finish', () => {
+    const job = seedGraph('pi', [
+      { id: 'a', instruction: GOOD, acceptance: 'x' },
+      { id: 'b', instruction: GOOD, depends_on: ['a'], acceptance: 'x' },
+      { id: 'c', instruction: GOOD, depends_on: ['b'], acceptance: 'x' },
+    ], { a: true, b: false });
+    exportGraphs(join(home, 'c'));
+    const ev = readFileSync(join(home, 'c', 'jobs', `${job.id}.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as {
+      id: string; kind: string; parent_id: string | null; parent_ids?: string[]; parent_relations?: Record<string, string>; arguments?: { task?: string; attempts?: number };
+    });
+    const steps = ev.filter((e) => e.kind === 'step');
+    const [, bStep, cStep] = steps;
+    expect(cStep!.parent_relations).toEqual({ [bStep!.id]: 'cascades', [`${job.id}:spec:c`]: 'specifies' });
+    const dispatchB = ev.find((e) => e.kind === 'tool_call' && e.arguments?.task === 'b')!;
+    expect(Object.values(dispatchB.parent_relations!)).not.toContain('precedes'); // no redundant edge from start
+    const finish = ev.at(-1)!;
+    expect(finish.parent_ids ?? [finish.parent_id]).toEqual([cStep!.id]);
+  });
+
   it('carries request lint codes into MCP session graphs', () => {
     const s = newMcpSessionId();
     appendMcpCall(s, { seq: 1, tool: 'agentctl_run_tasks', ok: true, ms: 5, caller: 'pi', job_id: null, issues: ['no_acceptance'] });
@@ -209,6 +275,58 @@ describe('graph engineering: tighten, then enforce', () => {
     expect(compareAnalyses(better, a).checks.find((c) => c.name === gate)!.pass).toBe(false);
     expect(compareAnalyses(a, better).checks.find((c) => c.name === gate)!.pass).toBe(true);
     expect(worse.promptBehavior.taskGraphs.overall.failRate).toBe(1);
+  });
+});
+
+describe('pictures', () => {
+  it('draws a job as asked vs did lanes, colored by outcome, with typed edges and no text', async () => {
+    const job = seedGraph('pi', [
+      { id: 'a', instruction: GOOD, acceptance: 'list' },
+      { id: 'b', instruction: `${GOOD} as discussed`, depends_on: ['a'] },
+    ], { a: true, b: false });
+    const a = await analyzeGraphs(join(home, 'p'), { analyzer: null });
+    const mmd = readFileSync(join(home, 'p', 'workflows', `${job.id}.mmd`), 'utf8');
+    expect(mmd).toMatch(/^%% job_/);
+    expect(mmd).toContain('subgraph P["asked (prompt)"]');
+    expect(mmd).toContain('subgraph B["did (behavior)"]');
+    expect(mmd).toMatch(/-->\|specifies\|/);
+    expect(mmd).toMatch(/-->\|reads\|/);
+    expect(mmd).toMatch(/-->\|depends_on\|/);
+    expect(mmd).toContain('✗ bad_output');
+    expect(mmd).toMatch(/:::kFail/);
+    expect(mmd).toContain('⚠ no_acceptance, refers_outside');
+    expect(mmd).not.toContain('as discussed');
+    expect(mmd).not.toContain('SECRET OUTPUT');
+
+    const html = readFileSync(join(home, 'p', 'graph.html'), 'utf8');
+    expect(html).toContain(job.id);
+    expect(html).toContain('had failed tasks');
+    expect(html).not.toContain(GOOD);
+    const summary = readFileSync(join(home, 'p', 'summary.md'), 'utf8');
+    expect(summary).toContain('```mermaid');
+    expect(a.promptBehavior.taskGraphs.overall.failed).toBe(1);
+  });
+
+  it('draws callers → outcomes → refusal reasons and implicated issues', () => {
+    const o = overviewMermaid({
+      taskGraphs: {
+        overall: { graphs: 3, succeeded: 1, rejected: 1, failed: 1, cancelled: 0, unfinished: 0, failRate: 0.667, tasks: 3, taskFailures: 1, cascadeSkips: 0, rerouted: 0, rejections: { not_on_roster: 1 } },
+        byCaller: { pi: { graphs: 3, succeeded: 1, rejected: 1, failed: 1, cancelled: 0, unfinished: 0, failRate: 0.667, tasks: 3, taskFailures: 1, cascadeSkips: 0, rerouted: 0, rejections: { not_on_roster: 1 } } },
+      },
+      units: { total: 3, failed: 2, failRate: 0.667 },
+      issues: { no_acceptance: { units: 2, failed: 1, failRate: 0.5, lift: 2 }, not_on_roster: { units: 1, failed: 1, failRate: 1, lift: null } },
+    });
+    expect(o).toContain('c0["pi<br/>3 graph(s) · fail 67%"]:::kIssue');
+    expect(o).toContain('c0 -->|1| o_rejected');
+    expect(o).toContain('o_rejected -->|1| r0');
+    expect(o).toMatch(/o_failed -.-> i\d/);
+    expect(o.match(/not_on_roster/g)).toHaveLength(1); // a refusal code is drawn once, not again as an issue
+    expect(overviewMermaid(undefined)).toContain('no caller task graphs');
+  });
+
+  it('escapes quotes and angle brackets in labels', () => {
+    const m = workflowMermaid([{ id: 'x', parent_id: null, kind: 'event', name: 'a"<b>' }]);
+    expect(m).toContain('a#quot;#lt;b#gt;');
   });
 });
 

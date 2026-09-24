@@ -8,6 +8,8 @@ import { readMcpSession } from '../mcp/trace.js';
 import { exportGraphs, type ExportSummary } from './export.js';
 import { analyzePromptBehavior, joinJob, type JobPromptBehavior, type PromptBehaviorAnalysis } from './promptBehavior.js';
 import { guidanceFor } from './specRules.js';
+import { graphHtml, overviewMermaid, workflowMermaid } from './render.js';
+import type { GenericEvent } from './export.js';
 
 /** How to invoke the SessionGraph analyzer on this machine. */
 export interface AnalyzerCommand {
@@ -175,7 +177,56 @@ export async function analyzeGraphs(outDir: string, opts: { sinceMs?: number; an
   };
   writePrivateFile(join(outDir, 'analysis.json'), JSON.stringify(result, null, 2));
   writePrivateFile(join(outDir, 'summary.md'), formatSummary(result));
+  writePictures(outDir, result, joined);
   return result;
+}
+
+function readExport(outDir: string, type: 'job' | 'mcp', id: string): GenericEvent[] {
+  const path = join(outDir, 'export', type === 'job' ? 'jobs' : 'mcp', `${id}.jsonl`);
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((l) => {
+    try { return [JSON.parse(l) as GenericEvent]; } catch { return []; }
+  });
+}
+
+/**
+ * The session worth looking at first: lowest SessionGraph health, else a
+ * failed or refused caller graph, else the newest caller graph, else any job.
+ */
+export function pickFocus(a: GraphAnalysis, joined: JobPromptBehavior[]): { id: string; type: 'job' | 'mcp'; why: string } | null {
+  const scored = a.sessions.filter((s) => s.health !== null && s.health < 100).sort((x, y) => (x.health ?? 0) - (y.health ?? 0))[0];
+  if (scored) return { id: scored.id, type: scored.type, why: `Lowest SessionGraph workflow health (${scored.health}): ${scored.findings.map((f) => f.code).join(', ') || 'no findings'}.` };
+  // Executed failures show more of the workflow than refusals; bigger graphs first.
+  const bad = [...joined.filter((j) => j.outcome === 'failed').sort((x, y) => y.tasks.length - x.tasks.length),
+    ...joined.filter((j) => j.outcome === 'rejected')][0];
+  if (bad) return { id: bad.id, type: 'job', why: `Caller ${bad.caller}'s ${bad.kind} job ${bad.outcome === 'rejected' ? `was refused (${bad.rejection})` : 'had failed tasks'}.` };
+  const graphs = joined.filter((j) => j.kind === 'tasks');
+  const pick = graphs.at(-1) ?? joined.at(-1);
+  return pick ? { id: pick.id, type: 'job', why: `Nothing failed in this window; showing ${graphs.length ? `the latest caller task graph (${pick.caller})` : 'the latest job'}.` } : null;
+}
+
+/** workflows/<id>.mmd per session, and graph.html with the overview and the focus session. */
+function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavior[]): void {
+  ensurePrivateDir(join(outDir, 'workflows'));
+  const inputs = [
+    ...a.exported.jobs.map((id) => ({ id, type: 'job' as const })),
+    ...a.exported.mcpSessions.map((id) => ({ id, type: 'mcp' as const })),
+  ];
+  for (const { id, type } of inputs) {
+    const events = readExport(outDir, type, id);
+    if (events.length) writePrivateFile(join(outDir, 'workflows', `${id}.mmd`), workflowMermaid(events, id));
+  }
+  const focus = pickFocus(a, joined);
+  const g = a.promptBehavior.taskGraphs.overall;
+  writePrivateFile(join(outDir, 'graph.html'), graphHtml({
+    title: `agentctl graph analysis ${a.createdAt.slice(0, 10)}`,
+    overview: overviewMermaid(a.promptBehavior),
+    ...(focus ? { focus: { id: focus.id, why: focus.why, mermaid: workflowMermaid(readExport(outDir, focus.type, focus.id)) } } : {}),
+    notes: [
+      `${a.exported.jobs.length} job(s), ${a.exported.mcpSessions.length} MCP session(s); caller task graphs ${g.graphs}, fail rate ${Math.round(g.failRate * 100)}%.`,
+      'Every session\'s workflow is in workflows/<id>.mmd; numbers are in summary.md and analysis.json.',
+    ],
+  }));
 }
 
 export function formatSummary(a: GraphAnalysis): string {
@@ -213,6 +264,13 @@ function formatPromptBehavior(pb: PromptBehaviorAnalysis | undefined): string[] 
   const pct = (x: number) => `${Math.round(x * 100)}%`;
   const lines = [
     '## Prompt ↔ behavior',
+    '',
+    '```mermaid',
+    overviewMermaid(pb).trimEnd(),
+    '```',
+    '',
+    'Pictures: `graph.html` (overview + the session to look at first), `workflows/<id>.mmd` (every session).',
+    '',
     `- Caller task graphs: ${g.graphs} (${g.succeeded} ok, ${g.failed} with failed tasks, ${g.rejected} refused, ${g.cancelled} cancelled) — fail rate ${pct(g.failRate)}; ${g.taskFailures} task failure(s), ${g.cascadeSkips} cascade skip(s), ${g.rerouted} re-route(s)`,
     ...Object.entries(pb.taskGraphs.byCaller).map(([c, s]) =>
       `- Caller ${c}: ${s.graphs} graph(s), fail rate ${pct(s.failRate)}${Object.keys(s.rejections).length ? `; refused: ${Object.entries(s.rejections).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`),

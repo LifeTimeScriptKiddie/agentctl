@@ -67,12 +67,36 @@ Each node has `parent_id`. Nodes with several parents also carry `parent_ids` (f
 | `specifies` | `task_spec` → worker `tool_call` | This dispatch executes that requested task |
 | `reads` | dependency's `tool_result` → worker `tool_call` | The worker received that result (executed DAG) |
 | `decides` | lead `tool_result` → worker `tool_call` | The lead's decision created this task (orchestrate loop) |
+| `retries` | failed `tool_result` → next attempt's `tool_call` | Same task retried or re-routed to another lane |
+| `cascades` | failed dependency's `step` → skipped task's `step` | The task never ran because a dependency failed |
+| `settles` | branch-end `step` → `finish` | A branch of the graph that nothing else read ended here |
 | `precedes` | previous event → next | Plain order (the default when no relation is given) |
 
+Task dispatches branch from the lead's decision (orchestrate loop) or from `job_start` (caller-led graphs). A task with dependencies hangs off the results it `reads`, not the start. Parallel tasks are therefore parallel branches, never a chain. `finish` joins every branch end.
+
 A requested edge (`depends_on`) paired with an executed edge (`reads`) is how you compare the **requested DAG** with the **executed DAG** node by node. Three cases:
-- A `task_spec` with no `specifies` child was never run: it was skipped, blocked, or the graph was refused.
-- A task with two `worker:` calls was re-routed.
-- A skipped task whose dependency failed is a **cascade**: failure propagated along an edge.
+- A `task_spec` whose only `specifies` child is a 0-attempt `step`, or that has no child at all, never ran: it was skipped, blocked, or the graph was refused.
+- A `retries` edge means the task was retried or re-routed.
+- A `cascades` edge means failure propagated along a dependency edge.
+
+## Pictures
+
+Every `graph analyze` also writes:
+
+| File | Shows | Use it to |
+| --- | --- | --- |
+| `graph.html` | Overview (callers → outcomes → refusal reasons and implicated spec issues), plus the workflow of the session to look at first: lowest health, else the largest failed graph, else a refused one, else the latest graph | Open it in a browser first |
+| `workflows/<id>.mmd` | One Mermaid flowchart per job and MCP session. An "asked (prompt)" lane (request and task specs) sits beside a "did (behavior)" lane (calls, results, steps, finish). Typed edges are labeled; `retries` is dashed | Inspect any session; it renders in GitHub, Obsidian and VS Code |
+| `summary.md` | The overview as a Mermaid block, above the lift table | Read in any Markdown viewer |
+
+Colors:
+- blue: a request or task with a clean spec;
+- amber: spec issues, listed after ⚠;
+- grey: agentctl calls;
+- green or red: results and task steps;
+- heavy green or red border: final outcome.
+
+The overview lists an issue only when it clears the same evidence bar as `graph improve` (lift ≥ 1.5, or fail rate ≥ 0.3 with no baseline), so it never flags noise. Pictures are content-free like the exports. `graph.html` loads the Mermaid library from cdn.jsdelivr.net and falls back to showing the diagram source when offline. The weekly job's latest page is `~/.agentctl/graph/latest/graph.html`.
 
 ### Invariants (tests enforce them)
 
@@ -187,6 +211,7 @@ Below these, `improve` stays quiet.
 | Node and edge export (prompt + behavior) | `src/graph/export.ts` |
 | SessionGraph run, hotspots, summary | `src/graph/analyze.ts` |
 | Proposals, thresholds, metrics, compare gates | `src/graph/improve.ts` |
+| Pictures (workflow and overview Mermaid, `graph.html`) | `src/graph/render.ts` |
 | CLI (`graph export/analyze/improve/apply/compare`) | `src/graph/command.ts` |
 | MCP descriptions, `spec_warnings`, content-free trace | `src/mcp/server.ts`, `src/mcp/trace.ts` |
 | Pi tool pass-through | `integrations/pi/agentctl.ts` |
