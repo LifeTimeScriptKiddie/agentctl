@@ -8,6 +8,8 @@ import { findDestructive } from '../approval.js';
 import { getJob, listJobs, readJobEvents, readJobResult, isJobId } from '../jobs/store.js';
 import { cancelJob, startJob, waitForJob, type JobInput, type JobLauncher } from '../jobs/runner.js';
 import { appendMcpCall, newMcpSessionId } from './trace.js';
+import { buildLoopLanes } from '../core/orchestrateFlow.js';
+import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
 
 /**
  * `agentctl mcp`: agentctl as a native tool server for Claude Code, Cursor,
@@ -63,9 +65,13 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         + 'being asked, when another agent fits the work better than you or an independent opinion helps: '
         + 'codex_write (GPT Luna/Sol) for code edits, tests and shell work in the repo; claude (Opus 5.5 for deep '
         + 'review/hard reasoning, Sonnet otherwise) for review and writing; cursor (Composer) for fast repository '
-        + 'questions; agy for web research. Use agentctl_delegate for one task, agentctl_orchestrate when a lead should '
-        + 'split work across workers (parallel where independent) and combine the results. Do not use it for simple edits or questions you can handle directly. '
-        + 'Long work returns a job_id: poll agentctl_job_wait until done, then read the result. '
+        + 'questions; agy for web research. Pick the tool by who leads: agentctl_delegate for one task; '
+        + 'agentctl_run_tasks when you can split the work yourself (you are the lead: send a task graph, independent '
+        + 'tasks run in parallel on fast lanes, you get every result back and decide the next step); agentctl_orchestrate '
+        + 'only when you want another model to plan and combine the work. Pass what you already know (files read, '
+        + 'decisions) in `context` so workers do not rediscover it. Do not use agentctl for simple edits or questions you '
+        + 'can handle directly. Tools wait for the answer when they can; if one returns done=false, call '
+        + 'agentctl_job_wait with its job_id until done. '
         + (opts.allowApprove
           ? 'approve/approve_context are available; set them only when the human has explicitly approved the action.'
           : 'Destructive or outward-facing actions (push, publish, deploy, rm -rf …) are refused here; ask the human to run them with --approve.'),
@@ -124,34 +130,49 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       caller: caller.join(',') || null, ...(opts.launch ? { launch: opts.launch } : {}),
     });
     const waited = await waitForJob(record.id, Math.min(waitSeconds, maxWait) * 1000);
-    if (!waited.done) {
-      return ok({
-        job_id: record.id, status: waited.record.status, done: false,
-        next: `call agentctl_job_wait with job_id "${record.id}" (repeat until done)`,
-      });
-    }
-    return ok({ job_id: record.id, status: waited.record.status, done: true, result: waited.result });
+    return ok(waitView(record.id, waited));
   };
+
+  /** Caller-sized wait response: compact result when done, progress and the next call otherwise. */
+  const waitView = (id: string, waited: Awaited<ReturnType<typeof waitForJob>>) => (waited.done
+    ? { job_id: id, status: waited.record.status, done: true, result: compactForCaller(waited.result, id) }
+    : {
+        job_id: id, status: waited.record.status, done: false,
+        progress: progressFromEvents(readJobEvents(id).events),
+        next: `call agentctl_job_wait with job_id "${id}" (repeat until done)`,
+      });
+
+  /** Destructive-intent scan over everything a task graph would send to workers. */
+  const gateTasks = (tasks: Array<{ instruction: string }>, context?: string) =>
+    gate([...tasks.map((t) => t.instruction), context ?? ''].join('\n'));
 
   server.registerTool('agentctl_agents', {
     title: 'List agents',
-    description: 'Configured agents with availability, capabilities and default model. No model calls.',
+    description: 'Worker lanes with availability, capabilities, the fast model tasks run on by default, the stronger '
+      + 'model a task may request, and any usage-limit cap. Use it to pick `agent`/`model` for agentctl_run_tasks. No model calls.',
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async () => {
     const reg = registry();
     const health = await reg.healthcheck();
+    const lanes = new Map(buildLoopLanes(reg, reg.names(), health).map((l) => [l.name, l]));
     return ok({
       caller_excluded: caller,
-      agents: reg.names().map((name) => ({
-        name,
-        available: health[name]?.available ?? false,
-        routable: !caller.includes(name),
-        transport: reg.get(name).transport,
-        capabilities: reg.get(name).capabilities(),
-        default_model: reg.getPreset(name)?.models?.default ?? reg.getPreset(name)?.model ?? null,
-        models: reg.getPreset(name)?.models?.options ?? [],
-      })),
+      agents: reg.names().map((name) => {
+        const lane = lanes.get(name);
+        return {
+          name,
+          available: lane?.available ?? false,
+          routable: !caller.includes(name),
+          transport: reg.get(name).transport,
+          capabilities: reg.get(name).capabilities(),
+          fast_model: lane?.workerModel ?? null,
+          fast_effort: lane?.workerEffort ?? null,
+          strong_model: lane?.strongModel ?? null,
+          ...(lane?.note ? { note: lane.note } : {}),
+          models: reg.getPreset(name)?.models?.options ?? [],
+        };
+      }),
     });
   });
 
@@ -207,11 +228,12 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   server.registerTool('agentctl_orchestrate', {
     title: 'Orchestrate a multi-step goal',
     description:
-      'A lead model answers directly or delegates a task graph to fast worker agents (independent tasks run in '
-      + 'parallel), reads their results, and decides again until it can answer. Runs as a durable background job. '
-      + 'Returns a job_id; poll agentctl_job_wait, read progress with agentctl_job_events.',
+      'Another model leads: it answers directly or delegates a task graph to fast worker agents (independent tasks '
+      + 'run in parallel), reads their results, and decides again until it can answer. Prefer agentctl_run_tasks when '
+      + 'you can split the work yourself. Waits for the answer up to wait_seconds; otherwise returns a job_id for agentctl_job_wait.',
     inputSchema: withoutApproval({
-      goal: z.string().min(1).describe('The overall goal, with the context workers need.'),
+      goal: z.string().min(1).describe('The overall goal.'),
+      context: z.string().max(24_000).optional().describe('What you already know (files read, decisions, constraints); quoted for the lead as untrusted background.'),
       orchestrator: z.string().optional().describe('Agent that plans/verifies (default: configured orchestrator).'),
       orchestrator_model: z.string().optional(),
       budget_usd: z.number().positive().optional().describe('Stop once reported cost exceeds this.'),
@@ -220,16 +242,17 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       dry_plan: z.boolean().optional().describe('Return the plan without executing it.'),
       no_synth: z.boolean().optional(),
       timeout_seconds: z.number().int().min(10).max(3600).optional().describe('Per-agent timeout (default 180).'),
-      wait_seconds: z.number().int().min(0).max(300).optional().describe(`Max seconds to wait here (capped at ${maxWait}; default 0).`),
+      wait_seconds: z.number().int().min(0).max(300).optional().describe(`Max seconds to wait here (capped at ${maxWait}; default ${maxWait}).`),
       ...approvalShape(),
     }),
     annotations: { readOnlyHint: false, openWorldHint: true },
   }, async (args) => {
-    const blocked = gate(args.goal);
+    const blocked = gate(`${args.goal}\n${args.context ?? ''}`);
     if (blocked) return fail(blocked);
     const approval = { approve: args.approve };
     return startAndWait({
       kind: 'orchestrate', goal: args.goal,
+      ...(args.context ? { context: args.context } : {}),
       ...(args.orchestrator ? { orchestrator: args.orchestrator } : {}),
       ...(args.orchestrator_model ? { orchestratorModel: args.orchestrator_model } : {}),
       ...(args.budget_usd != null ? { budgetUsd: args.budget_usd } : {}),
@@ -239,20 +262,65 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       noSynth: args.no_synth ?? false,
       timeoutSeconds: args.timeout_seconds ?? 180,
       approve: opts.allowApprove ? approval.approve ?? false : false,
-    }, args.wait_seconds ?? 0);
+    }, args.wait_seconds ?? maxWait);
   });
 
-  const jobIdShape = { job_id: z.string().describe('Id returned by agentctl_delegate / agentctl_orchestrate.') };
+  const taskShape = z.object({
+    id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).describe('Unique id (letters, digits, - _), used in depends_on.'),
+    instruction: z.string().min(1).max(8000)
+      .describe('Self-contained task. The worker sees only this, the shared context and its dependencies\' results.'),
+    agent: z.string().optional().describe('Lane from agentctl_agents (codex, claude, cursor, pi…); omit to route automatically.'),
+    depends_on: z.array(z.string()).optional().describe('Ids of tasks whose results this task needs; it runs after them.'),
+    type: z.enum(['reason', 'code', 'search', 'shell', 'bulk']).optional(),
+    needs: z.array(z.string()).optional().describe('Required capabilities, e.g. ["canRunShell"].'),
+    model: z.string().optional().describe("Only for hard tasks: the lane's strong_model (see agentctl_agents)."),
+    effort: z.string().optional(),
+    acceptance: z.string().max(4000).optional().describe('What a good result contains.'),
+  });
+
+  server.registerTool('agentctl_run_tasks', {
+    title: 'Run a task graph (you lead)',
+    description:
+      'You are the lead: send a graph of self-contained tasks and get every task\'s result back to judge yourself. '
+      + 'Independent tasks run in parallel on fast lanes (Luna/Sonnet/Composer-fast); a task runs after its depends_on '
+      + 'tasks and receives their results; a lane that is capped, times out or is unreachable is re-routed once. '
+      + 'Call again with follow-up tasks if the results need more work. Waits up to wait_seconds, else returns a job_id.',
+    inputSchema: withoutApproval({
+      tasks: z.array(taskShape).min(1).max(12),
+      goal: z.string().max(2000).optional().describe('What the tasks are for (shown in results, not sent to workers).'),
+      context: z.string().max(24_000).optional()
+        .describe('Shared background every worker receives (files read, decisions, constraints), quoted as untrusted.'),
+      timeout_seconds: z.number().int().min(10).max(3600).optional().describe('Per-worker timeout (default 300).'),
+      wait_seconds: z.number().int().min(0).max(300).optional().describe(`Max seconds to wait here (capped at ${maxWait}; default ${maxWait}).`),
+      ...approvalShape(),
+    }),
+    annotations: { readOnlyHint: false, openWorldHint: true },
+  }, async (args) => {
+    const blocked = gateTasks(args.tasks, args.context);
+    if (blocked) return fail(blocked);
+    const onCaller = args.tasks.find((t) => t.agent && caller.includes(t.agent));
+    if (onCaller) return fail(`task '${onCaller.id}' targets '${onCaller.agent}', the calling agent; do that work directly or pick another lane.`);
+    const approval = { approve: args.approve };
+    return startAndWait({
+      kind: 'tasks',
+      tasks: args.tasks.map(({ depends_on, ...t }) => ({ ...t, ...(depends_on ? { dependsOn: depends_on } : {}) })),
+      ...(args.goal ? { goal: args.goal } : {}),
+      ...(args.context ? { context: args.context } : {}),
+      timeoutSeconds: args.timeout_seconds ?? 300,
+      approve: opts.allowApprove ? approval.approve ?? false : false,
+    }, args.wait_seconds ?? maxWait);
+  });
+
+  const jobIdShape = { job_id: z.string().describe('Id returned by agentctl_delegate / agentctl_run_tasks / agentctl_orchestrate.') };
 
   server.registerTool('agentctl_job_wait', {
     title: 'Wait for a job',
-    description: `Wait up to wait_seconds (max ${maxWait}) for a job; returns the result when done, else its status. Call again until done.`,
+    description: `Wait up to wait_seconds (max ${maxWait}) for a job; returns the compact result when done, else progress. Call again until done.`,
     inputSchema: { ...jobIdShape, wait_seconds: z.number().int().min(0).max(300).optional() },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async ({ job_id, wait_seconds }) => {
     try {
-      const r = await waitForJob(jobId(job_id), Math.min(wait_seconds ?? maxWait, maxWait) * 1000);
-      return ok({ job_id, status: r.record.status, done: r.done, ...(r.done ? { result: r.result } : {}) });
+      return ok(waitView(job_id, await waitForJob(jobId(job_id), Math.min(wait_seconds ?? maxWait, maxWait) * 1000)));
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e));
     }
@@ -274,7 +342,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
 
   server.registerTool('agentctl_job_result', {
     title: 'Job result',
-    description: 'The finished job\'s full result (plan, step outcomes, synthesis, cost).',
+    description: 'The finished job\'s full, uncompacted result (plan, every output, cost). agentctl_job_wait already returns the compact form.',
     inputSchema: jobIdShape,
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async ({ job_id }) => {

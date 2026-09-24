@@ -16,7 +16,7 @@ import { redact, redactDeep } from '../core/redact.js';
  *   cancel        marker file: cancellation requested
  */
 
-export const JOB_KINDS = ['orchestrate', 'delegate', 'ask'] as const;
+export const JOB_KINDS = ['orchestrate', 'tasks', 'delegate', 'ask'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 export const TERMINAL_STATUSES = ['succeeded', 'failed', 'cancelled'] as const;
 export type JobStatus = 'queued' | 'running' | (typeof TERMINAL_STATUSES)[number];

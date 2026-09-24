@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import type { LoopTaskRef } from '../core/orchestrateLoop.js';
+import type { OrchestrateHooks } from '../core/orchestrateFlow.js';
+import type { StepOutcome } from '../core/orchestrator.js';
 import { fileURLToPath } from 'node:url';
 import type { AdapterRegistry } from '../adapters/registry.js';
-import { agentAsk, agentDelegate, agentOrchestrate } from '../api.js';
+import { agentAsk, agentDelegate, agentOrchestrate, agentRunTasks } from '../api.js';
 import { loadRegistry } from '../core/loadRegistry.js';
 import type { AskResult } from '../core/ask.js';
 import {
@@ -37,6 +39,10 @@ export interface JobInput {
   excludeAgents?: string[];
   /** Orchestrate only: 'strict' selects plan→verify; default is the loop engine. */
   engine?: 'loop' | 'strict';
+  /** Tasks only: the caller-built task graph (see agentRunTasks). */
+  tasks?: unknown[];
+  /** Orchestrate/tasks: untrusted background from the caller, quoted for the lead or workers. */
+  context?: string;
 }
 
 /** Graph node ids only (never instruction text). */
@@ -55,6 +61,10 @@ function workerFields(r: AskResult, cancelled = false): Record<string, unknown> 
 }
 
 function summaryOf(input: JobInput): string {
+  if (input.kind === 'tasks') {
+    const n = Array.isArray(input.tasks) ? input.tasks.length : 0;
+    return n ? `${input.goal?.trim() ? `${input.goal.trim()} · ` : ''}${n} caller-led task(s)` : '';
+  }
   return input.goal ?? input.task ?? input.prompt ?? '';
 }
 
@@ -78,7 +88,10 @@ export function startJob(
   opts: { caller?: string | null; launch?: JobLauncher; cwd?: string } = {},
 ): JobRecord {
   const text = summaryOf(input).trim();
-  if (!text) throw new Error(`a ${input.kind} job needs ${input.kind === 'orchestrate' ? 'a goal' : 'a task'}`);
+  if (!text) {
+    const needs = input.kind === 'orchestrate' ? 'a goal' : input.kind === 'tasks' ? 'a non-empty task list' : 'a task';
+    throw new Error(`a ${input.kind} job needs ${needs}`);
+  }
   if (process.env.AGENTCTL_WORKER_DEPTH) {
     throw new Error('Nested agentctl workers are disabled; return work to the caller.');
   }
@@ -119,8 +132,43 @@ export async function runJob(
 
   let exitCode = 1;
   let error: string | null = null;
+  // Lead calls, task-tagged worker calls and step outcomes, for progress and the SessionGraph export.
+  const graphHooks: OrchestrateHooks = {
+    onOrchCallStart: (phase) => appendJobEvent(id, { type: 'orchestrator', phase }),
+    onOrchCall: (phase, r) => appendJobEvent(id, {
+      type: 'orchestrator_result', phase, agent: r.agent, model: r.model, ok: r.ok,
+      failureClass: r.failureClass, costUsd: r.costUsd, steppedDown: r.steppedDown,
+    }),
+    // Loop-engine calls carry their graph node, so exports can draw the real DAG.
+    onDispatchStart: (agent, model, effort, task) => appendJobEvent(id, {
+      type: 'dispatch', agent, model, effort, ...taskFields(task),
+    }),
+    onDispatch: (r, task) => appendJobEvent(id, {
+      type: 'worker_result', ...workerFields(r, signal.aborted), ...taskFields(task),
+    }),
+  };
+  const graphStep = (outcome: StepOutcome) => appendJobEvent(id, {
+    type: 'step', step: outcome.id, agent: outcome.agent, model: outcome.model, ok: outcome.ok,
+    attempts: outcome.attempts, costUsd: outcome.costUsd, note: outcome.note,
+    ...('dependsOn' in outcome ? { dependsOn: outcome.dependsOn } : {}),
+  });
   try {
-    if (input.kind === 'orchestrate') {
+    if (input.kind === 'tasks') {
+      const r = await agentRunTasks(registry, {
+        tasks: input.tasks ?? [],
+        timeoutSeconds: input.timeoutSeconds ?? 300,
+        approve: input.approve ?? false,
+        ...(input.goal ? { goal: input.goal } : {}),
+        ...(input.context ? { context: input.context } : {}),
+        ...(input.excludeAgents?.length ? { excludeAgents: input.excludeAgents } : {}),
+        signal,
+        hooks: graphHooks,
+        onStep: graphStep,
+      });
+      writeJobResult(id, r);
+      exitCode = r.exitCode;
+      error = r.error ?? null;
+    } else if (input.kind === 'orchestrate') {
       const r = await agentOrchestrate(registry, {
         goal: input.goal ?? '',
         timeoutSeconds: input.timeoutSeconds,
@@ -133,26 +181,10 @@ export async function runJob(
         ...(input.maxReplans != null ? { maxReplans: input.maxReplans } : {}),
         ...(input.excludeAgents?.length ? { excludeAgents: input.excludeAgents } : {}),
         ...(input.engine ? { engine: input.engine } : {}),
+        ...(input.context ? { context: input.context } : {}),
         signal,
-        hooks: {
-          onOrchCallStart: (phase) => appendJobEvent(id, { type: 'orchestrator', phase }),
-          onOrchCall: (phase, r) => appendJobEvent(id, {
-            type: 'orchestrator_result', phase, agent: r.agent, model: r.model, ok: r.ok,
-            failureClass: r.failureClass, costUsd: r.costUsd, steppedDown: r.steppedDown,
-          }),
-          // Loop-engine calls carry their graph node, so exports can draw the real DAG.
-          onDispatchStart: (agent, model, effort, task) => appendJobEvent(id, {
-            type: 'dispatch', agent, model, effort, ...taskFields(task),
-          }),
-          onDispatch: (r, task) => appendJobEvent(id, {
-            type: 'worker_result', ...workerFields(r, signal.aborted), ...taskFields(task),
-          }),
-        },
-        onStep: (outcome) => appendJobEvent(id, {
-          type: 'step', step: outcome.id, agent: outcome.agent, model: outcome.model, ok: outcome.ok,
-          attempts: outcome.attempts, costUsd: outcome.costUsd, note: outcome.note,
-          ...('dependsOn' in outcome ? { dependsOn: outcome.dependsOn } : {}),
-        }),
+        hooks: graphHooks,
+        onStep: graphStep,
       });
       writeJobResult(id, r);
       exitCode = r.exitCode;

@@ -65,9 +65,9 @@ export interface LoopTaskRef {
   dependsOn: string[];
 }
 
-export interface LoopDeps {
+/** Worker side only: what a caller-led task graph needs. */
+export interface GraphDeps {
   agents: LoopAgent[];
-  lead: (prompt: string, phase: 'lead' | 'final') => Promise<LoopCallResult>;
   dispatch: (
     agent: string, prompt: string, model: string | null, effort: string | null, task: LoopTaskRef,
   ) => Promise<LoopCallResult>;
@@ -77,12 +77,19 @@ export interface LoopDeps {
   onCapped?: (agent: string, model: string | null, result: LoopCallResult) => void;
 }
 
+export interface LoopDeps extends GraphDeps {
+  lead: (prompt: string, phase: 'lead' | 'final') => Promise<LoopCallResult>;
+}
+
 export interface LoopOptions {
   maxRounds?: number;
   maxTasksPerRound?: number;
   maxWorkerCalls?: number;
   concurrency?: number;
-  /** Untrusted background for the lead (quoted, never instructions). */
+  /**
+   * Untrusted background (quoted, never instructions): shown to the lead in
+   * the loop engine, and to every worker in a caller-led task graph.
+   */
   context?: string;
   approveStep?: ApproveStep;
   shouldAbort?: () => boolean;
@@ -118,6 +125,18 @@ const EnvelopeSchema = z.object({
   tasks: z.array(TaskSchema).min(1),
 }).strict();
 export type LoopTask = z.infer<typeof TaskSchema>;
+
+/** Largest caller-supplied graph in one call (the lead is capped per round separately). */
+export const MAX_CALLER_TASKS = 12;
+
+/** Parse a caller-supplied task list (MCP/Pi/CLI). Returns the tasks or the first problem. */
+export function parseTaskBatch(value: unknown): { tasks: LoopTask[] } | { error: string } {
+  const parsed = z.array(TaskSchema).min(1).max(MAX_CALLER_TASKS).safeParse(value);
+  if (parsed.success) return { tasks: parsed.data };
+  const issue = parsed.error.issues[0];
+  const where = issue?.path.length ? ` at tasks.${issue.path.join('.')}` : '';
+  return { error: `invalid task list${where}: ${issue?.message ?? 'unknown problem'}` };
+}
 
 export type LeadDecision =
   | { kind: 'answer'; text: string }
@@ -237,10 +256,11 @@ export function buildLeadPrompt(args: {
   ].filter(Boolean).join('\n\n');
 }
 
-export function buildWorkerPrompt(task: LoopTask, deps: LoopOutcome[]): string {
+export function buildWorkerPrompt(task: LoopTask, deps: LoopOutcome[], context?: string): string {
   return [
     'You are a delegated worker in agentctl. Do only the assigned task, quickly and concisely. Do not delegate or launch other agents.',
     'Report concrete results and evidence. Say plainly what you could not do or check.',
+    context ? quoteUntrusted('shared context from the calling agent', context) : '',
     ...deps.map((d) => quoteUntrusted(`result of ${d.id} (${d.agent})`, clip(d.output, RESULT_EXCERPT))),
     `Assigned task:\n${task.instruction}`,
     task.acceptance ? `A good result contains:\n${task.acceptance}` : '',
@@ -254,40 +274,35 @@ function asPlanStep(t: LoopTask): PlanStep {
   };
 }
 
-/** Run the lead loop over a task graph. Throws only when the very first lead call fails. */
-export async function runLoopOrchestration(
-  goal: string,
-  deps: LoopDeps,
-  opts: LoopOptions = {},
-): Promise<LoopResult> {
-  const maxRounds = Math.max(1, opts.maxRounds ?? LOOP_MAX_ROUNDS);
-  const maxTasks = opts.maxTasksPerRound ?? LOOP_MAX_TASKS_PER_ROUND;
+/**
+ * One run's task graph and its executor, shared by the lead loop and by
+ * caller-led graphs: tasks, outcomes, cost, the DAG scheduler and per-task
+ * dispatch with re-routing.
+ */
+function createGraphRun(goal: string, deps: GraphDeps, opts: LoopOptions, workerContext?: string) {
   const maxWorkerCalls = opts.maxWorkerCalls ?? LOOP_MAX_WORKER_CALLS;
   const concurrency = Math.max(1, opts.concurrency ?? LOOP_CONCURRENCY);
   const aborted = () => opts.shouldAbort?.() ?? false;
-
   const tasks: LoopTask[] = [];
   const outcomes = new Map<string, LoopOutcome>();
-  const notes: string[] = [];
   let totalCost = 0;
   let workerCalls = 0;
-  let rounds = 0;
-  let delegationRounds = 0;
   const addCost = (c: number | null | undefined) => { if (c != null) totalCost += c; };
   const ordered = () => tasks.map((t) => outcomes.get(t.id)).filter(Boolean) as LoopOutcome[];
 
-  const finish = (status: OrchestrationResult['status'], answer: string | null): LoopResult => {
+  const finish = (
+    status: OrchestrationResult['status'], answer: string | null, rounds: number, replans: number,
+  ): LoopResult => {
     const all = ordered();
     const blocked = all.some((o) => o.note === APPROVAL_NOTE);
-    const final = status === 'done' && blocked ? 'blocked' : status;
     return {
       engine: 'loop',
       plan: { goal, steps: tasks.map(asPlanStep) },
       outcomes: all,
-      status: final,
+      status: status === 'done' && blocked ? 'blocked' : status,
       synthesis: answer,
       totalCostUsd: totalCost || null,
-      replans: Math.max(0, delegationRounds - 1),
+      replans,
       rounds,
       graph: {
         nodes: all.map((o) => ({
@@ -323,7 +338,7 @@ export async function runLoopOrchestration(
       return { ...base, agent: null, model: null, effort: null, ok: false, attempts: 0,
         note: `skipped: dependency ${failedDep.id} did not finish` };
     }
-    const prompt = buildWorkerPrompt(task, depOutcomes);
+    const prompt = buildWorkerPrompt(task, depOutcomes, workerContext);
     const tried = new Set<string>();
     let lane = agentOf(task.agent)!;
     let model = task.model ?? lane.workerModel;
@@ -373,6 +388,7 @@ export async function runLoopOrchestration(
 
   /** Execute one batch as a DAG: dependents wait, independents run in parallel. */
   async function runBatch(batch: LoopTask[], round: number): Promise<void> {
+    tasks.push(...batch);
     const pending = new Map(batch.map((t) => [t.id, t]));
     const running = new Map<string, Promise<void>>();
     while (pending.size > 0 || running.size > 0) {
@@ -388,16 +404,35 @@ export async function runLoopOrchestration(
     }
   }
 
+  return { tasks, ordered, addCost, finish, runBatch, aborted, concurrency };
+}
+
+/** Run the lead loop over a task graph. Throws only when the very first lead call fails. */
+export async function runLoopOrchestration(
+  goal: string,
+  deps: LoopDeps,
+  opts: LoopOptions = {},
+): Promise<LoopResult> {
+  const maxRounds = Math.max(1, opts.maxRounds ?? LOOP_MAX_ROUNDS);
+  const maxTasks = opts.maxTasksPerRound ?? LOOP_MAX_TASKS_PER_ROUND;
+  const run = createGraphRun(goal, deps, opts);
+  const notes: string[] = [];
+  let rounds = 0;
+  let delegationRounds = 0;
+  const finish = (status: OrchestrationResult['status'], answer: string | null) =>
+    run.finish(status, answer, rounds, Math.max(0, delegationRounds - 1));
+  const leadPrompt = (round: number) => buildLeadPrompt({
+    goal, agents: deps.agents, outcomes: run.ordered(), notes, round, maxRounds, maxTasks,
+    concurrency: run.concurrency, ...(opts.context ? { context: opts.context } : {}),
+  });
+
   let answer: string | null = null;
   for (let round = 1; round <= maxRounds; round += 1) {
-    if (aborted()) return finish('cancelled', null);
+    if (run.aborted()) return finish('cancelled', null);
     rounds = round;
-    const r = await deps.lead(buildLeadPrompt({
-      goal, agents: deps.agents, outcomes: ordered(), notes, round, maxRounds, maxTasks, concurrency,
-      ...(opts.context ? { context: opts.context } : {}),
-    }), 'lead');
-    addCost(r.costUsd);
-    if (aborted()) return finish('cancelled', null);
+    const r = await deps.lead(leadPrompt(round), 'lead');
+    run.addCost(r.costUsd);
+    if (run.aborted()) return finish('cancelled', null);
     if (!r.ok) {
       if (round === 1) throw new Error(`lead failed (${r.failureClass}): ${clip(r.text, 500)}`);
       notes.push(`lead call failed in round ${round} (${r.failureClass})`);
@@ -407,24 +442,43 @@ export async function runLoopOrchestration(
     if (decision.kind === 'answer') { answer = decision.text; break; }
     if (decision.kind === 'invalid') { notes.push(`round ${round}: ${decision.error}; no tasks ran`); continue; }
     if (round === maxRounds) { notes.push(`round ${round}: delegation is closed in the last round; no tasks ran`); break; }
-    const problem = validateBatch(decision.tasks, deps.agents, new Set(tasks.map((t) => t.id)));
+    const problem = validateBatch(decision.tasks, deps.agents, new Set(run.tasks.map((t) => t.id)));
     if (problem) { notes.push(`round ${round}: ${problem}; no tasks ran`); continue; }
     delegationRounds += 1;
-    tasks.push(...decision.tasks);
-    await runBatch(decision.tasks, round);
+    await run.runBatch(decision.tasks, round);
   }
-  if (aborted()) return finish('cancelled', null);
+  if (run.aborted()) return finish('cancelled', null);
 
   if (answer === null) {
     // Rounds ran out (or the lead kept delegating): one closing call, delegation closed.
-    const r = await deps.lead(buildLeadPrompt({
-      goal, agents: deps.agents, outcomes: ordered(), notes, round: maxRounds, maxRounds, maxTasks, concurrency,
-      ...(opts.context ? { context: opts.context } : {}),
-    }), 'final');
-    addCost(r.costUsd);
-    if (aborted()) return finish('cancelled', null);
+    const r = await deps.lead(leadPrompt(maxRounds), 'final');
+    run.addCost(r.costUsd);
+    if (run.aborted()) return finish('cancelled', null);
     const decision = r.ok ? parseLeadDecision(r.text, maxTasks) : null;
     if (decision?.kind === 'answer' && decision.text) answer = decision.text;
   }
   return finish(answer ? 'done' : 'failed', answer);
+}
+
+/**
+ * Caller-led graph (the calling agent is the lead): run a task DAG the caller
+ * built, with the same fast lanes, parallelism and re-routing, and return every
+ * task's result for the caller to judge. No lead model is called. Throws when
+ * the graph itself is invalid, before any worker runs.
+ */
+export async function runTaskGraph(
+  goal: string,
+  batch: LoopTask[],
+  deps: GraphDeps,
+  opts: LoopOptions = {},
+): Promise<LoopResult> {
+  const problem = validateBatch(batch, deps.agents, new Set());
+  if (problem) throw new Error(problem);
+  const run = createGraphRun(goal, deps, { maxWorkerCalls: MAX_CALLER_TASKS * 2, ...opts }, opts.context);
+  await run.runBatch(batch, 1);
+  if (run.aborted()) return run.finish('cancelled', null, 1, 0);
+  const all = run.ordered();
+  const status = all.every((o) => o.ok) ? 'done'
+    : all.some((o) => o.note === APPROVAL_NOTE) ? 'blocked' : 'failed';
+  return run.finish(status, null, 1, 0);
 }

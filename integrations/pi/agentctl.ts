@@ -5,10 +5,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const execFileAsync = promisify(execFile);
 
-/** Packaged agentctl defaults for plan/verify/synth. */
-const DEFAULT_ORCHESTRATOR = "codex";
-const DEFAULT_ORCHESTRATOR_MODEL = "gpt-5.6-sol";
-
 interface JsonEnvelope {
   ok: boolean;
   exitCode: number;
@@ -108,6 +104,8 @@ interface OrchestrateFlags {
   run: boolean;
   approve: boolean;
   resume: boolean;
+  strict: boolean;
+  /** Empty = the lead from preferences (`agentctl setup`). */
   orchestrator: string;
   orchestratorModel: string;
   budget?: string;
@@ -123,7 +121,8 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
   let run = false;
   let approve = false;
   let resume = false;
-  let orchestrator = DEFAULT_ORCHESTRATOR;
+  let strict = false;
+  let orchestrator = "";
   let orchestratorModel = "";
   let budget: string | undefined;
   let maxReplans: string | undefined;
@@ -146,6 +145,10 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
     }
     if (t === "--resume") {
       resume = true;
+      continue;
+    }
+    if (t === "--strict") {
+      strict = true;
       continue;
     }
     if (t === "--bg" || t === "--background") {
@@ -186,15 +189,15 @@ function parseOrchestrateArgs(raw: string): OrchestrateFlags | { error: string }
   if (!goal) {
     return {
       error:
-        "Usage: /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-5.6-sol] <goal>",
+        "Usage: /agentctl orchestrate [--dry-plan] [--strict] [--bg] [--orchestrator <agent>] [--orchestrator-model <model>] <goal>",
     };
   }
 
-  // Default stays dry-plan (safe preview). --run executes. If both, --run wins.
-  if (!dryPlan && !run) dryPlan = true;
+  // Runs by default (the loop engine answers plain questions in one call).
+  // --dry-plan previews a strict plan; --run is accepted for older habits.
   if (run) dryPlan = false;
 
-  return { dryPlan, run, approve, resume, orchestrator, orchestratorModel, budget, maxReplans, background, goal };
+  return { dryPlan, run, approve, resume, strict, orchestrator, orchestratorModel, budget, maxReplans, background, goal };
 }
 
 function formatOrchestration(
@@ -218,11 +221,11 @@ function formatOrchestration(
       return `- ${s.id}${who}: ${s.instruction}`;
     })
     .join("\n");
-  const orchLabel = `${orchestrator}/${orchestratorModel || "configured default"}`;
+  const orchLabel = orchestrator ? `${orchestrator}/${orchestratorModel || "configured default"}` : "configured lead";
   const header = dryPlan
     ? `dry-plan (${steps.length} steps; orchestrator ${orchLabel})`
     : `orchestrate ${orch?.status ?? (env.ok ? "ok" : "failed")} (${steps.length} steps; orchestrator ${orchLabel})`;
-  const synth = !dryPlan && orch?.synthesis ? `\n\nSynthesis:\n${orch.synthesis}` : "";
+  const synth = !dryPlan && orch?.synthesis ? `\n\nAnswer:\n${orch.synthesis}` : "";
   const err = env.error || orch?.error ? `\n\nError: ${env.error ?? orch?.error}` : "";
   return `${header}:\n${plan || "(empty)"}${synth}${err}${formatWarnings(env.warnings)}`;
 }
@@ -262,8 +265,11 @@ async function execMemoryCli(argv: string[], cwd: string): Promise<string> {
  * destructive requests come back as approval_required for the human to run.
  */
 const TOOL_GUIDELINES = [
-  "Use agentctl_delegate to hand a self-contained task to another local agent (codex for code edits/tests, claude for deep review or writing, cursor for fast repo Q&A, agy for web research) when that agent fits better than you, or for an independent second opinion.",
-  "Use agentctl_orchestrate for multi-step work that benefits from plan → parallel workers → verification; it returns a job id — poll it with agentctl_job_wait.",
+  "Use agentctl_delegate to hand one self-contained task to another local agent (codex for code edits/tests, claude for deep review or writing, cursor for fast repo Q&A, agy for web research) when that agent fits better than you, or for an independent second opinion.",
+  "Use agentctl_run_tasks when you can split the work yourself: you stay the lead, independent tasks run in parallel on fast lanes, and you get every result back to judge. Call it again with follow-up tasks if needed.",
+  "Use agentctl_orchestrate only when you want another model to plan and combine the work.",
+  "Put what you already know (files read, decisions, constraints) in `context` so workers do not rediscover it.",
+  "Tools wait for the answer; if one returns done=false, call agentctl_job_wait with its job_id.",
   "Do not use agentctl for simple edits or questions you can answer directly.",
 ];
 
@@ -271,16 +277,39 @@ function toolText(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], details: value };
 }
 
-async function startAndWait(argv: string[], cwd: string, waitSeconds: number): Promise<unknown> {
+type ToolUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void;
+
+/**
+ * Wait for a job in short slices so Pi shows progress while it runs, and
+ * cancel the job when the user interrupts the tool call.
+ */
+export async function waitCompact(
+  id: string, cwd: string, waitSeconds: number, signal?: AbortSignal, onUpdate?: ToolUpdate,
+): Promise<unknown> {
+  const deadline = Date.now() + Math.max(0, waitSeconds) * 1000;
+  let last: Record<string, unknown> = { job_id: id, done: false };
+  for (;;) {
+    if (signal?.aborted) {
+      await runJobsCli(["cancel", id], cwd).catch(() => undefined);
+      return { job_id: id, done: true, status: "cancelled", note: "cancelled because the tool call was interrupted" };
+    }
+    const slice = Math.max(0, Math.min(15, Math.ceil((deadline - Date.now()) / 1000)));
+    const waited = await runJobsCli(["wait", id, "--timeout", String(slice), "--compact"], cwd, (slice + 30) * 1000);
+    if (!waited.ok && waited.error) return { job_id: id, error: waited.error };
+    last = (waited.result ?? last) as Record<string, unknown>;
+    if (last.done === true) return last;
+    onUpdate?.(toolText({ job_id: id, status: last.status, progress: last.progress }));
+    if (Date.now() >= deadline) return { ...last, next: `call agentctl_job_wait with job_id "${id}"` };
+  }
+}
+
+async function startAndWait(
+  argv: string[], cwd: string, waitSeconds: number, signal?: AbortSignal, onUpdate?: ToolUpdate,
+): Promise<unknown> {
   const started = await runJobsCli(["start", ...argv, "--caller", "pi"], cwd);
   const id = (started.result as { id?: string } | undefined)?.id;
   if (!started.ok || !id) return { error: started.error ?? "could not start job" };
-  if (waitSeconds <= 0) return { job_id: id, done: false, next: `call agentctl_job_wait with job_id "${id}"` };
-  const waited = await runJobsCli(["wait", id, "--timeout", String(waitSeconds)], cwd, (waitSeconds + 30) * 1000);
-  const r = waited.result as { done?: boolean; job?: { status?: string }; result?: unknown } | undefined;
-  return r?.done
-    ? { job_id: id, done: true, status: r.job?.status, result: r.result }
-    : { job_id: id, done: false, status: r?.job?.status, next: `call agentctl_job_wait with job_id "${id}"` };
+  return waitCompact(id, cwd, waitSeconds, signal, onUpdate);
 }
 
 export function registerAgentctlTools(pi: ExtensionAPI): void {
@@ -302,51 +331,98 @@ export function registerAgentctlTools(pi: ExtensionAPI): void {
       },
       required: ["task"],
     } as never,
-    async execute(_id, params, _signal, _onUpdate, ctx) {
+    async execute(_id, params, signal, onUpdate, ctx) {
       const p = params as { task: string; to?: string; wait_seconds?: number };
       const argv = ["delegate", ...(p.to ? ["--to", p.to] : []), p.task];
-      return toolText(await startAndWait(argv, ctx.cwd, p.wait_seconds ?? 120));
+      return toolText(await startAndWait(argv, ctx.cwd, p.wait_seconds ?? 120, signal, onUpdate as ToolUpdate));
     },
   } as never);
 
   pi.registerTool({
     name: "agentctl_orchestrate",
     label: "agentctl orchestrate",
-    description: "Plan → route steps to workers → verify → synthesize, as a background job. Returns a job_id to poll with agentctl_job_wait.",
-    promptSnippet: "agentctl_orchestrate: multi-step plan/execute/verify across local agents (background job)",
+    description: "Another model leads: it answers or delegates a task graph to fast workers, reads the results and answers. Prefer agentctl_run_tasks when you can split the work yourself. Waits for the answer; returns a job_id if still running.",
+    promptSnippet: "agentctl_orchestrate: let another model lead a multi-agent task and return the answer",
     promptGuidelines: TOOL_GUIDELINES,
     parameters: {
       type: "object",
       properties: {
-        goal: str("The overall goal, with the context workers need."),
-        dry_plan: { type: "boolean", description: "Return the plan without executing it." },
+        goal: str("The overall goal."),
+        context: str("What you already know (files read, decisions, constraints); quoted for the lead as background."),
+        wait_seconds: { type: "integer", minimum: 0, maximum: 600, description: "How long to wait here (default 180)." },
       },
       required: ["goal"],
     } as never,
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const p = params as { goal: string; dry_plan?: boolean };
-      const argv = ["orchestrate", ...(p.dry_plan ? ["--dry-plan"] : []), p.goal];
-      return toolText(await startAndWait(argv, ctx.cwd, 0));
+    async execute(_id, params, signal, onUpdate, ctx) {
+      const p = params as { goal: string; context?: string; wait_seconds?: number };
+      const argv = ["orchestrate", ...(p.context ? ["--context", p.context] : []), p.goal];
+      return toolText(await startAndWait(argv, ctx.cwd, p.wait_seconds ?? 180, signal, onUpdate as ToolUpdate));
+    },
+  } as never);
+
+  pi.registerTool({
+    name: "agentctl_run_tasks",
+    label: "agentctl run tasks",
+    description: "You lead: run a graph of self-contained tasks on other local agents and get every result back. Independent tasks run in parallel on fast models; a task runs after its depends_on tasks and receives their results; a capped or unreachable lane is re-routed once.",
+    promptSnippet: "agentctl_run_tasks: run your own task graph across local agents in parallel and get each result",
+    promptGuidelines: TOOL_GUIDELINES,
+    parameters: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          minItems: 1,
+          maxItems: 12,
+          description: "Tasks to run.",
+          items: {
+            type: "object",
+            properties: {
+              id: str("Unique id (letters, digits, - _), used in depends_on."),
+              instruction: str("Self-contained task; the worker sees only this, the shared context and its dependencies' results."),
+              agent: str("Optional lane: codex, codex_write, claude, cursor, agy. Omit to route automatically."),
+              depends_on: { type: "array", items: { type: "string" }, description: "Ids of tasks whose results this task needs." },
+              model: str("Only for hard tasks: the lane's stronger model (codex gpt-5.6-sol, claude claude-opus-5-5)."),
+              acceptance: str("What a good result contains."),
+            },
+            required: ["id", "instruction"],
+          },
+        },
+        goal: str("What the tasks are for (shown in results, not sent to workers)."),
+        context: str("Shared background every worker receives (files read, decisions, constraints)."),
+        wait_seconds: { type: "integer", minimum: 0, maximum: 600, description: "How long to wait here (default 180)." },
+      },
+      required: ["tasks"],
+    } as never,
+    async execute(_id, params, signal, onUpdate, ctx) {
+      const p = params as {
+        tasks: Array<{ id: string; instruction: string; agent?: string; depends_on?: string[]; model?: string; acceptance?: string }>;
+        goal?: string; context?: string; wait_seconds?: number;
+      };
+      const tasks = p.tasks.map(({ depends_on, ...t }) => ({ ...t, ...(depends_on?.length ? { dependsOn: depends_on } : {}) }));
+      const argv = [
+        "tasks", "--json", JSON.stringify(tasks),
+        ...(p.goal ? ["--goal", p.goal] : []),
+        ...(p.context ? ["--context", p.context] : []),
+      ];
+      return toolText(await startAndWait(argv, ctx.cwd, p.wait_seconds ?? 180, signal, onUpdate as ToolUpdate));
     },
   } as never);
 
   pi.registerTool({
     name: "agentctl_job_wait",
     label: "agentctl job wait",
-    description: "Wait for an agentctl job; returns the result when done, else its status. Call again until done.",
+    description: "Wait for an agentctl job; returns the compact result when done, else progress. Call again until done.",
     parameters: {
       type: "object",
       properties: {
-        job_id: str("Id returned by agentctl_delegate / agentctl_orchestrate."),
+        job_id: str("Id returned by agentctl_delegate / agentctl_run_tasks / agentctl_orchestrate."),
         wait_seconds: { type: "integer", minimum: 0, maximum: 300, description: "Default 60." },
       },
       required: ["job_id"],
     } as never,
-    async execute(_id, params, _signal, _onUpdate, ctx) {
+    async execute(_id, params, signal, onUpdate, ctx) {
       const p = params as { job_id: string; wait_seconds?: number };
-      const secs = p.wait_seconds ?? 60;
-      const r = await runJobsCli(["wait", p.job_id, "--timeout", String(secs)], ctx.cwd, (secs + 30) * 1000);
-      return toolText(r.ok ? r.result : { error: r.error });
+      return toolText(await waitCompact(p.job_id, ctx.cwd, p.wait_seconds ?? 60, signal, onUpdate as ToolUpdate));
     },
   } as never);
 
@@ -377,7 +453,7 @@ export default function agentctlExtension(pi: ExtensionAPI) {
         if (sub === "help" || !sub) {
           ctx.ui.notify(
             [
-              "Pi = cockpit. agentctl = traffic controller. Codex/gpt-5.6-sol = orchestrator.",
+              "Pi = cockpit. agentctl = traffic controller. The lead comes from `agentctl setup` preferences.",
               "Usage:",
               "  /agentctl health",
               "  /agentctl memory-test  (3 live Cursor calls, synthetic data only)",
@@ -390,9 +466,10 @@ export default function agentctlExtension(pi: ExtensionAPI) {
               "  /agentctl delegate <task>",
               "Team memory (optional): AGENTCTL_GATEWAY_URL + AGENTCTL_BRIEFING_WORKSPACE (JIT context on delegate/route/ask)",
               "  /agentctl delegate --briefing-workspace team-atlas \"…\"  (or rely on env default)",
-              "  /agentctl orchestrate [--dry-plan|--run] [--orchestrator codex] [--orchestrator-model gpt-5.6-sol] <goal>",
-              "Defaults: orchestrate is --dry-plan; --run plans with codex + gpt-5.6-sol then delegates steps.",
-              "  /agentctl orchestrate --run --bg <goal>   start as a background job (returns a job id)",
+              "  /agentctl orchestrate [--strict] [--dry-plan] [--orchestrator <agent>] <goal>",
+              "Default: a lead answers or hands a task graph to fast workers, then answers. --strict: plan + verify every step.",
+              "  /agentctl orchestrate --bg <goal>   start as a background job (returns a job id)",
+              "Pi's model can also call agentctl_run_tasks / agentctl_orchestrate / agentctl_delegate on its own.",
               "  /agentctl job list | status|wait|result|events|cancel <job_id>",
             ].join("\n"),
             "info",
@@ -571,12 +648,10 @@ export default function agentctlExtension(pi: ExtensionAPI) {
             return;
           }
 
-          const argv = [
-            "orchestrate",
-            "--orchestrator",
-            parsed.orchestrator,
-          ];
+          const argv = ["orchestrate"];
+          if (parsed.orchestrator) argv.push("--orchestrator", parsed.orchestrator);
           if (parsed.orchestratorModel) argv.push("--orchestrator-model", parsed.orchestratorModel);
+          if (parsed.strict) argv.push("--strict");
           if (parsed.dryPlan) argv.push("--dry-plan");
           if (parsed.approve) argv.push("--approve");
           if (parsed.resume) argv.push("--resume");
@@ -586,8 +661,10 @@ export default function agentctlExtension(pi: ExtensionAPI) {
 
           if (parsed.background) {
             // Durable job: returns at once; Pi stays usable while it runs.
-            const jobArgv = ["start", "orchestrate", "--orchestrator", parsed.orchestrator, "--caller", "pi"];
+            const jobArgv = ["start", "orchestrate", "--caller", "pi"];
+            if (parsed.orchestrator) jobArgv.push("--orchestrator", parsed.orchestrator);
             if (parsed.orchestratorModel) jobArgv.push("--orchestrator-model", parsed.orchestratorModel);
+            if (parsed.strict) jobArgv.push("--strict");
             if (parsed.dryPlan) jobArgv.push("--dry-plan");
             if (parsed.approve) jobArgv.push("--approve");
             if (parsed.budget) jobArgv.push("--budget", parsed.budget);
