@@ -7,6 +7,7 @@ import {
   deleteSession, pruneSessions, sessionPath, sessionsDir, InvalidSessionIdError,
 } from '../src/core/session.js';
 import { SessionRecordSchema } from '../src/schema/session.js';
+import { ChatTrace, chatTracesDir } from '../src/core/chatTrace.js';
 import { extractSessionId } from '../src/adapters/parsers.js';
 import { buildInvocation } from '../src/adapters/subprocess.js';
 import { loadPreset } from '../src/assets.js';
@@ -108,6 +109,17 @@ describe('session store (roundtrip)', () => {
     expect(removed).toContain('old');
     expect(removed).not.toContain('fresh');
     expect(loadSession('fresh')).not.toBeNull();
+  });
+
+  it('deleteSession also removes the chat flow trace and its default report', () => {
+    saveSession(newSession(1000, 'traced'), 1000);
+    const trace = new ChatTrace('traced');
+    trace.record('turn_start', 'lead chat');
+    mkdirSync(join(chatTracesDir(), 'traced-report'), { recursive: true });
+    expect(existsSync(trace.path)).toBe(true);
+    expect(deleteSession('traced')).toBe(true);
+    expect(existsSync(trace.path)).toBe(false);
+    expect(existsSync(join(chatTracesDir(), 'traced-report'))).toBe(false);
   });
 
   it('cmdSessions list/rm/prune work end-to-end', async () => {

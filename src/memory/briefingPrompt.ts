@@ -75,22 +75,39 @@ export async function buildWorkerPrompt(opts: {
     body = `${quoteUntrusted('session transcript', ctx)}\nUser: ${opts.userPrompt}\nAssistant:`;
   }
   if (opts.briefingWorkspace) {
-    const gateway = resolveGatewayUrl(opts.gatewayUrl);
-    const prefix = gateway
-      ? await loadGatewayTurnPrefix({
-        gatewayUrl: gateway,
-        workspace: opts.briefingWorkspace,
-        query: opts.userPrompt,
-        provider: opts.agent,
-        goal: opts.userPrompt,
-        layaEvidence: opts.layaEvidence,
-        jevEvidence: opts.jevEvidence,
-        runModel: opts.runModel,
-      })
-      : await loadBriefingPrefix(opts.briefingWorkspace, opts.agent);
+    const prefix = await loadBriefingContext({ ...opts, briefingWorkspace: opts.briefingWorkspace });
     if (prefix) body = prefix + body;
   }
   return body;
+}
+
+/**
+ * Only the memory prefix for one provider (gateway turn prefix, else local
+ * resume briefing), without the user prompt appended. For callers that place
+ * the request in the prompt themselves.
+ */
+export async function loadBriefingContext(opts: {
+  agent: string;
+  userPrompt: string;
+  briefingWorkspace: string;
+  gatewayUrl?: string | null;
+  layaEvidence?: boolean;
+  jevEvidence?: boolean;
+  runModel?: boolean;
+}): Promise<string> {
+  const gateway = resolveGatewayUrl(opts.gatewayUrl);
+  return gateway
+    ? loadGatewayTurnPrefix({
+      gatewayUrl: gateway,
+      workspace: opts.briefingWorkspace,
+      query: opts.userPrompt,
+      provider: opts.agent,
+      goal: opts.userPrompt,
+      layaEvidence: opts.layaEvidence,
+      jevEvidence: opts.jevEvidence,
+      runModel: opts.runModel,
+    })
+    : loadBriefingPrefix(opts.briefingWorkspace, opts.agent);
 }
 
 export const DEFAULT_RESUME_WORKSPACE = 'agentctl-pilot';

@@ -121,6 +121,8 @@ export interface OrchestrationResult {
   totalCostUsd: number | null;
   /** how many times the plan was revised (replan edge). */
   replans: number;
+  /** Why a post-step orchestrator call (synthesis, its audit, or replan) failed; outcomes above are kept. */
+  error?: string;
 }
 
 export interface DispatchResult {
@@ -358,7 +360,17 @@ async function runStep(
       note = detail ? `executor failed: ${detail}` : 'executor failed';
       continue;
     }
-    const v = await deps.verify(step, r.text, r.evidence);
+    let v: VerifyResult;
+    try {
+      v = await deps.verify(step, r.text, r.evidence);
+    } catch (e) {
+      // A verifier outage is not evidence against the output: stop this step
+      // without re-running the worker, and let replan/finish keep other outcomes.
+      if (shouldAbort?.()) { note = 'cancelled'; break; }
+      const detail = clipNote(e instanceof Error ? e.message : String(e));
+      note = detail ? `verifier failed: ${detail}` : 'verifier failed';
+      break;
+    }
     verification = v;
     verificationHistory.push(v);
     if (v.costUsd != null) cost = (cost ?? 0) + v.costUsd;
@@ -439,10 +451,17 @@ export async function runOrchestration(
   const finish = (
     status: OrchestrationResult['status'], synthesis: string | null,
     synthesisVerification?: VerifyResult,
+    error?: string,
   ): OrchestrationResult => ({
     plan, outcomes: orderedOutcomes(), status, synthesis, totalCostUsd: totalCost || null, replans,
     ...(synthesisVerification ? { synthesisVerification } : {}),
+    ...(error ? { error } : {}),
   });
+  /** A failed synthesis/audit/replan call ends the run with the completed outcomes, not an exception. */
+  const halted = (e: unknown, synthesis: string | null = null): OrchestrationResult =>
+    opts.shouldAbort?.()
+      ? finish('cancelled', synthesis)
+      : finish('failed', synthesis, undefined, clipNote(e instanceof Error ? e.message : String(e), 600));
 
   for (;;) {
     if (opts.shouldAbort?.()) return finish('cancelled', null);
@@ -489,12 +508,23 @@ export async function runOrchestration(
       if (opts.shouldAbort?.()) return finish('cancelled', null);
       if (totalCost >= budget) return finish('budget', null);
       if (!deps.synthesize) return finish('done', null);
-      const synthesized = textCall(await deps.synthesize(goal, orderedOutcomes()));
+      let synthesized: ReturnType<typeof textCall>;
+      try {
+        synthesized = textCall(await deps.synthesize(goal, orderedOutcomes()));
+      } catch (e) {
+        return halted(e);
+      }
       if (synthesized.costUsd != null) totalCost += synthesized.costUsd;
       if (opts.shouldAbort?.()) return finish('cancelled', null);
       if (totalCost >= budget) return finish('budget', synthesized.text);
       if (deps.verifySynthesis) {
-        const finalVerification = await deps.verifySynthesis(goal, synthesized.text, orderedOutcomes());
+        let finalVerification: VerifyResult;
+        try {
+          finalVerification = await deps.verifySynthesis(goal, synthesized.text, orderedOutcomes());
+        } catch (e) {
+          // Unaudited: keep the text visible but never report it as done.
+          return halted(e, synthesized.text);
+        }
         if (finalVerification.costUsd != null) totalCost += finalVerification.costUsd;
         if (opts.shouldAbort?.()) return finish('cancelled', synthesized.text, finalVerification);
         if (totalCost >= budget) return finish('budget', synthesized.text, finalVerification);
@@ -510,14 +540,25 @@ export async function runOrchestration(
     // replan edge: revise the plan around the failure, up to maxReplans
     if (failed && replans < maxReplans) {
       replans += 1;
-      const replanned = textCall(
-        deps.replan ? await deps.replan(goal, failed, orderedOutcomes()) : await deps.plan(goal),
-      );
+      let replanned: ReturnType<typeof textCall>;
+      try {
+        replanned = textCall(
+          deps.replan ? await deps.replan(goal, failed, orderedOutcomes()) : await deps.plan(goal),
+        );
+      } catch (e) {
+        return halted(e);
+      }
       if (replanned.costUsd != null) totalCost += replanned.costUsd;
       if (opts.shouldAbort?.()) return finish('cancelled', null);
       if (totalCost >= budget) return finish('budget', null);
       const prior = [...done.values(), ...(opts.completed ?? [])];
-      plan = parsePlan(replanned.text);
+      let revised: Plan;
+      try {
+        revised = parsePlan(replanned.text);
+      } catch (e) {
+        return halted(e);
+      }
+      plan = revised;
       done = seed(prior);
       continue;
     }
