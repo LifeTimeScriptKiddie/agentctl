@@ -3,22 +3,17 @@
  * shared_ptr: it reaches it over HTTP (a gatekeeper at AGENTCTL_GATEWAY_URL)
  * or by running the shared_ptr CLI, and with neither it simply briefs nothing.
  */
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { ResumeBriefing } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { run } from '../util/exec.js';
 
 export type ProviderKind = 'http' | 'exec' | 'none';
 
-/** How to run the shared_ptr CLI: SHARED_PTR_BIN, the sibling workspace build, else `shared_ptr` on PATH. */
+/** How to run the shared_ptr CLI (github.com/LifeTimeScriptKiddie/shared_ptr): SHARED_PTR_BIN, else `shared_ptr` on PATH. */
 export function resolveSharedPtrCommand(): { file: string; args: string[]; via: string } | null {
   const explicit = process.env.SHARED_PTR_BIN?.trim();
   if (explicit) return explicit.endsWith('.js')
     ? { file: process.execPath, args: [explicit], via: 'SHARED_PTR_BIN' }
     : { file: explicit, args: [], via: 'SHARED_PTR_BIN' };
-  // In this monorepo phase the server builds beside agentctl: from dist/memory/ that is ../../packages/shared_ptr/dist/cli.js.
-  const sibling = fileURLToPath(new URL('../../packages/shared_ptr/dist/cli.js', import.meta.url));
-  if (existsSync(sibling)) return { file: process.execPath, args: [sibling], via: 'workspace' };
   return { file: 'shared_ptr', args: [], via: 'PATH' };
 }
 

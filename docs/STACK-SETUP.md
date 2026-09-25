@@ -354,8 +354,10 @@ and an empty MCP config, so user MCP connectors (mail, docs) are not loaded.
 ## QA (dev machine)
 
 ```bash
-cd ~/code/agentctl/dev
-npm test
-node scripts/qa-gatekeeper-smoke.mjs   # if gatekeeper running locally
-node scripts/qa-full.mjs               # full gate incl. optional Docker Postgres
+cd ~/code/agentctl/dev && npm run check        # agentctl
+cd ~/code/shared_ptr && npm run check          # team memory: gatekeeper, store, contract
+cd ~/code/shared_ptr && npm run test:postgres  # the same against a throwaway Postgres 16 (Docker)
 ```
+
+Team memory (the gatekeeper, the Postgres store and the memory CLI) moved to its own repo,
+[shared_ptr](https://github.com/LifeTimeScriptKiddie/shared_ptr), on 2026-09-25.
