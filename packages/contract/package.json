@@ -1,0 +1,15 @@
+{
+  "name": "@shared_ptr/contract",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Wire contract (zod schemas) between agentctl and the shared_ptr team-memory server.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "peerDependencies": { "zod": "^4.0.0" },
+  "license": "MIT"
+}

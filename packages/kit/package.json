@@ -1,0 +1,41 @@
+{
+  "name": "@agentctl/kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Security and state helpers shared by agentctl and shared_ptr: redaction, untrusted-text quoting, private files, app home.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./appHome": {
+      "types": "./dist/appHome.d.ts",
+      "import": "./dist/appHome.js"
+    },
+    "./privateFs": {
+      "types": "./dist/privateFs.d.ts",
+      "import": "./dist/privateFs.js"
+    },
+    "./redact": {
+      "types": "./dist/redact.d.ts",
+      "import": "./dist/redact.js"
+    },
+    "./untrusted": {
+      "types": "./dist/untrusted.d.ts",
+      "import": "./dist/untrusted.js"
+    },
+    "./destructive": {
+      "types": "./dist/destructive.d.ts",
+      "import": "./dist/destructive.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "license": "MIT"
+}
