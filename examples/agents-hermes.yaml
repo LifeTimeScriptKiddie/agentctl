@@ -1,0 +1,23 @@
+# Opt-in Hermes research lane. Copy to ~/.agentctl/agents.yaml, or review and
+# trust it if used as a repository-local agents.yaml.
+agents:
+  hermes:
+    name: hermes
+    family: docker_exec
+    transport: docker_exec
+    parse: text
+    containerResolve:
+      preferName: hermes-gateway-local
+      byImage: nousresearch/hermes-agent
+      rejectAutoremove: true
+    # Verified with `hermes tools list`. Keep this explicit: Hermes one-shot
+    # mode otherwise loads its configured default tool suite.
+    toolsets: web
+    capabilities:
+      canReadFiles: false
+      canWriteFiles: false
+      canRunShell: false
+      canAccessNetwork: true
+      canUseBrowser: false
+      canModifyRepo: false
+      canPublish: false

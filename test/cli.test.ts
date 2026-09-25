@@ -5,7 +5,7 @@ describe('cli program', () => {
   it('is named agentctl and carries a version', () => {
     const program = buildProgram();
     expect(program.name()).toBe('agentctl');
-    expect(program.version()).toBe('0.2.0');
+    expect(program.version()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('registers ask/agents/run/resume/delegate commands', () => {

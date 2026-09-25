@@ -1,6 +1,6 @@
 {
   "name": "@lifetimescriptkiddie/agentctl",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Backend-neutral CLI and library for orchestrating local AI agent CLIs, browsers, and containers.",
   "type": "module",
   "main": "./dist/index.js",
@@ -25,6 +25,8 @@
   },
   "files": [
     "dist",
+    "docs",
+    "examples",
     "README.md",
     "LICENSE",
     "scripts/postinstall-hint.mjs"
