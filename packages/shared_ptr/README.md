@@ -50,7 +50,41 @@ shared_ptr accept <id> --workspace my-team --revision 1
 shared_ptr search "rollback" --workspace my-team
 ```
 
-Local-only commands (`kb`, `graph`, `laya`, …) refuse to run when a server is set.
+Local-only commands (`improve`, `kb`, `graph`, `laya`, …) refuse to run when a server is set.
+
+## Improving the workflow (`shared_ptr improve`, only when you run it)
+
+Every search records a content-free run: the steps the workflow graph took, each step's
+outcome and how long it took, but no query text. These runs are stored in `graph_runs`
+(SQLite schema v6, Postgres migration 006). Set `SHARED_PTR_GRAPH_RUN_LOG=0` to turn this off.
+
+`improve` reads those runs, proposes edits to the retrieval graph, and marks an edit
+`ready` only when it passes every one of these checks:
+
+1. **Graph check.** No cycles, no unknown steps, and `filter_acl` still sits on every path to a result.
+2. **Benchmark replay.** A fixed set of memories, queries and two users is replayed through the
+   current graph and the edited one. There can be no ACL leak, empty queries must still stop
+   early, and results must be unchanged unless the proposal says it changes them.
+3. **SessionGraph scorecard.** SessionGraph analyzes both replays; its score must not get worse,
+   its exit code must be 0, and it must actually have judged something.
+4. **Measured benefit.** The edit must save steps in the replay, or at least 50 ms of real
+   time in the recorded runs. An edit that gains nothing is rejected.
+
+```sh
+export SHARED_PTR_SESSIONGRAPH_ROOT=~/code/agentctl/sessiongraph   # a SessionGraph checkout
+shared_ptr improve --since 7d                      # writes a report; nothing changes yet
+shared_ptr improve apply <report-dir> <proposal>   # re-checks the candidate, backs up, applies
+shared_ptr improve rollback                        # undo the last apply
+```
+
+Notes:
+
+- `improve` runs where the database is: on the gatekeeper host, or on a machine with direct
+  database access. It is a local-only command, not one of the `--server` commands.
+- Proposals that would change results also need `--allow-behavior-change`.
+- The benchmark switches off the model-based evidence gates, because they call external models.
+  It proves that an edit is safe and keeps results the same; it does not measure how good the
+  gates' judgments are.
 
 ## How agentctl uses it
 

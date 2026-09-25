@@ -93,13 +93,38 @@ export function normalizeEvidenceGate(
   return evidenceGate;
 }
 
+/**
+ * The legacy linear pipeline must run the ACL filter before the limit step,
+ * just as the graph pins filter_acl; returns what is wrong (empty = fine).
+ */
+export function pipelineAclProblems(steps: unknown): string[] {
+  if (steps === undefined) return [];
+  if (!Array.isArray(steps)) return ['pipelines.context_retrieval is not a list'];
+  const actions = steps.map((s) => (s && typeof s === 'object' ? (s as { action?: unknown }).action : undefined));
+  const acl = actions.indexOf('auth_and_provider_filter');
+  const limit = actions.indexOf('apply_limit');
+  if (acl < 0) return ['pipeline has no ACL filter (auth_and_provider_filter)'];
+  if (limit >= 0 && limit < acl) return ['pipeline limits results before the ACL filter'];
+  if (steps.some((s) => (s as { skip_when?: unknown }).skip_when !== undefined && (s as { action?: unknown }).action === 'auth_and_provider_filter')) {
+    return ['pipeline makes the ACL filter skippable'];
+  }
+  return [];
+}
+
 /** Pipeline steps only (executable subset of full graph YAML). */
 export function loadContextRetrievalPipeline(): GraphPipelineStep[] {
   if (cachedSpec) return cachedSpec.pipelines.context_retrieval;
   const path = turnGraphConfigPath();
-  const raw = existsSync(path)
+  let raw = existsSync(path)
     ? parseYaml(readFileSync(path, 'utf8'))
     : parseYaml(readFileSync(bundledDefaultPath(), 'utf8'));
+  const override = raw as { pipelines?: { context_retrieval?: unknown } };
+  const problems = existsSync(path) ? pipelineAclProblems(override.pipelines?.context_retrieval) : [];
+  if (problems.length) {
+    // same rule as the graph executor: an unsafe override is refused, never run
+    process.stderr.write(`shared_ptr: ignoring pipeline in ${path}: ${problems.join('; ')}\n`);
+    raw = parseYaml(readFileSync(bundledDefaultPath(), 'utf8'));
+  }
   const graphs = raw as { version?: number; graphs?: unknown; pipelines?: unknown };
   if (graphs.pipelines) {
     cachedSpec = pipelineSchema.parse(graphs);

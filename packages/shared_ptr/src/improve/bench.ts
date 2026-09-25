@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AuthContext, Classification } from '../authContext.js';
 import { MemoryStore } from '../store.js';
+import { isServing } from '../runtime.js';
 import {
   resetTurnGraphCache,
   type ContextRetrievalResult,
@@ -254,8 +255,21 @@ async function seedFixture(store: MemoryStore): Promise<Map<string, string>> {
   return stableIdByStoreId;
 }
 
-/** Replay the fixed query/identity matrix against a bundled or supplied graph. */
-export async function runBench(graphYaml: string | null): Promise<BenchResult> {
+let queue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Replay the fixed query/identity matrix against a bundled or supplied graph.
+ * It changes process-wide settings while it runs, so it refuses to run inside
+ * a serving process and runs one replay at a time.
+ */
+export function runBench(graphYaml: string | null): Promise<BenchResult> {
+  if (isServing()) throw new Error('runBench changes process-wide settings; run `shared_ptr improve` as its own process, not inside serve');
+  const next = queue.then(() => runBenchNow(graphYaml));
+  queue = next.catch(() => undefined);
+  return next;
+}
+
+async function runBenchNow(graphYaml: string | null): Promise<BenchResult> {
   const home = mkdtempSync(join(tmpdir(), 'shared-ptr-graph-bench-'));
   const previous = new Map<string, string | undefined>(
     ENV_KEYS.map((key) => [key, process.env[key]]),

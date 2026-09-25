@@ -176,3 +176,26 @@ graphs:
     warn.mockRestore();
   });
 });
+
+describe('legacy pipeline mode keeps the ACL filter too', () => {
+  it('an override pipeline without the ACL step is refused and the bundled one runs', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sptr-pipe-'));
+    mkdirSync(join(home, 'config'), { recursive: true });
+    writeFileSync(join(home, 'config', 'turn-graph.yaml'), `version: 1
+pipelines:
+  context_retrieval:
+    - { id: resolve_scope, action: validate_workspace_provider_kinds }
+    - { id: retrieve_candidates, action: fts_hybrid_fetch }
+    - { id: limit_results, action: apply_limit }
+`);
+    vi.stubEnv('SHARED_PTR_HOME', home);
+    vi.stubEnv('AGENTCTL_GRAPH_EXECUTOR', 'pipeline');
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    resetTurnGraphCache();
+    const r = await runContextRetrievalGraph(deps as never,
+      { workspace: 'w', query: 'q', provider: 'claude' as never, limit: 10, kinds: null, fetchLimit: 50 });
+    expect(r.memories.map((m) => m.id)).not.toContain('blocked');
+    expect(String(warn.mock.calls.map((c) => c[0]).join())).toMatch(/no ACL filter/);
+    warn.mockRestore();
+  });
+});
