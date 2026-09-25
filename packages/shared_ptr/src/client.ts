@@ -3,8 +3,8 @@
  * every request is validated before it is sent and every response before it is
  * returned, so a version skew fails loudly instead of corrupting data.
  */
-import { CONTRACT_VERSION, MetaResponse, ROUTES, routePath, type RoutePath } from '@shared_ptr/contract';
-import { readOwnerToken } from '@shared_ptr/contract/local';
+import { CONTRACT_VERSION, MetaResponse, ROUTES, routePath, type RoutePath } from '@lifetimescriptkiddie/shared-ptr-contract';
+import { readOwnerToken } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import type { z } from 'zod';
 import { setting } from './env.js';
 

@@ -1,6 +1,6 @@
-import { MEMORY_PROVIDERS, type MemoryProvider } from '@shared_ptr/contract';
-import { formatGatewayAnswerPrefix, formatGatewayTurnPrefix, trustedTurnFields, type TurnResponse } from '@shared_ptr/contract/format';
-import { readOwnerToken as readOwnerServeToken } from '@shared_ptr/contract/local';
+import { MEMORY_PROVIDERS, type MemoryProvider } from '@lifetimescriptkiddie/shared-ptr-contract';
+import { formatGatewayAnswerPrefix, formatGatewayTurnPrefix, trustedTurnFields, type TurnResponse } from '@lifetimescriptkiddie/shared-ptr-contract/format';
+import { readOwnerToken as readOwnerServeToken } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { checkListenerOwner } from '../util/listenerOwner.js';
 
 

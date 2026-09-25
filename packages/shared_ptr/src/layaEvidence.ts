@@ -5,7 +5,7 @@ import { dirname, join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { setting } from './env.js';
 
 const configSchema = z.object({

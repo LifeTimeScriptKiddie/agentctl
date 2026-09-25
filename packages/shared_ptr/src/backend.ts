@@ -5,7 +5,7 @@
  * The CLI, the MCP server and the Pi extension all sit on top of it, so a team
  * switches from personal to shared by setting one URL.
  */
-import type { Checkpoint, CheckpointSetRequest, ResumeBriefing } from '@shared_ptr/contract';
+import type { Checkpoint, CheckpointSetRequest, ResumeBriefing } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { loadAuthContext } from './authContext.js';
 import { SharedPtrClient, resolveServerUrl } from './client.js';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';

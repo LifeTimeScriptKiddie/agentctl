@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { resolveMemoryBackend } from './backendConfig.js';
 import { MemoryStore, type MemoryStoreOptions } from './store.js';
 import { PostgresMemoryStore } from './postgres/memoryStorePostgres.js';

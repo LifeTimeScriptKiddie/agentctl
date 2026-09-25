@@ -1,5 +1,5 @@
 {
-  "name": "@shared_ptr/server",
+  "name": "@lifetimescriptkiddie/shared-ptr",
   "version": "0.1.0",
   "private": true,
   "description": "shared_ptr: team memory for AI agents (store, gatekeeper server, briefings). Split from agentctl.",
@@ -22,9 +22,9 @@
     "test:postgres": "sh scripts/test-postgres.sh"
   },
   "dependencies": {
-    "@agentctl/kit": "0.1.0",
+    "@lifetimescriptkiddie/agentctl-kit": "0.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@shared_ptr/contract": "1.0.0",
+    "@lifetimescriptkiddie/shared-ptr-contract": "1.0.0",
     "commander": "^12.1.0",
     "execa": "^9.5.0",
     "pg": "^8.23.0",

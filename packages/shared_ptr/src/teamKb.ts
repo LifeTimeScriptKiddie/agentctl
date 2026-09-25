@@ -9,7 +9,7 @@
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import type { Classification } from './authContext.js';
 
 const label = z.string().trim().min(1).max(200);

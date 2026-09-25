@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import {
   type AuthContext,
   type Classification,

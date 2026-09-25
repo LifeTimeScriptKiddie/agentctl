@@ -8,7 +8,7 @@
  *   - reads are filtered for the calling agent (its provider name).
  */
 import { z } from 'zod';
-import { quoteUntrusted } from '@agentctl/kit/untrusted';
+import { quoteUntrusted } from '@lifetimescriptkiddie/agentctl-kit/untrusted';
 import type { MemoryBackend, MemoryItem } from './backend.js';
 
 export interface ToolContext {

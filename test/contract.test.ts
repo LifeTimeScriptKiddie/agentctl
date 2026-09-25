@@ -8,7 +8,7 @@ import { mkdtempSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CONTRACT_VERSION, ROUTES, routePath, type RoutePath } from '@shared_ptr/contract';
+import { CONTRACT_VERSION, ROUTES, routePath, type RoutePath } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
 import { addServeToken } from '../packages/shared_ptr/src/serveTokens.js';
 

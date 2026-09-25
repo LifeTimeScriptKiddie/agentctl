@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { setting } from './env.js';
 import type { Memory } from './store.js';
 import type { MemoryProvider } from './layaEvidence.js';

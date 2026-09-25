@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';
 import { runMemoryPilot } from './pilot.js';
-import { DEFAULT_RESUME_WORKSPACE } from '@shared_ptr/contract';
+import { DEFAULT_RESUME_WORKSPACE } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { BOOTSTRAP_CHECKPOINT } from './bootstrap.js';
 import { agentctlCliPilotRunner } from './pilotRunner.js';
 import { loadAuthContext, type Classification } from './authContext.js';
@@ -284,7 +284,7 @@ export function registerMemoryCommands(memory: Command): void {
     .action(async (o: { since: string; out?: string; minRuns: string; allowBehaviorChange: boolean; sessiongraph: boolean }) => {
       try {
         const { improve } = await import('./improve/improve.js');
-        const { sharedPtrHome } = await import('@shared_ptr/contract/local');
+        const { sharedPtrHome } = await import('@lifetimescriptkiddie/shared-ptr-contract/local');
         const store = await openMemoryStore(undefined, { auth: null });
         let runs;
         try {

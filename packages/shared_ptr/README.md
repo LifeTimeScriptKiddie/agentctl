@@ -92,7 +92,7 @@ agentctl never imports this package. It reaches shared_ptr in one of two ways:
 
 | Provider | When | How |
 |---|---|---|
-| `http` | `AGENTCTL_GATEWAY_URL` is set | the `/v1` routes in `@shared_ptr/contract` |
+| `http` | `AGENTCTL_GATEWAY_URL` is set | the `/v1` routes in `@lifetimescriptkiddie/shared-ptr-contract` |
 | `exec` | a `shared_ptr` CLI is found (`SHARED_PTR_BIN`, the workspace build, or `PATH`) | `shared_ptr briefing --format json` |
 | none | neither is available | workers get no team briefing |
 
@@ -113,8 +113,8 @@ intended long-term direction is that shared_ptr only stores and serves context.
 
 | Package | Holds |
 |---|---|
-| `@agentctl/kit` | the only copy of redaction, untrusted-text quoting, the destructive-intent check, private file helpers and the app home directory |
-| `@shared_ptr/contract` | zod schemas for every `/v1` route, the resume-briefing packet, the prompt formatters, and local conventions |
+| `@lifetimescriptkiddie/agentctl-kit` | the only copy of redaction, untrusted-text quoting, the destructive-intent check, private file helpers and the app home directory |
+| `@lifetimescriptkiddie/shared-ptr-contract` | zod schemas for every `/v1` route, the resume-briefing packet, the prompt formatters, and local conventions |
 
 `test/contract.test.ts` sends a request to every route of the real server and checks
 each response against the contract. `test/boundary.test.ts` fails the build if either

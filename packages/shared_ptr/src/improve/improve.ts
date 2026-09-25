@@ -15,7 +15,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { GraphSpecSchema, validateGraph } from '../graphEngine.js';
 import { loadTurnGraphDocument, pipelineAclProblems, resetTurnGraphCache, RETRIEVAL_PINNED, RETRIEVAL_RUNTIME, turnGraphConfigPath, type GraphRunRecord } from '../turnGraph.js';
 import { writePrivateFile } from '../privateFs.js';

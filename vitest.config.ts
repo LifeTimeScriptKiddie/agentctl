@@ -7,10 +7,10 @@ export default defineConfig({
   // Tests run workspace packages from source, so no build step is needed first.
   resolve: {
     alias: [
-      { find: /^@agentctl\/kit$/, replacement: pkg('kit/src/index.ts') },
-      { find: /^@agentctl\/kit\/(.*)$/, replacement: pkg('kit/src/$1.ts') },
-      { find: /^@shared_ptr\/contract$/, replacement: pkg('contract/src/index.ts') },
-      { find: /^@shared_ptr\/contract\/(.*)$/, replacement: pkg('contract/src/$1.ts') },
+      { find: /^@lifetimescriptkiddie\/agentctl-kit$/, replacement: pkg('kit/src/index.ts') },
+      { find: /^@lifetimescriptkiddie\/agentctl-kit\/(.*)$/, replacement: pkg('kit/src/$1.ts') },
+      { find: /^@lifetimescriptkiddie\/shared-ptr-contract$/, replacement: pkg('contract/src/index.ts') },
+      { find: /^@lifetimescriptkiddie\/shared-ptr-contract\/(.*)$/, replacement: pkg('contract/src/$1.ts') },
     ],
   },
   test: {

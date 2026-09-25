@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 import { ANONYMOUS_USER_ID, type AuthContext, type Classification } from './authContext.js';
 import { setting } from './env.js';
