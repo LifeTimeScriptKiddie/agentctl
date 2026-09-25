@@ -106,7 +106,8 @@ describe('sqlite getCheckpoint auth', () => {
   });
 
   it('records the setter as owner and keeps groups on update unless --groups is given', async () => {
-    const store = await MemoryStore.open(':memory:', { auth: alice });
+    // alice may only grant groups she belongs to
+    const store = await MemoryStore.open(':memory:', { auth: { ...alice, groups: ['atlas', 'oncall'] } });
     const decision = store.save({
       workspace: 'w', text: 'Decision', source: 's', key: 'd', state: 'accepted', classification: 'public',
     });
@@ -217,7 +218,7 @@ describe('postgres getCheckpoint auth', () => {
   });
 
   it('setCheckpoint records the setter as owner and the given groups', async () => {
-    const store = await openPg(alice);
+    const store = await openPg({ ...alice, groups: ['atlas', 'oncall'] });
     pg.rows.checkpoint = null;
     const created = await store.setCheckpoint({
       workspace: 'w', revision: 0, goal: 'goal', state: 's', nextAction: 'n', source: 'op',
