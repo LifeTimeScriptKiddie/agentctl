@@ -1,6 +1,7 @@
 name: claude
 family: subprocess
 transport: subprocess
+setupHint: "Install the Claude Code CLI (`claude`), then run `claude` once to sign in."
 optional: true
 hideWhenUnavailable: true
 parse: claude_json

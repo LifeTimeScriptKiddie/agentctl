@@ -67,6 +67,14 @@ export const PROTECTED_PATHS: readonly string[] = [
   'src/core/untrusted.ts',
   'src/schema/capabilities.ts',
   'test/setup.ts',
+  // the scorer and the harness that runs it
+  'src/bench/bench.ts',
+  'src/bench/tune.ts',
+  'src/bench/command.ts',
+  'src/graph/command.ts',
+  'package.json',
+  'vitest.config.ts',
+  'scripts/copy-assets.mjs',
 ];
 
 export function protectedTouched(changed: readonly string[]): string[] {
@@ -155,13 +163,15 @@ export function registerGraphCommands(program: Command): void {
     .option('--base <ref>', 'branch the change is measured against', 'main')
     .description('gate a code proposal: no protected file changed, `npm run check` passes, bench has no hard failures')
     .action((worktree: string, o: { base: string }) => guard('check-branch', async () => {
+      worktree = resolve(worktree);
       const git = (...args: string[]) => run('git', ['-C', worktree, ...args], { timeoutMs: 60_000 });
-      const committed = await git('diff', '--name-only', `${o.base}...HEAD`);
+      // --no-renames: a rename must report its old path too, or moving a protected file slips through
+      const committed = await git('diff', '--name-only', '--no-renames', `${o.base}...HEAD`);
       const working = await git('status', '--porcelain', '--untracked-files=all');
       if (committed.exitCode !== 0 || working.exitCode !== 0) throw new Error(`git failed in ${worktree}: ${committed.stderr || working.stderr}`);
       const changed = [...new Set([
         ...committed.stdout.split('\n'),
-        ...working.stdout.split('\n').map((l) => l.slice(3).split(' -> ').pop() ?? ''),
+        ...working.stdout.split('\n').flatMap((l) => l.slice(3).split(' -> ')),
       ].map((f) => f.trim()).filter(Boolean))];
       const touched = protectedTouched(changed);
       const gates: Array<{ gate: string; pass: boolean; detail: string }> = [

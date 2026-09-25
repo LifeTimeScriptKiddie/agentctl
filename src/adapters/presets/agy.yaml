@@ -2,6 +2,7 @@ name: agy
 family: subprocess
 adapter: agy
 transport: subprocess
+setupHint: "Install the Antigravity CLI (`agy`) and complete its login flow. Optional: web research."
 parse: agy_json
 optional: true
 promptDelivery: arg

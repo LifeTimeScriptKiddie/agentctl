@@ -15,7 +15,7 @@ import {
   buildAgentRoster, formatRosterForPlanner, loopWorkerLane, orchestrationWorkerNames,
   resolveBackupOrchestrator, resolveDefaultOrchestrator, resolveOrchestratorModel,
 } from './orchestrateRoster.js';
-import { isAgentEnabled, loadPreferences, routingPrefer } from './preferences.js';
+import { featureEnabled, isAgentEnabled, loadPreferences, routingPrefer } from './preferences.js';
 import {
   parseTaskBatch, runLoopOrchestration, runTaskGraph, REROUTABLE_FAILURES,
   type GraphDeps, type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
@@ -420,6 +420,7 @@ export function orchestrationRunPath({
 
 /** Best-effort provenance log: one JSON line per routing decision (task/goal text redacted). */
 export function logRoute(entry: Record<string, unknown>): void {
+  if (!featureEnabled('routeLog')) return;
   try {
     const base = agentctlHome();
     const path = join(base, 'route-log.jsonl');

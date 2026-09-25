@@ -38,7 +38,7 @@ import { buildWorkerPrompt } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
 import { resolveDefaultOrchestrator, resolveOrchestratorModel, resolveWorkerModel } from './core/orchestrateRoster.js';
-import { loadPreferences, preferredModel, routingPrefer } from './core/preferences.js';
+import { isAgentEnabled, loadPreferences, preferredModel, routingPrefer } from './core/preferences.js';
 import { visibleAgentNames } from './core/orchestrateRuntime.js';
 
 export type { AskResult, RouteDecision, OrchestrationResult, StepOutcome, AgentStatus };
@@ -188,10 +188,12 @@ export interface AgentsResult {
 
 async function routerAgents(registry: AdapterRegistry, exclude: string[] = []): Promise<RouterAgent[]> {
   const health = await registry.healthcheck();
+  const prefs = loadPreferences();
   return registry.names().filter((name) => !exclude.includes(name)).map((name) => ({
     name,
     capabilities: registry.get(name).capabilities(),
-    available: health[name]?.available ?? false,
+    // a lane switched off in setup is never routed to (an explicit --to still reaches it)
+    available: (health[name]?.available ?? false) && isAgentEnabled(prefs, name),
   }));
 }
 

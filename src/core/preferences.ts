@@ -44,6 +44,14 @@ const preferencesSchema = z.object({
   routing: z.object({
     prefer: z.record(z.string(), z.array(z.string().trim().min(1)).min(1)).default({}),
   }).default({ prefer: {} }),
+  /** Optional features the user can switch off (`agentctl features`). */
+  features: z.object({
+    usageLedger: z.boolean().default(true),
+    routeLog: z.boolean().default(true),
+    sessionTraces: z.boolean().default(true),
+    capCache: z.boolean().default(true),
+    selfTune: z.boolean().default(false),
+  }).default({ usageLedger: true, routeLog: true, sessionTraces: true, capCache: true, selfTune: false }),
 });
 
 export type Preferences = z.infer<typeof preferencesSchema>;
@@ -91,6 +99,33 @@ export function preferredModel(prefs: Preferences | null, agent: string): string
   const entry = prefs.agents[agent];
   if (!entry || entry.enabled === false) return null;
   return entry.defaultModel ?? null;
+}
+
+export type FeatureName = keyof Preferences['features'];
+
+/** What each optional feature does, for setup prompts and `agentctl features`. */
+export const FEATURES: ReadonlyArray<{ name: FeatureName; summary: string }> = [
+  { name: 'usageLedger', summary: 'record each call\'s lane, model, tokens and cost (no prompts) for `agentctl usage`' },
+  { name: 'routeLog', summary: 'log each routing decision, including the task text, to route-log.jsonl' },
+  { name: 'sessionTraces', summary: 'record MCP tool-call sequences (no task text) for `agentctl graph` analysis' },
+  { name: 'capCache', summary: 'remember usage limits and route around capped lanes until they reset' },
+  { name: 'selfTune', summary: 'let the weekly job reorder routing from verifier evidence (backed up, undo with `tune --rollback`)' },
+];
+
+export const FEATURE_DEFAULTS: Preferences['features'] = {
+  usageLedger: true, routeLog: true, sessionTraces: true, capCache: true, selfTune: false,
+};
+
+/** Whether an optional feature is on. No preferences file = the defaults. */
+export function featureEnabled(name: FeatureName, prefs: Preferences | null = loadPreferencesQuiet()): boolean {
+  return prefs?.features?.[name] ?? FEATURE_DEFAULTS[name];
+}
+
+/** loadPreferences without the invalid-file warning (hot paths call this per write). */
+function loadPreferencesQuiet(home = agentctlHome()): Preferences | null {
+  const path = preferencesPath(home);
+  if (!existsSync(path)) return null;
+  try { return preferencesSchema.parse(parseYaml(readFileSync(path, 'utf8'))); } catch { return null; }
 }
 
 /** Per-signal lane order overrides for the router (empty when unset). */

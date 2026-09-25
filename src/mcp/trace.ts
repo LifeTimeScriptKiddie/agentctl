@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { agentctlHome } from '../core/agentHome.js';
 import { appendPrivate, ensurePrivateDir } from '../core/privateFs.js';
+import { featureEnabled } from '../core/preferences.js';
 
 /**
  * Per-session MCP call traces: one NDJSON file per `agentctl mcp` process (one
@@ -36,6 +37,7 @@ export function newMcpSessionId(now = Date.now()): string {
 
 export function appendMcpCall(session: string, record: Omit<McpCallRecord, 'at'>): void {
   if (!SESSION_RE.test(session)) throw new Error(`invalid mcp session id '${session}'`);
+  if (!featureEnabled('sessionTraces')) return;
   try {
     ensurePrivateDir(mcpTraceDir());
     appendPrivate(join(mcpTraceDir(), `${session}.ndjson`), `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`);

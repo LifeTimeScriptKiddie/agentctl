@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { buildJsonEnvelope } from '../format/output.js';
 import { loadRegistry } from '../core/loadRegistry.js';
-import { loadPreferences, routingPrefer } from '../core/preferences.js';
+import { FEATURES, featureEnabled, loadPreferences, routingPrefer, savePreferences } from '../core/preferences.js';
 import { agentDelegate } from '../api.js';
 import { parseSince } from '../graph/command.js';
 import { benchRoster, loadCases, runLiveBench, runRoutingBench } from './bench.js';
@@ -49,6 +49,28 @@ export function registerBenchCommands(program: Command): void {
       out('bench', o.format, failed ? 1 : 0, { routing, live }, lines.join('\n'));
     }));
 
+  program.command('features')
+    .description('list optional features, or switch one: agentctl features <name> on|off')
+    .argument('[name]', `one of: ${FEATURES.map((f) => f.name).join(', ')}`)
+    .argument('[state]', 'on | off')
+    .option('--format <format>', 'text | json', 'text')
+    .action((name: string | undefined, state: string | undefined, o: { format: Format }) => guard('features', () => o.format, () => {
+      const prefs = loadPreferences();
+      if (name) {
+        const f = FEATURES.find((x) => x.name.toLowerCase() === name.toLowerCase());
+        if (!f) throw new Error(`unknown feature '${name}'; one of: ${FEATURES.map((x) => x.name).join(', ')}`);
+        if (state !== 'on' && state !== 'off') throw new Error(`say 'on' or 'off': agentctl features ${f.name} on|off`);
+        if (!prefs) throw new Error('no preferences yet — run `agentctl setup` first');
+        savePreferences({ ...prefs, updatedAt: new Date().toISOString(), features: { ...prefs.features, [f.name]: state === 'on' } });
+        out('features', o.format, 0, { [f.name]: state === 'on' }, `${f.name} is now ${state}`);
+        return;
+      }
+      const rows = FEATURES.map((f) => ({ ...f, on: featureEnabled(f.name, prefs) }));
+      out('features', o.format, 0, Object.fromEntries(rows.map((r) => [r.name, r.on])),
+        rows.map((r) => `${r.on ? '●' : '○'} ${r.name.padEnd(14)} ${r.on ? 'on ' : 'off'}  ${r.summary}`).join('\n')
+          + '\n\nswitch: agentctl features <name> on|off');
+    }));
+
   program.command('limits')
     .description('show cached usage caps; --clear [lane] forgets them (e.g. after a mis-detected limit)')
     .option('--clear [lane]', 'clear every cap, or only this lane / quota account')
@@ -75,16 +97,18 @@ export function registerBenchCommands(program: Command): void {
     .option('--apply', 'write the change to preferences.yaml (backed up; undo with --rollback)', false)
     .option('--rollback', 'restore preferences.yaml from before the last applied tune', false)
     .option('--force', 'with --rollback: restore even if routing.prefer was edited since', false)
+    .option('--scheduled', 'for the weekly job: only --apply when the selfTune feature is on', false)
     .option('--since <window>', 'evidence window (7d, 24h, ISO date)', '30d')
     .option('--format <format>', 'text | json', 'text')
-    .action((o: { apply: boolean; rollback: boolean; force: boolean; since: string; format: Format }) => guard('tune', () => o.format, () => {
+    .action((o: { apply: boolean; rollback: boolean; force: boolean; scheduled: boolean; since: string; format: Format }) => guard('tune', () => o.format, () => {
       if (o.rollback) {
         const r = rollbackTune(undefined, undefined, o.force);
         out('tune', o.format, 0, r, `rolled back the tune from ${r.changes.map((c) => c.signal).join(', ')} (restored ${r.backup})`);
         return;
       }
       const registry = loadRegistry();
-      const r = tune({ cases: loadCases().routing, roster: benchRoster(registry), apply: o.apply, sinceMs: parseSince(o.since) });
+      const apply = o.apply && (!o.scheduled || featureEnabled('selfTune'));
+      const r = tune({ cases: loadCases().routing, roster: benchRoster(registry), apply, sinceMs: parseSince(o.since) });
       const lines = [
         ...Object.entries(r.evidence)
           .sort(([a], [b]) => a.localeCompare(b))
@@ -94,9 +118,10 @@ export function registerBenchCommands(program: Command): void {
       if (r.changes.length === 0) lines.push('no change proposed: no signal is led by a lane with enough bad verdicts');
       for (const c of r.changes) lines.push(`${c.signal}: [${c.from.join(', ')}] → [${c.to.join(', ')}]  — ${c.why}`);
       lines.push(`bench: ${r.bench.before.passed}/${r.bench.before.total} → ${r.bench.after.passed}/${r.bench.after.total} hard invariants`);
-      if (r.regressions.length) lines.push(`REJECTED: would break ${r.regressions.join(', ')}`);
-      else if (r.applied) lines.push(`applied to preferences.yaml (backup ${r.backup}); undo: agentctl tune --rollback`);
+      if (r.regressions.length) lines.push(`dropped (would break a hard bench case): ${r.regressions.join(', ')}`);
+      if (r.applied) lines.push(`applied to preferences.yaml (backup ${r.backup}); undo: agentctl tune --rollback`);
+      else if (r.changes.length && o.apply && !apply) lines.push('not applied: selfTune is off (turn it on with `agentctl features selfTune on`)');
       else if (r.changes.length) lines.push('dry run: re-run with --apply to write it');
-      out('tune', o.format, r.regressions.length ? 1 : 0, r, lines.join('\n'));
+      out('tune', o.format, r.regressions.length && !r.changes.length ? 1 : 0, r, lines.join('\n'));
     }));
 }

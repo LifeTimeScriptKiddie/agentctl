@@ -1,6 +1,7 @@
 name: pi
 family: subprocess
 transport: subprocess
+setupHint: "Install the Pi coding agent (`pi`) and sign in to a model provider inside Pi."
 parse: text
 optional: true
 # Pi's -p switch selects non-interactive print mode; the prompt itself is the

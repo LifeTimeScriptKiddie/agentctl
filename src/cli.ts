@@ -45,6 +45,40 @@ function maybeNudgeSetup(): void {
   );
 }
 
+/** Commands that must never stop to ask questions (servers, scripts, setup itself). */
+const NO_ONBOARDING = new Set(['setup', 'mcp', 'features', 'limits', 'help', 'serve']);
+
+/**
+ * First run in a terminal: offer the guided setup before the command runs,
+ * so a new user picks their tools and features instead of silent defaults.
+ * Non-interactive runs (MCP, pipes, --format json) keep the one-line hint.
+ */
+async function maybeOnboard(actionCommand: Command): Promise<void> {
+  if (NO_ONBOARDING.has(actionCommand.name()) || actionCommand.parent?.name() !== 'agentctl') {
+    maybeNudgeSetup();
+    return;
+  }
+  const opts = actionCommand.opts() as { format?: string };
+  if (loadPreferences() || process.env.AGENTCTL_SETUP_NUDGE === '0' || opts.format === 'json'
+    || !process.stdin.isTTY || !process.stderr.isTTY || looksLikeEphemeralAgentctlHome()) {
+    maybeNudgeSetup();
+    return;
+  }
+  const { createInterface } = await import('node:readline');
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await new Promise<string>((res) => rl.question(
+    'agentctl: first run — set up your tools and features now? [Y/n] ', (a) => res(a.trim())));
+  rl.close();
+  if (/^n/i.test(answer)) {
+    process.stderr.write('Skipped. Using defaults; run `agentctl setup` any time.\n');
+    return;
+  }
+  const { runInteractiveSetup, savePreferences } = await import('./setup/setup.js');
+  const plan = await runInteractiveSetup(loadRegistry());
+  const path = savePreferences(plan.preferences);
+  process.stderr.write(`\nWrote ${path}\n${plan.summary.map((l) => `  ${l}`).join('\n')}\n\n`);
+}
+
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
   const chunks: Buffer[] = [];
@@ -80,9 +114,9 @@ export function buildProgram(): Command {
     )
     .version(packageJson.version);
 
-  program.hook('preAction', (_thisCommand, actionCommand) => {
+  program.hook('preAction', async (_thisCommand, actionCommand) => {
     if (actionCommand.name() === 'setup') return;
-    maybeNudgeSetup();
+    await maybeOnboard(actionCommand);
   });
 
   program

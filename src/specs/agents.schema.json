@@ -63,6 +63,10 @@
             "default": false,
             "type": "boolean"
           },
+          "setupHint": {
+            "type": "string",
+            "minLength": 1
+          },
           "quotaAccount": {
             "type": "string",
             "minLength": 1

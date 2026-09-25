@@ -8,6 +8,7 @@ import { DockerExecAdapter } from './dockerExec.js';
 import { BrowserAdapter } from './browser.js';
 import { cannedDryRunAdapter } from './dryRun.js';
 import { loadPreset, listPresetNames } from '../assets.js';
+import { featureEnabled, loadPreferences, preferredModel } from '../core/preferences.js';
 
 const BUILD_ROLES = new Set<Role>(['generator', 'repairer']);
 const READ_ONLY_ROLES = new Set<Role>(['evaluator', 'critic']);
@@ -119,7 +120,7 @@ export class AdapterRegistry {
    * calls on one instance (e.g. `status --watch`, or route/orchestrate reusing
    * the registry).
    */
-  async healthcheck(name?: string, opts: { maxAgeMs?: number } = {}): Promise<Record<string, HealthStatus>> {
+  async healthcheck(name?: string, opts: { maxAgeMs?: number; ignoreCaps?: boolean } = {}): Promise<Record<string, HealthStatus>> {
     const ttl = opts.maxAgeMs ?? HEALTH_TTL_MS;
     const now = Date.now();
     const names = name ? [name] : this.names();
@@ -144,7 +145,8 @@ export class AdapterRegistry {
     );
     // A lane that is installed but spent is not available: the router and the
     // orchestrator roster should pick another lane until the cap resets.
-    const limits = loadLimits();
+    // setup asks "is it installed?" and must not save a temporary cap as a permanent choice.
+    const limits = featureEnabled('capCache') && !opts.ignoreCaps ? loadLimits() : {};
     for (const n of names) {
       const until = out[n]?.available ? this.cappedUntil(n, limits) : null;
       if (until) out[n] = { available: false, detail: `usage limit until ${until.toISOString()}`, checkedVia: 'limits.json' };
@@ -157,7 +159,8 @@ export class AdapterRegistry {
     const preset = this.presets.get(name);
     if (!preset) return null;
     const ladder = preset.models?.stepDown ?? [];
-    const models = ladder.length > 0 ? ladder : [resolveModel(preset, null).model];
+    // The model this lane will actually call: preferences.yaml default, else the preset's.
+    const models = ladder.length > 0 ? ladder : [resolveModel(preset, preferredModel(loadPreferences(), name)).model];
     let latest: Date | null = null;
     for (const m of models) {
       const until = exhaustedUntil(limits, preset.quotaAccount ?? name, m, now);

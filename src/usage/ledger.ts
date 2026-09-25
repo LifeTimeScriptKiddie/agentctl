@@ -6,6 +6,7 @@ import { agentctlHome } from '../core/agentHome.js';
 import { UsageSchema, FailureClassSchema, type AdapterResult } from '../schema/result.js';
 import { extractModelUsage } from '../adapters/parsers.js';
 import type { ParseMode } from '../schema/agents.js';
+import { featureEnabled } from '../core/preferences.js';
 
 const ModelSchema = z.object({
   model: z.string().nullable(), attribution: z.enum(['reported', 'requested', 'unknown']), usage: UsageSchema,
@@ -26,6 +27,7 @@ export function usagePath(): string {
 export function recordUsage(result: AdapterResult, mode: ParseMode, requestedModel: string | null): void {
   // Mocked tests must not pollute the operator's real ledger.
   if (process.env.VITEST && !process.env.AGENTCTL_USAGE_FILE) return;
+  if (!featureEnabled('usageLedger')) return;
   const path = usagePath();
   const event = EventSchema.parse({version: 1, id: randomUUID(), at: new Date().toISOString(),
     adapter: result.adapter, requestedModel, ok: result.ok, failureClass: result.failureClass,

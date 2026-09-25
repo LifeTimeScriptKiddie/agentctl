@@ -122,5 +122,7 @@ describe('self-improvement protected paths', () => {
     expect(protectedTouched(['src/core/router.ts', 'src/bench/cases.yaml', 'src/approval.ts']))
       .toEqual(['src/bench/cases.yaml', 'src/approval.ts']);
     expect(protectedTouched(['src/core/router.ts', 'test/router.test.ts'])).toEqual([]);
+    // the scorer and harness are protected too, not just the cases
+    expect(protectedTouched(['src/bench/bench.ts', 'package.json'])).toEqual(['src/bench/bench.ts', 'package.json']);
   });
 });

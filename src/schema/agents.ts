@@ -88,6 +88,8 @@ export const PresetSchema = z.object({
   transport: TransportSchema,
   parse: ParseModeSchema.default('text'),
   optional: z.boolean().default(false),
+  /** How to install/sign in when the lane is missing; shown by `agentctl setup`. */
+  setupHint: z.string().min(1).optional(),
   /** Lanes sharing one provider login share its usage caps (e.g. codex + codex_write). Defaults to the preset name. */
   quotaAccount: z.string().min(1).optional(),
   hideWhenUnavailable: z.boolean().default(false),

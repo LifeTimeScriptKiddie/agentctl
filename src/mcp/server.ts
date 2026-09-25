@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { loadRegistry } from '../core/loadRegistry.js';
 import { route } from '../core/router.js';
+import { isAgentEnabled, loadPreferences, routingPrefer } from '../core/preferences.js';
 import { findDestructive } from '../approval.js';
 import { getJob, listJobs, readJobEvents, readJobResult, isJobId } from '../jobs/store.js';
 import { cancelJob, startJob, waitForJob, type JobInput, type JobLauncher } from '../jobs/runner.js';
@@ -209,10 +210,12 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   }, async ({ task }) => {
     const reg = registry();
     const health = await reg.healthcheck();
+    const prefs = loadPreferences();
     const agents = reg.names().filter((n) => !caller.includes(n)).map((name) => ({
-      name, capabilities: reg.get(name).capabilities(), available: health[name]?.available ?? false,
+      name, capabilities: reg.get(name).capabilities(),
+      available: (health[name]?.available ?? false) && isAgentEnabled(prefs, name),
     }));
-    return ok(route(task, agents));
+    return ok(route(task, agents, { prefer: routingPrefer(prefs) }));
   });
 
   server.registerTool('agentctl_delegate', {

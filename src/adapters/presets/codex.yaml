@@ -1,6 +1,7 @@
 name: codex
 family: subprocess
 transport: subprocess
+setupHint: "Install the OpenAI Codex CLI (`codex`), then run `codex login`."
 parse: codex_lastmsg
 # One ChatGPT login backs codex and codex_write, so a usage cap on one caps both.
 quotaAccount: codex
