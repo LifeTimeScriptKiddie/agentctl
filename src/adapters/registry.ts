@@ -1,7 +1,8 @@
 import type { Preset, AgentsConfig } from '../schema/agents.js';
 import type { Role } from '../schema/request.js';
 import type { AgentAdapter, HealthStatus } from './protocol.js';
-import { SubprocessAdapter } from './subprocess.js';
+import { SubprocessAdapter, resolveModel } from './subprocess.js';
+import { loadLimits, exhaustedUntil, type LimitMap } from '../core/limitStore.js';
 import { AgyAdapter, AgyImageAdapter } from './agy.js';
 import { DockerExecAdapter } from './dockerExec.js';
 import { BrowserAdapter } from './browser.js';
@@ -141,6 +142,28 @@ export class AdapterRegistry {
         out[n] = status;
       }),
     );
+    // A lane that is installed but spent is not available: the router and the
+    // orchestrator roster should pick another lane until the cap resets.
+    const limits = loadLimits();
+    for (const n of names) {
+      const until = out[n]?.available ? this.cappedUntil(n, limits) : null;
+      if (until) out[n] = { available: false, detail: `usage limit until ${until.toISOString()}`, checkedVia: 'limits.json' };
+    }
     return out;
+  }
+
+  /** When every model this lane would try is capped, the latest reset; else null. */
+  private cappedUntil(name: string, limits: LimitMap, now: Date = new Date()): Date | null {
+    const preset = this.presets.get(name);
+    if (!preset) return null;
+    const ladder = preset.models?.stepDown ?? [];
+    const models = ladder.length > 0 ? ladder : [resolveModel(preset, null).model];
+    let latest: Date | null = null;
+    for (const m of models) {
+      const until = exhaustedUntil(limits, preset.quotaAccount ?? name, m, now);
+      if (!until) return null;
+      if (!latest || until > latest) latest = until;
+    }
+    return latest;
   }
 }

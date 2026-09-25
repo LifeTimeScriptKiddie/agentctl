@@ -3,10 +3,17 @@ import { AdapterRegistry } from '../src/adapters/registry.js';
 import { AgyAdapter, AgyImageAdapter } from '../src/adapters/agy.js';
 import { PresetSchema } from '../src/schema/agents.js';
 import * as exec from '../src/util/exec.js';
+import { saveLimits, markExhausted } from '../src/core/limitStore.js';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 vi.mock('../src/util/exec.js', () => ({ run: vi.fn() }));
 const runMock = vi.mocked(exec.run);
-beforeEach(() => runMock.mockReset());
+beforeEach(() => {
+  runMock.mockReset();
+  process.env.AGENTCTL_LIMITS_FILE = join(mkdtempSync(join(tmpdir(), 'agentctl-reg-limits-')), 'limits.json');
+});
 
 describe('AdapterRegistry packaged', () => {
   it('loads all packaged presets', () => {
@@ -111,6 +118,33 @@ describe('mergeConfig + healthcheck', () => {
     const r = AdapterRegistry.fromPackaged();
     const health = await r.healthcheck('claude');
     expect(health.claude?.available).toBe(true);
+  });
+
+  it('healthcheck marks an installed but capped no-ladder lane unavailable', async () => {
+    runMock.mockResolvedValue({ exitCode: 0, stdout: '/usr/bin/codex', stderr: '', timedOut: false, failed: false });
+    const until = new Date(Date.now() + 3_600_000);
+    saveLimits(markExhausted({}, 'codex', 'gpt-5.6-luna', until, 'structured'));
+    const r = AdapterRegistry.fromPackaged();
+    const health = await r.healthcheck();
+    expect(health.codex?.available).toBe(false);
+    expect(health.codex?.detail).toBe(`usage limit until ${until.toISOString()}`);
+    expect(health.cursor?.available).toBe(true);
+  });
+
+  it('lanes on one provider login share a cap (codex caps codex_write)', async () => {
+    runMock.mockResolvedValue({ exitCode: 0, stdout: '/usr/bin/codex', stderr: '', timedOut: false, failed: false });
+    saveLimits(markExhausted({}, 'codex', 'gpt-5.6-luna', new Date(Date.now() + 3_600_000), 'structured'));
+    const health = await AdapterRegistry.fromPackaged().healthcheck();
+    expect(health.codex_write?.available).toBe(false);
+  });
+
+  it('healthcheck keeps a laddered lane available while a lower rung is free', async () => {
+    runMock.mockResolvedValue({ exitCode: 0, stdout: '/usr/bin/claude', stderr: '', timedOut: false, failed: false });
+    const r = AdapterRegistry.fromPackaged();
+    const ladder = r.getPreset('claude')?.models?.stepDown ?? [];
+    if (ladder.length < 2) return; // packaged claude preset has no ladder
+    saveLimits(markExhausted({}, 'claude', ladder[0]!, new Date(Date.now() + 3_600_000), 'structured'));
+    expect((await r.healthcheck('claude', { maxAgeMs: 0 })).claude?.available).toBe(true);
   });
 
   it('healthcheck gives an install/authentication action when agy is missing', async () => {

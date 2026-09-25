@@ -47,7 +47,7 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 /**
  * Best-effort reset time. Accepts what CLIs actually emit: an ISO timestamp, a
  * unix epoch (s or ms), a `retry_after` duration in seconds, or prose like
- * "resets at 3pm" / "try again in 45 minutes". Returns null when nothing
+ * "resets at 3pm" / "try again at 10:58 PM" / "try again in 45 minutes". Returns null when nothing
  * parses — the caller then falls back to a short cooldown rather than guessing
  * long and locking out a tier that is actually fine.
  */
@@ -72,7 +72,7 @@ export function parseResetAt(source: unknown, now: Date = new Date()): Date | nu
     return new Date(now.getTime() + n * factor);
   }
 
-  const at = source.match(/\bresets?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  const at = source.match(/\b(?:resets?|try again)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
   if (at) {
     let hour = Number(at[1]);
     const min = at[2] ? Number(at[2]) : 0;

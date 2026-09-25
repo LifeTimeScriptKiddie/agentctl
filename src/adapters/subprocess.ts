@@ -7,7 +7,7 @@ import { run, type RunOptions } from '../util/exec.js';
 import {
   detectUsageLimit, nextModel, onLadder, addUsage, ZERO_USAGE, DEFAULT_COOLDOWN_MS,
 } from '../core/modelLadder.js';
-import { loadLimits, updateLimits, exhaustedUntil, markExhausted, clearExhausted } from '../core/limitStore.js';
+import { loadLimits, updateLimits, exhaustedUntil, markExhausted, clearExhausted, limitKey } from '../core/limitStore.js';
 import { recordUsage } from '../usage/ledger.js';
 import { presetsDir } from '../assets.js';
 import { homedir } from 'node:os';
@@ -191,6 +191,11 @@ export class SubprocessAdapter implements AgentAdapter {
     this.name = preset.name;
   }
 
+  /** Key for the usage-cap cache: the shared provider account, else this lane. */
+  private get quotaKey(): string {
+    return this.preset.quotaAccount ?? this.name;
+  }
+
   /**
    * Run the prompt, stepping one rung down the preset's model ladder each time
    * a tier reports its usage limit exhausted (claude: opus 5.5 → sonnet).
@@ -209,15 +214,23 @@ export class SubprocessAdapter implements AgentAdapter {
     const ladder = this.preset.models?.stepDown ?? [];
     const laddered = ladder.length > 0;
     let model = resolveModel(this.preset, request.model).model;
-    let limits = laddered ? loadLimits() : {};
+    // Every lane reads the cap cache, not just laddered ones: a lane with no
+    // ladder that is known-capped fails fast instead of burning a call.
+    let limits = loadLimits();
     const tried: string[] = [];
     const skipped: string[] = [];
     let usage = ZERO_USAGE;
 
     for (;;) {
       const now = new Date();
-      const capped = laddered ? exhaustedUntil(limits, this.name, model, now) : null;
+      const capped = exhaustedUntil(limits, this.quotaKey, model, now);
       const nextIfCapped = nextModel(ladder, model);
+
+      if (capped && !onLadder(ladder, model)) {
+        const reason = `usage limit on ${this.name}${model ? `/${model}` : ''} until ${capped.toISOString()} (cached; call skipped)`;
+        return failResult({ adapter: this.name, transport: this.transport,
+          failureClass: 'usage_limit', reason, stderr: reason, durationMs: 0, model, steppedDown: 0 });
+      }
 
       if (capped && nextIfCapped !== null) {
         // Known-capped with somewhere to go: skip without spending a call.
@@ -239,10 +252,10 @@ export class SubprocessAdapter implements AgentAdapter {
 
       const limit = detectUsageLimit(result, now);
       if (!limit.hit) {
-        if (laddered) {
+        if (limits[limitKey(this.quotaKey, model)]) {
           // This tier just answered, so it demonstrably isn't capped.
           limits = updateLimits(
-            (current) => clearExhausted(current, this.name, model),
+            (current) => clearExhausted(current, this.quotaKey, model),
           );
         }
         // Rungs skipped from the cache are still rungs the caller dropped —
@@ -250,10 +263,12 @@ export class SubprocessAdapter implements AgentAdapter {
         return { ...result, usage, steppedDown: skipped.length + tried.length - 1 };
       }
 
-      if (laddered && onLadder(ladder, model)) {
+      {
+        // Cache the cap for every lane so later calls, the router and the
+        // orchestrator roster can avoid it until it resets.
         limits = updateLimits((current) => markExhausted(
           current,
-          this.name,
+          this.quotaKey,
           model,
           limit.resetAt ?? new Date(now.getTime() + DEFAULT_COOLDOWN_MS),
           limit.via ?? 'unknown',

@@ -3,3 +3,11 @@
 delete process.env.AGENTCTL_WORKER_DEPTH;
 delete process.env.FORCE_COLOR;
 process.env.NO_COLOR = '1';
+
+// Keep all agentctl state (usage-cap cache, usage ledger, jobs) off the real
+// ~/.agentctl: every lane now reads/writes limits.json, so a test's fake cap
+// could otherwise disable a live lane. Tests that care stub their own home.
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+process.env.AGENTCTL_HOME = mkdtempSync(join(tmpdir(), 'agentctl-test-home-'));

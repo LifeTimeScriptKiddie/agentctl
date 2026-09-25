@@ -2,6 +2,8 @@ name: codex
 family: subprocess
 transport: subprocess
 parse: codex_lastmsg
+# One ChatGPT login backs codex and codex_write, so a usage cap on one caps both.
+quotaAccount: codex
 # codex exec reads instructions from stdin when no prompt arg is given.
 promptDelivery: stdin
 commandTemplate:

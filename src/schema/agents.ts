@@ -88,6 +88,8 @@ export const PresetSchema = z.object({
   transport: TransportSchema,
   parse: ParseModeSchema.default('text'),
   optional: z.boolean().default(false),
+  /** Lanes sharing one provider login share its usage caps (e.g. codex + codex_write). Defaults to the preset name. */
+  quotaAccount: z.string().min(1).optional(),
   hideWhenUnavailable: z.boolean().default(false),
   capabilities: AdapterCapabilitiesSchema.default(AdapterCapabilitiesSchema.parse({})),
 
