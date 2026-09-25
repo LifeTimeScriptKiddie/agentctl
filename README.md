@@ -259,7 +259,7 @@ Migrations and tables: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md) (`memories`
 agentctl memory sessiongraph nightly --since 24h
 ```
 
-That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture + graph-engineering suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/` (see **`Architecture recommendations`** in `report.md` and `suggest-agentctl/`). Gatekeeper graphs themselves live in agentctl: [`turn-graph.default.yaml`](src/memory/turn-graph.default.yaml), optional override `$AGENTCTL_HOME/config/turn-graph.yaml` — [TURN-GRAPH.md](docs/TURN-GRAPH.md). Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
+That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture + graph-engineering suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/` (see **`Architecture recommendations`** in `report.md` and `suggest-agentctl/`). Gatekeeper graphs themselves live in agentctl: [`turn-graph.default.yaml`](packages/shared_ptr/src/turn-graph.default.yaml) (in the shared_ptr package), optional override `$AGENTCTL_HOME/config/turn-graph.yaml` — [TURN-GRAPH.md](docs/TURN-GRAPH.md). Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
 
 **Direction (plan):** tighten backend placement so SessionGraph continuously **observes user input and DB flow** on the VM—richer turn/query metadata, cross-workspace usage, and retrieval outcomes—then surfaces **actionable suggestions**, especially **graph engineering** (when to add evidence nodes, split pipelines, or adjust abstain/fallback edges) plus kinds/workspaces and review cadence. Human operators merge graph YAML and database changes; SessionGraph only proposes.
 

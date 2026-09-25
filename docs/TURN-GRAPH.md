@@ -6,9 +6,9 @@ Agentctl backend paths use a **declarative graph** (nodes, edges, terminals) exe
 
 | Path | Role |
 | --- | --- |
-| `src/memory/turn-graph.default.yaml` | Shipped spec: `context_retrieval`, stub `v1_turn`, `memory_write` |
+| `packages/shared_ptr/src/turn-graph.default.yaml` | Shipped spec: `context_retrieval`, stub `v1_turn`, `memory_write` |
 | `$AGENTCTL_HOME/config/turn-graph.yaml` | Optional override (full document or `pipelines` only) |
-| `src/memory/turnGraph.ts` | Pipeline runner + audit trace |
+| `packages/shared_ptr/src/turnGraph.ts` | Pipeline runner + audit trace |
 
 ## Active pipeline: `context_retrieval`
 

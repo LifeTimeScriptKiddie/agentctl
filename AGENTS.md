@@ -23,7 +23,7 @@ Team memory can use **local [Laya](https://pypi.org/project/laya/)** for optiona
 
 **Hosted TypeSafe Jev** remains available when `TYPESAFE_API_KEY` is set — see [docs/JEV-MEMORY.md](docs/JEV-MEMORY.md). Use **`--provider jev`** or **`--jev-evidence`**; do not conflate with Laya.
 
-- Script: `scripts/laya_evidence.py` (bundled to `dist/scripts/` on build)
+- Script: `packages/shared_ptr/scripts/laya_evidence.py` (shipped with the shared_ptr package)
 - Config: `$AGENTCTL_HOME/config/laya.yaml` or `AGENTCTL_LAYA_EVIDENCE=1`
 - Python: `AGENTCTL_LAYA_PYTHON` or `$AGENTCTL_HOME/.venv-laya/bin/python3` (`pip install 'laya>=0.3.5'`)
 - CLI: `memory search|handoff --laya-evidence`, `memory laya ping`

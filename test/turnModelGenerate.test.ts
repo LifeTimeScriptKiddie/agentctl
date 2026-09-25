@@ -126,3 +126,20 @@ describe('turn model generate', () => {
     spawned.mockRestore();
   });
 });
+
+describe('agentctl CLI runner fails closed', () => {
+  it('a lane listed without capabilities (older agentctl) is refused, not treated as harmless', async () => {
+    const { setServeModelRunner, generateTurnAnswer: gen } = await import('../packages/shared_ptr/src/turnModelGenerate.js');
+    const ask = vi.fn();
+    // what agentctlCliRunner reports when `agentctl agents` omits capabilities
+    setServeModelRunner({ capabilities: async () => null, ask });
+    const bundle = {
+      context_bundle_id: 'ctx_o', policy_decision_id: 'pdp_o', workspace: 'w', query: 'q',
+      evidence_status: 'verified', terminal: 'context_ready', graph: 'context_retrieval', graph_version: 1,
+      items: [], checkpoint: null, precedence_note: 'test',
+    } as never;
+    const out = await gen({ bundle, workspace: 'w', query: 'q', goal: 'q', agent: 'codex_write' });
+    expect(out.status).toBe('failed');
+    expect(ask).not.toHaveBeenCalled();
+  });
+});

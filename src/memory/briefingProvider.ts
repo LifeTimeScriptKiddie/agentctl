@@ -16,7 +16,7 @@ export function resolveSharedPtrCommand(): { file: string; args: string[]; via: 
   if (explicit) return explicit.endsWith('.js')
     ? { file: process.execPath, args: [explicit], via: 'SHARED_PTR_BIN' }
     : { file: explicit, args: [], via: 'SHARED_PTR_BIN' };
-  // In this monorepo phase the server builds beside agentctl (dist/memory → ../../packages/…).
+  // In this monorepo phase the server builds beside agentctl: from dist/memory/ that is ../../packages/shared_ptr/dist/cli.js.
   const sibling = fileURLToPath(new URL('../../packages/shared_ptr/dist/cli.js', import.meta.url));
   if (existsSync(sibling)) return { file: process.execPath, args: [sibling], via: 'workspace' };
   return { file: 'shared_ptr', args: [], via: 'PATH' };
