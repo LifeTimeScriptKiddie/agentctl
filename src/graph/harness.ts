@@ -379,7 +379,7 @@ export function analyzeHarness(
     'prompt.worker': [delivery.workerCalls, delivery.workers],
   };
   const sources: SourceDigest[] = Object.values(HARNESS_SOURCES).map((s) => ({
-    ...s, delivered: delivered[s.id]?.[0] ?? 0, readers: delivered[s.id]?.[1] ?? [],
+    ...s, delivered: delivered[s.id]?.[0] ?? 0, readers: delivered[s.id]?.[0] ? delivered[s.id]![1] : [],
     directives: HARNESS_DIRECTIVES.filter((d) => d.source === s.id).map((d) => d.id),
   }));
   const back: BackTrace[] = [...outcomes].filter(([, o]) => FAILED.has(o)).map(([run, outcome]) => ({
