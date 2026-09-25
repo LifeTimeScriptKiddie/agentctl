@@ -72,7 +72,10 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         + 'tasks run in parallel on fast lanes, you get every result back and decide the next step); agentctl_orchestrate '
         + 'only when you want another model to plan and combine the work. Pass what you already know (files read, '
         + 'decisions) in `context` so workers do not rediscover it. Do not use agentctl for simple edits or questions you '
-        + 'can handle directly. Tools wait for the answer when they can; if one returns done=false, call '
+        + 'can handle directly. Never send work to your own agent (your own lane is excluded from routing): it starts '
+        + 'a second session on your quota with none of your context. Call agentctl through these MCP tools, not by '
+        + 'running the `agentctl` CLI in your shell, which may be sandboxed without network. '
+        + 'Tools wait for the answer when they can; if one returns done=false, call '
         + 'agentctl_job_wait with its job_id until done. '
         + (opts.allowApprove
           ? 'approve/approve_context are available; set them only when the human has explicitly approved the action.'
@@ -424,6 +427,11 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
 }
 
 export async function startMcpStdioServer(opts: McpServerOptions = {}): Promise<void> {
+  // A worker agent spawned by agentctl may start its own agentctl MCP server,
+  // which does not inherit AGENTCTL_WORKER_DEPTH. Rebuild the guard from the
+  // process tree so a nested server refuses to dispatch (no recursion).
+  const { detectCallerContext } = await import('../core/caller.js');
+  if ((await detectCallerContext()).nestedUnderAgentctl) process.env.AGENTCTL_WORKER_DEPTH = '1';
   const server = createAgentctlMcpServer(opts);
   await server.connect(new StdioServerTransport());
 }
