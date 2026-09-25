@@ -9,6 +9,8 @@ import { exportGraphs, type ExportSummary } from './export.js';
 import { analyzePromptBehavior, joinJob, type JobPromptBehavior, type PromptBehaviorAnalysis } from './promptBehavior.js';
 import { guidanceFor } from './specRules.js';
 import { graphHtml, overviewMermaid, workflowMermaid } from './render.js';
+import { analyzeHarness, deliveryCounts, failureReason, observeJob, observeMcpSession, type HarnessDigestion, type HarnessObservation } from './harness.js';
+import { harnessBackMermaid, harnessFlowMermaid, harnessHtml, harnessSummaryLines } from './harnessRender.js';
 import type { GenericEvent } from './export.js';
 
 /** How to invoke the SessionGraph analyzer on this machine. */
@@ -75,6 +77,28 @@ export interface GraphAnalysis {
   hotspots: Hotspots;
   /** Prompt side joined with behavior: caller task-graph failure rates and spec-issue lift. */
   promptBehavior: PromptBehaviorAnalysis;
+  /** How models take in the harness: directive verdicts per reader, and failed runs traced back. */
+  harness?: HarnessDigestion;
+}
+
+/** Harness observations for every exported session, and the digestion built from them. */
+export function digestHarness(exported: ExportSummary, joined: JobPromptBehavior[], sinceMs = 0): { observations: HarnessObservation[]; digestion: HarnessDigestion } {
+  const jobs = exported.jobs.flatMap((id) => {
+    const record = getJob(id);
+    return record ? [{ record, events: readJobEvents(id).events }] : [];
+  });
+  const mcp = exported.mcpSessions.map((session) => ({
+    session, calls: readMcpSession(session).filter((c) => Date.parse(c.at) >= sinceMs),
+  }));
+  const byId = new Map(joined.map((j) => [j.id, j] as const));
+  const rejectionOf = (id: string) => byId.get(id)?.rejection ?? null;
+  const observations = [
+    ...mcp.flatMap((s) => observeMcpSession(s.session, s.calls, Date.now(), rejectionOf)),
+    ...jobs.flatMap((j) => observeJob(j.record, j.events)),
+  ];
+  const outcomes = new Map(joined.map((j) => [j.id, j.outcome] as const));
+  const reasons = new Map(jobs.map((j) => [j.record.id, failureReason(j.events, rejectionOf(j.record.id))] as const));
+  return { observations, digestion: analyzeHarness(observations, deliveryCounts(mcp, jobs), outcomes, reasons) };
 }
 
 function emptyLane(): LaneStats {
@@ -170,14 +194,15 @@ export async function analyzeGraphs(outDir: string, opts: { sinceMs?: number; an
   const findingCounts: Record<string, number> = {};
   for (const s of sessions) for (const f of s.findings) findingCounts[f.code] = (findingCounts[f.code] ?? 0) + 1;
   const joined = exported.jobs.map(joinJob).filter((j): j is JobPromptBehavior => j !== null);
+  const { observations, digestion } = digestHarness(exported, joined, opts.sinceMs ?? 0);
   const result: GraphAnalysis = {
     schema: 'agentctl.graph-analysis.v1', createdAt: new Date().toISOString(),
     analyzer: analyzer?.via ?? null, exported, sessions, findingCounts, hotspots: computeHotspots(exported),
-    promptBehavior: analyzePromptBehavior(joined),
+    promptBehavior: analyzePromptBehavior(joined), harness: digestion,
   };
   writePrivateFile(join(outDir, 'analysis.json'), JSON.stringify(result, null, 2));
   writePrivateFile(join(outDir, 'summary.md'), formatSummary(result));
-  writePictures(outDir, result, joined);
+  writePictures(outDir, result, joined, observations);
   return result;
 }
 
@@ -206,7 +231,9 @@ export function pickFocus(a: GraphAnalysis, joined: JobPromptBehavior[]): { id: 
 }
 
 /** workflows/<id>.mmd per session, and graph.html with the overview and the focus session. */
-function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavior[]): void {
+function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavior[], observations: HarnessObservation[] = []): void {
+  const bySession = new Map<string, HarnessObservation[]>();
+  for (const o of observations) bySession.set(o.session, [...(bySession.get(o.session) ?? []), o]);
   ensurePrivateDir(join(outDir, 'workflows'));
   const inputs = [
     ...a.exported.jobs.map((id) => ({ id, type: 'job' as const })),
@@ -214,7 +241,7 @@ function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavi
   ];
   for (const { id, type } of inputs) {
     const events = readExport(outDir, type, id);
-    if (events.length) writePrivateFile(join(outDir, 'workflows', `${id}.mmd`), workflowMermaid(events, id));
+    if (events.length) writePrivateFile(join(outDir, 'workflows', `${id}.mmd`), workflowMermaid(events, id, bySession.get(id)));
   }
   const focus = pickFocus(a, joined);
   const g = a.promptBehavior.taskGraphs.overall;
@@ -225,8 +252,37 @@ function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavi
     notes: [
       `${a.exported.jobs.length} job(s), ${a.exported.mcpSessions.length} MCP session(s); caller task graphs ${g.graphs}, fail rate ${Math.round(g.failRate * 100)}%.`,
       'Every session\'s workflow is in workflows/<id>.mmd; numbers are in summary.md and analysis.json.',
+      'How models take in the harness (flow and back): harness.html.',
     ],
   }));
+  if (a.harness) {
+    const hFocus = pickHarnessFocus(a.harness, observations);
+    writePrivateFile(join(outDir, 'harness.html'), harnessHtml({
+      title: `Harness digestion ${a.createdAt.slice(0, 10)}`, digestion: a.harness,
+      flow: harnessFlowMermaid(a.harness), back: harnessBackMermaid(a.harness),
+      ...(hFocus ? { focus: { id: hFocus.id, why: hFocus.why,
+        mermaid: workflowMermaid(readExport(outDir, hFocus.type, hFocus.id), undefined, bySession.get(hFocus.id)) } } : {}),
+    }));
+  }
+}
+
+/**
+ * The session that shows digestion best: most directives not followed, else
+ * the one with the most observations (so the harness lane is not empty).
+ */
+export function pickHarnessFocus(d: HarnessDigestion, observations: HarnessObservation[]): { id: string; type: 'job' | 'mcp'; why: string } | null {
+  const per = new Map<string, { type: 'job' | 'mcp'; total: number; missed: number }>();
+  for (const o of observations) {
+    const s = per.get(o.session) ?? { type: o.sessionType, total: 0, missed: 0 };
+    s.total++; if (o.verdict === 'not_followed') s.missed++;
+    per.set(o.session, s);
+  }
+  const best = [...per].sort((x, y) => y[1].missed - x[1].missed || y[1].total - x[1].total)[0];
+  if (!best || d.observations === 0) return null;
+  const [id, s] = best;
+  return { id, type: s.type, why: s.missed
+    ? `Most directives not followed in this window (${s.missed} of ${s.total} checks).`
+    : `Every checked directive was followed; this session has the most checks (${s.total}).` };
 }
 
 export function formatSummary(a: GraphAnalysis): string {
@@ -253,6 +309,7 @@ export function formatSummary(a: GraphAnalysis): string {
     '',
     ...formatPromptBehavior(a.promptBehavior),
     '',
+    ...(a.harness ? [...harnessSummaryLines(a.harness), ''] : []),
     'Next: `agentctl graph improve` turns these into code-change proposals.',
   ];
   return `${lines.filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n')}\n`;

@@ -87,7 +87,8 @@ Every `graph analyze` also writes:
 | --- | --- | --- |
 | `graph.html` | Overview (callers → outcomes → refusal reasons and implicated spec issues), plus the workflow of the session to look at first: lowest health, else the largest failed graph, else a refused one, else the latest graph | Open it in a browser first |
 | `workflows/<id>.mmd` | One Mermaid flowchart per job and MCP session. An "asked (prompt)" lane (request and task specs) sits beside a "did (behavior)" lane (calls, results, steps, finish). Typed edges are labeled; `retries` is dashed | Inspect any session; it renders in GitHub, Obsidian and VS Code |
-| `summary.md` | The overview as a Mermaid block, above the lift table | Read in any Markdown viewer |
+| `summary.md` | The overview as a Mermaid block, above the lift table, and a harness digestion table | Read in any Markdown viewer |
+| `harness.html` | Harness digestion: Flow (harness → model → outcome) and Back (outcome → directive → source → file) with a toggle, plus one session with its harness lane | See how models take in the harness |
 
 Colors:
 - blue: a request or task with a clean spec;
@@ -97,6 +98,80 @@ Colors:
 - heavy green or red border: final outcome.
 
 The overview lists an issue only when it clears the same evidence bar as `graph improve` (lift ≥ 1.5, or fail rate ≥ 0.3 with no baseline), so it never flags noise. Pictures are content-free like the exports. `graph.html` loads the Mermaid library from cdn.jsdelivr.net and falls back to showing the diagram source when offline. The weekly job's latest page is `~/.agentctl/graph/latest/graph.html`.
+
+## Harness digestion: flow and back
+
+The prompt ↔ behavior join asks "did the caller's request predict failure?". Harness digestion asks the question one level up: **how do the models agentctl talks to take in the harness agentctl gives them?** The harness is every text a model reads from agentctl: the MCP server instructions, tool descriptions and schemas, `spec_warnings` in results, the lead prompt and the worker prompt. `src/graph/harness.ts` holds it as a registry of **sources** and the **directives** each one states. Every directive has a content-free check. `graph analyze` turns each check into a verdict on the behavior node where it was observed: `followed` or `not_followed`.
+
+```text
+ FLOW   harness source ──► directive ──► model that read it ──► behavior (✓ / ✗) ──► run succeeded | failed
+ BACK   failed run ──► directive not followed ──► harness source ──► file to edit
+                   └─► no directive covers it ──► lane problem or harness gap (reason code)
+```
+
+```bash
+agentctl graph analyze --since 7d      # also writes harness.html and analysis.json → harness
+agentctl graph harness [<dir>]          # JSON: readers, directives with verdicts, back traces, blind spots
+```
+
+Open `harness.html`. The toggle switches between **Flow** (left to right: harness → model → outcome) and **Back** (right to left: outcome → directive → source → file). Below that are the readers table, the directives table, failed runs traced back, the sources, and one session's workflow with its harness lane.
+
+### Sources
+
+| Source | Audience | Read when | Edit |
+| --- | --- | --- | --- |
+| `mcp.instructions` | caller | once per client session | `src/mcp/harnessText.ts` → `mcpInstructions` |
+| `tool.run_tasks` | caller | with the tool list | `src/mcp/harnessText.ts` → `RUN_TASKS_DESCRIPTION`; `src/mcp/server.ts` → `taskShape` |
+| `feedback.spec_warnings` | caller | in the result of a request with spec issues | `src/graph/specRules.ts` → `SPEC_RULES` |
+| `prompt.lead` | lead model | every lead round | `src/core/orchestrateLoop.ts` → `buildLeadPrompt` |
+| `prompt.worker` | worker models | every task-graph dispatch | `src/core/orchestrateLoop.ts` → `buildWorkerPrompt` |
+
+### Directives and how each is checked
+
+| Directive | Source | Strength | Followed when |
+| --- | --- | --- | --- |
+| `wait_until_done` | mcp.instructions | must | a done=false result is followed by another call on the same job_id (not judged while it may still be running, < 30 min) |
+| `pass_context` | mcp.instructions | should | the request has no `no_shared_context`, `refers_outside` or `prompt_refers_outside` code |
+| `delegate_for_one` | mcp.instructions | should | a run_tasks request is not `single_task` |
+| `never_self` | mcp.instructions | must | a delegate does not pin `to` to the caller's own lane |
+| `handle_simple_yourself` | mcp.instructions | should | blind spot (needs content) |
+| `self_contained` | tool.run_tasks | should | no `thin_instruction` or `refers_outside` |
+| `parallel_tasks` | tool.run_tasks | should | not `serial_chain` |
+| `roster_lanes` | tool.run_tasks | must | the graph was not refused for lane, capability, model or effort |
+| `model_only_hard` | tool.run_tasks | should | no `strong_model_pinned` |
+| `heed_warning` | feedback.spec_warnings | must | the next run_tasks request in the session no longer carries the warned code (one verdict per warned code; analysis-only codes are never warned, so never judged) |
+| `lead.envelope_only` | prompt.lead | must | a delegation reply parses as `delegate.v1` |
+| `lead.roster_names` | prompt.lead | must | the batch passes the roster check |
+| `lead.new_ids` | prompt.lead | must | no reused task id |
+| `lead.valid_deps` | prompt.lead | must | no unknown, duplicate or cyclic dependency |
+| `lead.no_delegate_last` | prompt.lead | must | the last-round reply is an answer |
+| `lead.model_only_needed` | prompt.lead | should | delegated tasks do not pin `model` |
+| `lead.acceptance` | prompt.lead | should | every delegated task has `acceptance` |
+| `lead.answer_directly` | prompt.lead | should | blind spot |
+| `lead.no_false_claims` | prompt.lead | must | blind spot |
+| `worker.quick` | prompt.worker | should | the worker finished before its timeout (lane failures such as usage_limit are not counted) |
+| `worker.no_delegate` | prompt.worker | must | blind spot |
+| `worker.report_evidence` | prompt.worker | should | blind spot |
+
+Blind spots are listed, not guessed. A directive that can only be judged by reading prompts or answers stays out of the numbers.
+
+### What the graph records for this
+
+- MCP trace records and job `started` events carry `harness`: a fingerprint (`h` + 10 hex) of every harness text (`harnessVersion()` in `src/mcp/harnessText.ts`). Verdicts are split `byVersion`, so a harness edit can be compared with `graph compare` on fresh traffic.
+- The loop engine writes a `lead_decision` event per lead reply: `kind` (answer, delegate, invalid, rejected, closed), task counts, pinned models, tasks with acceptance, and the roster problem. The export folds it into the lead's `tool_result` node as `arguments.decision` (and `rejection` as a code). It adds no node, and the problem text never leaves the job directory.
+- Every node a verdict was observed at carries `arguments.harness = { "<directive>[:<code>]": "followed" | "not_followed" }`.
+
+### Reading and acting
+
+| Evidence (`analysis.json → harness`) | Meaning | Move |
+| --- | --- | --- |
+| a `must` directive with `notFollowed` > 0 for one reader | that model does not take the line in | move the line to where that model reads it (tool description or schema over server instructions), or enforce it at the gate |
+| a `should` directive rarely followed by every reader, and `after.notFollowed` fails no more than `after.followed` | the line costs attention and changes nothing | reword it or drop it; check with `graph compare` |
+| `failLift` ≥ 1.5 | not following the line predicts failure | tighten it (escalation ladder above) |
+| `heed_warning` not followed for a code | the fix sentence does not land | rewrite that `SPEC_RULES` guidance |
+| `back[].notFollowed` empty with a recurring `reason` | no directive covers the failure: a lane problem (`worker:*`, `lead:*`) or a **harness gap** (`ambiguous_route`, a refusal code) | lanes: route around them. Gap: propose a new directive and its check, and add it to the registry |
+
+The same evidence bar as `graph improve` applies. Act only on at least 3 observations. One run is an anecdote.
 
 ### Invariants (tests enforce them)
 
@@ -212,9 +287,12 @@ Below these, `improve` stays quiet.
 | SessionGraph run, hotspots, summary | `src/graph/analyze.ts` |
 | Proposals, thresholds, metrics, compare gates | `src/graph/improve.ts` |
 | Pictures (workflow and overview Mermaid, `graph.html`) | `src/graph/render.ts` |
-| CLI (`graph export/analyze/improve/apply/compare`) | `src/graph/command.ts` |
+| Harness registry, verdicts, digestion, back traces | `src/graph/harness.ts` |
+| Harness pictures (`harness.html`, flow and back) | `src/graph/harnessRender.ts` |
+| Harness texts and their fingerprint | `src/mcp/harnessText.ts` |
+| CLI (`graph export/analyze/harness/improve/apply/compare`) | `src/graph/command.ts` |
 | MCP descriptions, `spec_warnings`, content-free trace | `src/mcp/server.ts`, `src/mcp/trace.ts` |
 | Pi tool pass-through | `integrations/pi/agentctl.ts` |
-| Tests | `test/graph.test.ts`, `test/graphPromptBehavior.test.ts`, `test/mcpServer.test.ts` |
+| Tests | `test/graph.test.ts`, `test/graphPromptBehavior.test.ts`, `test/graphHarness.test.ts`, `test/mcpServer.test.ts` |
 
 Related: [AGENT-INTEGRATION.md](AGENT-INTEGRATION.md#improving-agentctl-from-real-usage-sessiongraph), [TURN-GRAPH.md](TURN-GRAPH.md) (memory-plane graphs), [SESSIONGRAPH-NIGHTLY.md](SESSIONGRAPH-NIGHTLY.md).

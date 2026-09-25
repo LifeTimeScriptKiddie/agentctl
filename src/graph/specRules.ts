@@ -199,6 +199,11 @@ export function classifyRejection(error: string | null | undefined): string {
 /** Tracked for failure lift, but not worth a warning on every call. */
 const ANALYSIS_ONLY = new Set(['strong_model_pinned']);
 
+/** True when `specWarnings` returns this code to the caller (the caller was told the fix). */
+export function isWarned(code: string): boolean {
+  return !ANALYSIS_ONLY.has(code) && code in SPEC_RULES;
+}
+
 /** Warnings returned to the caller with a run_tasks result: code, where, and the fix. */
 export function specWarnings(lint: GraphLint): Array<{ code: string; tasks?: string[]; fix: string }> {
   const byCode = new Map<string, string[]>();

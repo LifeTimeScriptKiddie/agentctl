@@ -73,6 +73,17 @@ describe('job runner', () => {
     expect(waited.done).toBe(true);
   });
 
+  it('records the harness version and each lead decision of an orchestrate job (content-free)', async () => {
+    const job = startJob({ kind: 'orchestrate', goal: 'explain the harness', orchestrator: 'dry_run' }, { launch: noLaunch });
+    await runJob(job.id, { registry: AdapterRegistry.fromPackaged() });
+    const events = readJobEvents(job.id).events;
+    expect(events.find((e) => e.type === 'started')!.harness).toMatch(/^h[0-9a-f]{10}$/);
+    const decisions = events.filter((e) => e.type === 'lead_decision');
+    expect(decisions.length).toBeGreaterThan(0);
+    expect(decisions[0]).toMatchObject({ round: 1, phase: 'lead', kind: 'answer' });
+    expect(JSON.stringify(events)).not.toContain('explain the harness');
+  });
+
   it('cancels an in-flight worker via the cancel marker and aborts its subprocess', async () => {
     let aborted = false;
     runMock.mockImplementation(async (file, _args, opts) => {

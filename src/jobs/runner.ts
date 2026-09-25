@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { agentAsk, agentDelegate, agentOrchestrate, agentRunTasks } from '../api.js';
 import { loadRegistry } from '../core/loadRegistry.js';
+import { harnessVersion } from '../mcp/harnessText.js';
 import type { AskResult } from '../core/ask.js';
 import {
   appendJobEvent, cancelRequested, createJob, getJob, isTerminal, readJobInput, readJobResult,
@@ -126,7 +127,7 @@ export async function runJob(
   poll.unref?.();
 
   updateJob(id, { status: 'running', startedAt: new Date().toISOString(), pid: process.pid });
-  appendJobEvent(id, { type: 'started', kind: input.kind });
+  appendJobEvent(id, { type: 'started', kind: input.kind, harness: harnessVersion() });
   const registry = opts.registry ?? loadRegistry();
   const signal = controller.signal;
 
@@ -146,6 +147,8 @@ export async function runJob(
     onDispatch: (r, task) => appendJobEvent(id, {
       type: 'worker_result', ...workerFields(r, signal.aborted), ...taskFields(task),
     }),
+    // Content-free: decision kind and counts; `problem` names only ids, lanes and models.
+    onLeadDecision: (d) => appendJobEvent(id, { type: 'lead_decision', ...d }),
   };
   const graphStep = (outcome: StepOutcome) => appendJobEvent(id, {
     type: 'step', step: outcome.id, agent: outcome.agent, model: outcome.model, ok: outcome.ok,

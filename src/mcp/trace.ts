@@ -23,6 +23,8 @@ export interface McpCallRecord {
   to?: string;
   /** Spec lint codes of the request (prompt side); never request text. */
   issues?: string[];
+  /** Fingerprint of the harness text this client read (see src/mcp/harnessText.ts). */
+  harness?: string;
 }
 
 const SESSION_RE = /^mcp_[a-z0-9]{8,40}$/;

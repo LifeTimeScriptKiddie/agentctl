@@ -103,6 +103,26 @@ export function registerGraphCommands(program: Command): void {
       emit('analyze', 0, { dir: out, analyzer: a.analyzer, sessions: a.sessions.length, findingCounts: a.findingCounts, hotspots: a.hotspots, summary: join(out, 'summary.md') });
     })());
 
+  graph.command('harness')
+    .argument('[dir]', 'analysis directory (default: run a fresh analysis)')
+    .option('--since <window>', 'window for a fresh analysis', '7d')
+    .description('how models take in the harness: per-directive verdicts per reader, failed runs traced back (harness.html)')
+    .action((dirArg: string | undefined, o: { since?: string }) => guard('harness', async () => {
+      const dir = dirArg ?? defaultOut();
+      const analysis = dirArg ? loadAnalysis(dir) : await analyzeGraphs(dir, { sinceMs: parseSince(o.since) });
+      if (!analysis.harness) throw new Error(`no harness digestion in ${dir}; re-run \`agentctl graph analyze\` with this build`);
+      const h = analysis.harness;
+      emit('harness', 0, {
+        dir, page: join(dir, 'harness.html'), versions: h.versions, observations: h.observations,
+        readers: h.readers,
+        directives: h.directives.filter((d) => d.applicable > 0).map((d) => ({
+          id: d.id, source: d.source, strength: d.strength, followed: d.followed, notFollowed: d.notFollowed,
+          followRate: d.followRate, failLift: d.failLift, byModel: d.byModel,
+        })),
+        back: h.back, blindSpots: h.blindSpots,
+      });
+    })());
+
   graph.command('improve')
     .argument('[dir]', 'analysis directory (default: run a fresh analysis)')
     .option('--since <window>', 'window for a fresh analysis', '7d')

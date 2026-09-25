@@ -1,6 +1,7 @@
 import type { GenericEvent } from './export.js';
 import type { PromptBehaviorAnalysis } from './promptBehavior.js';
 import { SPEC_THRESHOLDS } from './improve.js';
+import { directive, type HarnessObservation } from './harness.js';
 
 /**
  * Pictures of the graphs agentctl exports (content-free, like the exports):
@@ -14,13 +15,13 @@ import { SPEC_THRESHOLDS } from './improve.js';
  */
 
 /** Mermaid-safe label text (quotes and angle brackets become entities). */
-function esc(text: string): string {
+export function esc(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/"/g, '#quot;').replace(/</g, '#lt;').replace(/>/g, '#gt;');
 }
 
-const label = (...lines: Array<string | null | undefined | false>) => `"${lines.filter(Boolean).map((l) => esc(String(l))).join('<br/>')}"`;
+export const label = (...lines: Array<string | null | undefined | false>) => `"${lines.filter(Boolean).map((l) => esc(String(l))).join('<br/>')}"`;
 
-const CLASSES = [
+export const CLASSES = [
   'classDef kAsked fill:#dbeafe,stroke:#2563eb,color:#0f172a',
   'classDef kIssue fill:#fef3c7,stroke:#d97706,color:#0f172a',
   'classDef kAct fill:#f1f5f9,stroke:#64748b,color:#0f172a',
@@ -29,6 +30,9 @@ const CLASSES = [
   // Terminal outcomes: light fill + heavy border, so the dark label text stays legible in every renderer.
   'classDef kDone fill:#bbf7d0,stroke:#15803d,stroke-width:3px,color:#0f172a',
   'classDef kFail fill:#fecaca,stroke:#b91c1c,stroke-width:3px,color:#0f172a',
+  // Harness: what agentctl told the model (violet), and directives the graph cannot check (dashed).
+  'classDef kHarness fill:#ede9fe,stroke:#7c3aed,color:#0f172a',
+  'classDef kBlind fill:#f8fafc,stroke:#94a3b8,stroke-dasharray:4 3,color:#475569',
 ];
 
 function args(e: GenericEvent): Record<string, unknown> {
@@ -63,7 +67,8 @@ function nodeText(e: GenericEvent): { text: string; cls: string } {
       };
     case 'tool_result':
       return {
-        text: label(e.is_error ? `✗ ${String(a.failureClass ?? a.status ?? 'error')}` : '✓ result', cost),
+        text: label(e.is_error ? `✗ ${String(a.failureClass ?? a.status ?? 'error')}` : '✓ result', cost,
+          typeof a.decision === 'string' ? `lead: ${a.decision}${typeof a.tasks === 'number' ? ` ${a.tasks} task(s)` : ''}${typeof a.rejection === 'string' ? ` (${a.rejection})` : ''}` : null),
         cls: e.is_error ? 'kErr' : 'kOk',
       };
     case 'step':
@@ -75,8 +80,13 @@ function nodeText(e: GenericEvent): { text: string; cls: string } {
   }
 }
 
-/** One job or MCP session as a left-to-right workflow. */
-export function workflowMermaid(events: GenericEvent[], title?: string): string {
+/**
+ * One job or MCP session as a left-to-right workflow. With `harness`
+ * observations, a third lane shows the directives the models read: a solid
+ * `✓` edge runs from a directive to behavior that followed it, and a dashed red
+ * `✗` edge runs back from behavior that did not follow it to the directive.
+ */
+export function workflowMermaid(events: GenericEvent[], title?: string, harness: HarnessObservation[] = []): string {
   const idOf = new Map(events.map((e, i) => [e.id, `n${i}`]));
   const isPrompt = (e: GenericEvent) => e.kind === 'task_spec' || (e.kind === 'message' && e.parent_id === null);
   const lines = ['flowchart LR'];
@@ -92,6 +102,7 @@ export function workflowMermaid(events: GenericEvent[], title?: string): string 
   } else {
     lines.push(...events.map(node));
   }
+  let links = 0;
   for (const e of events) {
     const parents = e.parent_ids ?? (e.parent_id ? [e.parent_id] : []);
     for (const p of parents) {
@@ -100,7 +111,49 @@ export function workflowMermaid(events: GenericEvent[], title?: string): string 
       const rel = e.parent_relations?.[p];
       const arrow = rel === 'retries' ? '-.->' : '-->';
       lines.push(`  ${from} ${arrow}${rel && rel !== 'precedes' ? `|${rel}|` : ''} ${idOf.get(e.id)}`);
+      links++;
     }
+  }
+  const seen = harness.filter((o) => idOf.has(o.node));
+  if (seen.length) {
+    const keyOf = (o: HarnessObservation) => (o.detail ? `${o.directive}:${o.detail}` : o.directive);
+    const hid = new Map([...new Set(seen.map(keyOf))].map((k, i) => [k, `h${i}`]));
+    const tally = new Map<string, { ok: number; miss: number }>();
+    for (const o of seen) {
+      const t = tally.get(keyOf(o)) ?? { ok: 0, miss: 0 };
+      if (o.verdict === 'followed') t.ok++; else t.miss++;
+      tally.set(keyOf(o), t);
+    }
+    lines.push('  subgraph H["told (harness)"]', '    direction TB');
+    for (const [key, id] of hid) {
+      const [dir, detail] = key.split(':');
+      const d = directive(dir!);
+      const t = tally.get(key)!;
+      lines.push(`    ${id}[${label(d?.title ?? dir, detail ? `warning ${detail}` : null, d ? d.source : null, `✓${t.ok} ✗${t.miss}`)}]:::${t.miss ? 'kIssue' : 'kHarness'}`);
+    }
+    lines.push('  end');
+    // Forward: one ✓ edge per directive, to the first behavior that followed it (the count is on the node).
+    // Back: every ✗ gets its own dashed edge from the behavior to the directive it missed.
+    const ok: number[] = []; const miss: number[] = [];
+    const drawn = new Set<string>();
+    for (const o of seen) {
+      const key = keyOf(o);
+      const h = hid.get(key)!;
+      const n = idOf.get(o.node)!;
+      const at = o.deliveredAt ? idOf.get(o.deliveredAt) : undefined;
+      if (o.verdict === 'followed') {
+        if (drawn.has(key)) continue;
+        drawn.add(key);
+        if (at) { lines.push(`  ${at} -.->|delivers| ${h}`); links++; }
+        const t = tally.get(key)!;
+        lines.push(`  ${h} -->|${t.ok > 1 ? `✓ ×${t.ok}` : '✓'}| ${n}`); ok.push(links++);
+      } else {
+        if (at) { lines.push(`  ${at} -.->|delivers| ${h}`); links++; }
+        lines.push(`  ${n} -.->|✗ not followed| ${h}`); miss.push(links++);
+      }
+    }
+    if (ok.length) lines.push(`  linkStyle ${ok.join(',')} stroke:#16a34a`);
+    if (miss.length) lines.push(`  linkStyle ${miss.join(',')} stroke:#dc2626,stroke-width:2px`);
   }
   lines.push(...CLASSES.map((c) => `  ${c}`));
   return `${lines.join('\n')}\n`;

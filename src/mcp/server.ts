@@ -11,7 +11,8 @@ import { cancelJob, startJob, waitForJob, type JobInput, type JobLauncher } from
 import { appendMcpCall, newMcpSessionId } from './trace.js';
 import { buildLoopLanes } from '../core/orchestrateFlow.js';
 import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
-import { RUN_TASKS_ACTIVE_HINTS, guidanceFor, lintPrompt, lintTaskGraph, specWarnings } from '../graph/specRules.js';
+import { lintPrompt, lintTaskGraph, specWarnings } from '../graph/specRules.js';
+import { harnessVersion, mcpInstructions, RUN_TASKS_DESCRIPTION } from './harnessText.js';
 
 /**
  * `agentctl mcp`: agentctl as a native tool server for Claude Code, Cursor,
@@ -62,24 +63,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   const server = new McpServer(
     { name: 'agentctl', version: '1' },
     {
-      instructions:
-        'agentctl hands work to other local agent CLIs using their own logins. Use it on the user\'s behalf, without '
-        + 'being asked, when another agent fits the work better than you or an independent opinion helps: '
-        + 'codex_write (GPT Luna/Sol) for code edits, tests and shell work in the repo; claude (Opus 5.5 for deep '
-        + 'review/hard reasoning, Sonnet otherwise) for review and writing; cursor (Composer) for fast repository '
-        + 'questions; agy for web research. Pick the tool by who leads: agentctl_delegate for one task; '
-        + 'agentctl_run_tasks when you can split the work yourself (you are the lead: send a task graph, independent '
-        + 'tasks run in parallel on fast lanes, you get every result back and decide the next step); agentctl_orchestrate '
-        + 'only when you want another model to plan and combine the work. Pass what you already know (files read, '
-        + 'decisions) in `context` so workers do not rediscover it. Do not use agentctl for simple edits or questions you '
-        + 'can handle directly. Never send work to your own agent (your own lane is excluded from routing): it starts '
-        + 'a second session on your quota with none of your context. Call agentctl through these MCP tools, not by '
-        + 'running the `agentctl` CLI in your shell, which may be sandboxed without network. '
-        + 'Tools wait for the answer when they can; if one returns done=false, call '
-        + 'agentctl_job_wait with its job_id until done. '
-        + (opts.allowApprove
-          ? 'approve/approve_context are available; set them only when the human has explicitly approved the action.'
-          : 'Destructive or outward-facing actions (push, publish, deploy, rm -rf …) are refused here; ask the human to run them with --approve.'),
+      instructions: mcpInstructions(opts.allowApprove ?? false),
     },
   );
 
@@ -115,6 +99,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         const issues = specIssues(name, args);
         appendMcpCall(traceSession, {
           seq: ++seq, tool: name, ok: result.isError !== true, ms: Date.now() - started, caller: caller.join(',') || null,
+          harness: harnessVersion(),
           job_id: (parsed.job_id ?? args.job_id ?? (parsed as { id?: unknown }).id ?? null) as string | null,
           ...(typeof parsed.done === 'boolean' ? { done: parsed.done } : {}),
           ...(typeof parsed.status === 'string' ? { status: parsed.status } : {}),
@@ -311,13 +296,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
 
   server.registerTool('agentctl_run_tasks', {
     title: 'Run a task graph (you lead)',
-    description:
-      'You are the lead: send a graph of self-contained tasks and get every task\'s result back to judge yourself. '
-      + 'Independent tasks run in parallel on fast lanes (Luna/Sonnet/Composer-fast); a task runs after its depends_on '
-      + 'tasks and receives their results; a lane that is capped, times out or is unreachable is re-routed once. '
-      + 'Call again with follow-up tasks if the results need more work. Waits up to wait_seconds, else returns a job_id. '
-      + 'Results include spec_warnings for request problems that make tasks fail.'
-      + (RUN_TASKS_ACTIVE_HINTS.length ? ` Rules: ${RUN_TASKS_ACTIVE_HINTS.map(guidanceFor).join(' ')}` : ''),
+    description: RUN_TASKS_DESCRIPTION,
     inputSchema: withoutApproval({
       tasks: z.array(taskShape).min(1).max(12),
       goal: z.string().max(2000).optional().describe('What the tasks are for (shown in results, not sent to workers).'),

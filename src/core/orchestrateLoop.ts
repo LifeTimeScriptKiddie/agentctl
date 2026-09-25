@@ -94,6 +94,25 @@ export interface LoopOptions {
   approveStep?: ApproveStep;
   shouldAbort?: () => boolean;
   onStep?: (outcome: LoopOutcome, all: LoopOutcome[]) => void;
+  /** Each lead reply, as a content-free decision (for harness digestion in SessionGraph). */
+  onDecision?: (decision: LeadDecisionRecord) => void;
+}
+
+/**
+ * What the lead did with the lead prompt in one round, without its text:
+ * answered, delegated a valid batch, sent an unparseable envelope, or sent a
+ * batch the roster check refused (`problem` is that refusal message, which
+ * names only task ids, lanes and models — never instructions).
+ */
+export interface LeadDecisionRecord {
+  round: number;
+  phase: 'lead' | 'final';
+  lastRound: boolean;
+  kind: 'answer' | 'delegate' | 'invalid' | 'rejected' | 'closed';
+  tasks: number;
+  pinnedModels: number;
+  withAcceptance: number;
+  problem?: string;
 }
 
 export interface LoopOutcome extends StepOutcome {
@@ -439,11 +458,19 @@ export async function runLoopOrchestration(
       break;
     }
     const decision = parseLeadDecision(r.text, maxTasks);
-    if (decision.kind === 'answer') { answer = decision.text; break; }
-    if (decision.kind === 'invalid') { notes.push(`round ${round}: ${decision.error}; no tasks ran`); continue; }
-    if (round === maxRounds) { notes.push(`round ${round}: delegation is closed in the last round; no tasks ran`); break; }
+    const decided = (kind: LeadDecisionRecord['kind'], problem?: string) => opts.onDecision?.({
+      round, phase: 'lead', lastRound: round === maxRounds, kind,
+      tasks: decision.kind === 'delegate' ? decision.tasks.length : 0,
+      pinnedModels: decision.kind === 'delegate' ? decision.tasks.filter((t) => t.model != null).length : 0,
+      withAcceptance: decision.kind === 'delegate' ? decision.tasks.filter((t) => !!t.acceptance?.trim()).length : 0,
+      ...(problem ? { problem } : {}),
+    });
+    if (decision.kind === 'answer') { decided('answer'); answer = decision.text; break; }
+    if (decision.kind === 'invalid') { decided('invalid', decision.error); notes.push(`round ${round}: ${decision.error}; no tasks ran`); continue; }
+    if (round === maxRounds) { decided('closed'); notes.push(`round ${round}: delegation is closed in the last round; no tasks ran`); break; }
     const problem = validateBatch(decision.tasks, deps.agents, new Set(run.tasks.map((t) => t.id)));
-    if (problem) { notes.push(`round ${round}: ${problem}; no tasks ran`); continue; }
+    if (problem) { decided('rejected', problem); notes.push(`round ${round}: ${problem}; no tasks ran`); continue; }
+    decided('delegate');
     delegationRounds += 1;
     await run.runBatch(decision.tasks, round);
   }
@@ -455,6 +482,12 @@ export async function runLoopOrchestration(
     run.addCost(r.costUsd);
     if (run.aborted()) return finish('cancelled', null);
     const decision = r.ok ? parseLeadDecision(r.text, maxTasks) : null;
+    if (decision) {
+      opts.onDecision?.({
+        round: maxRounds, phase: 'final', lastRound: true, kind: decision.kind === 'answer' ? 'answer' : 'closed',
+        tasks: decision.kind === 'delegate' ? decision.tasks.length : 0, pinnedModels: 0, withAcceptance: 0,
+      });
+    }
     if (decision?.kind === 'answer' && decision.text) answer = decision.text;
   }
   return finish(answer ? 'done' : 'failed', answer);

@@ -19,6 +19,7 @@ import { featureEnabled, isAgentEnabled, loadPreferences, routingPrefer } from '
 import {
   parseTaskBatch, runLoopOrchestration, runTaskGraph, REROUTABLE_FAILURES,
   type GraphDeps, type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
+  type LeadDecisionRecord,
 } from './orchestrateLoop.js';
 import { route } from './router.js';
 import type { HealthStatus } from '../adapters/protocol.js';
@@ -34,6 +35,8 @@ export interface OrchestrateHooks {
   /** `task` is set by the loop engine: the graph node this call serves. */
   onDispatchStart?: (agent: string, model: string | null, effort: string | null, task?: LoopTaskRef) => void;
   onDispatch?: (result: AskResult, task?: LoopTaskRef) => void;
+  /** Loop engine: each lead reply as a content-free decision. */
+  onLeadDecision?: (decision: LeadDecisionRecord) => void;
 }
 
 /** Build orchestration deps (codex sol planner by default). */
@@ -325,6 +328,7 @@ export async function runOrchestrateGoal(
     );
     return runLoopOrchestration(opts.goal, loopDeps, {
       approveStep,
+      ...(opts.hooks?.onLeadDecision ? { onDecision: opts.hooks.onLeadDecision } : {}),
       ...(opts.context ? { context: opts.context } : {}),
       ...(opts.onStep ? { onStep: opts.onStep } : {}),
       ...(opts.shouldAbort ? { shouldAbort: opts.shouldAbort } : {}),

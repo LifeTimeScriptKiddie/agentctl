@@ -227,7 +227,11 @@ describe('export: requested DAG next to executed DAG', () => {
     appendMcpCall(s, { seq: 1, tool: 'agentctl_run_tasks', ok: true, ms: 5, caller: 'pi', job_id: null, issues: ['no_acceptance'] });
     exportGraphs(join(home, 'm'));
     const first = JSON.parse(readFileSync(join(home, 'm', 'mcp', `${s}.jsonl`), 'utf8').split('\n')[0]!) as { arguments: unknown };
-    expect(first.arguments).toEqual({ issues: ['no_acceptance'] });
+    expect(first.arguments).toEqual({
+      issues: ['no_acceptance'],
+      // harness verdicts observed at this call (see test/graphHarness.test.ts)
+      harness: { pass_context: 'followed', delegate_for_one: 'followed', self_contained: 'followed', parallel_tasks: 'followed', model_only_hard: 'followed', roster_lanes: 'followed' },
+    });
   });
 });
 
