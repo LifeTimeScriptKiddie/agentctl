@@ -7,8 +7,11 @@ import { sharedPtrHome } from '@shared_ptr/contract/local';
 import {
   type AuthContext,
   type Classification,
+  ANONYMOUS_USER_ID,
+  CheckpointForbiddenError,
   SelfAcceptForbiddenError,
   assertMayAccept,
+  clearanceAllows,
   assertCanWriteScope,
   canReadCheckpoint,
   canReadMemory,
@@ -88,17 +91,47 @@ const checkpointInputSchema = z.object({
   allowedGroups: z.array(label).max(32).optional(),
 });
 
-/** Owner comes from the setter's auth context (kept when the setter has none); groups from the input. */
+/**
+ * Who may write a checkpoint, and with which ACL. `auth === null` is the local
+ * operator (trusted). An authenticated caller:
+ *   - anonymous: may not write checkpoints;
+ *   - new checkpoint: becomes its owner;
+ *   - existing one: only its owner, or a member of its groups with at least
+ *     `internal` clearance, may update it (the same people who may read it);
+ *     the owner never changes on update;
+ *   - groups: only the owner may change them, and only to groups the owner is
+ *     in or that the checkpoint already has.
+ * Throws CheckpointForbiddenError otherwise.
+ */
 export function checkpointAcl(
   input: { allowedGroups?: string[] },
   auth: AuthContext | null,
   existing: TaskCheckpoint | null,
 ): { ownerUserId: string | null; allowedGroups: string[] } {
+  const requested = input.allowedGroups ? [...new Set(input.allowedGroups)].sort() : null;
+  if (!auth) {
+    return { ownerUserId: existing?.ownerUserId ?? null, allowedGroups: requested ?? existing?.allowedGroups ?? [] };
+  }
+  if (auth.userId === ANONYMOUS_USER_ID) throw new CheckpointForbiddenError('anonymous callers cannot write checkpoints');
+  const isOwner = existing !== null && existing.ownerUserId !== null && existing.ownerUserId === auth.userId;
+  if (existing && !isOwner) {
+    const member = existing.allowedGroups.some((g) => auth.groups.includes(g));
+    if (!member || !clearanceAllows(auth.clearance, 'internal')) {
+      throw new CheckpointForbiddenError('only the checkpoint owner or a member of its groups can update it');
+    }
+    const current = [...existing.allowedGroups].sort();
+    if (requested && requested.join('\u0000') !== current.join('\u0000')) {
+      throw new CheckpointForbiddenError('only the checkpoint owner can change its groups');
+    }
+  }
+  if (requested) {
+    const grantable = new Set([...auth.groups, ...(existing?.allowedGroups ?? [])]);
+    const foreign = requested.filter((g) => !grantable.has(g));
+    if (foreign.length) throw new CheckpointForbiddenError(`cannot grant groups you are not in: ${foreign.join(', ')}`);
+  }
   return {
-    ownerUserId: auth?.userId ?? existing?.ownerUserId ?? null,
-    allowedGroups: input.allowedGroups
-      ? [...new Set(input.allowedGroups)].sort()
-      : existing?.allowedGroups ?? [],
+    ownerUserId: existing ? existing.ownerUserId : auth.userId,
+    allowedGroups: requested ?? existing?.allowedGroups ?? [],
   };
 }
 export type TaskCheckpointInput = z.input<typeof checkpointInputSchema>;

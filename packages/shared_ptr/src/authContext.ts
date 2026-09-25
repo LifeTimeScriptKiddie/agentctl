@@ -34,6 +34,14 @@ export function anonymousAuthContext(): AuthContext {
   return { userId: ANONYMOUS_USER_ID, groups: [], clearance: 'public' };
 }
 
+/** A caller may not create or change this checkpoint (mapped to HTTP 403). */
+export class CheckpointForbiddenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CheckpointForbiddenError';
+  }
+}
+
 export class SelfAcceptForbiddenError extends Error {
   /** 'self' = caller proposed it; 'unknown_proposer' = legacy row with no recorded proposer. */
   constructor(public readonly reason: 'self' | 'unknown_proposer' = 'self') {

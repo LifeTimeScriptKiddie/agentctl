@@ -7,7 +7,7 @@ import { z } from 'zod';
 import type { OpenMemoryStore } from './openMemoryStore.js';
 import { openMemoryStore } from './openMemoryStore.js';
 import type { AuthContext } from './authContext.js';
-import { SelfAcceptForbiddenError, anonymousAuthContext, loadAuthContext } from './authContext.js';
+import { CheckpointForbiddenError, SelfAcceptForbiddenError, anonymousAuthContext, loadAuthContext } from './authContext.js';
 import {
   ensureOwnerServeToken,
   lookupServeToken,
@@ -868,12 +868,18 @@ export async function handleMemoryHttpRequest(
       return;
     }
     try {
-      // checkpointAcl (in the store) makes the caller the owner of a new
-      // checkpoint and refuses updates by anyone who could not read it.
+      // checkpointAcl (in the store) enforces who may write: anonymous never;
+      // a new checkpoint is owned by its creator; an existing one only by its
+      // owner or a member of its groups; only the owner changes its groups.
       const checkpoint = await withStore(auth, store => store.setCheckpoint(parsed.data));
       auditEvent({ route: '/v1/checkpoint', request_id: requestId, user_id: auth.userId, workspace: parsed.data.workspace });
       json(res, 200, { request_id: requestId, auth_applied: true, checkpoint: await Promise.resolve(checkpoint) });
     } catch (e) {
+      if (e instanceof CheckpointForbiddenError) {
+        auditEvent({ route: '/v1/checkpoint', request_id: requestId, user_id: auth.userId, workspace: parsed.data.workspace, status: 'forbidden' });
+        json(res, 403, { error: 'checkpoint_forbidden', request_id: requestId });
+        return;
+      }
       internalError(res, '/v1/checkpoint', requestId, e, 400);
     }
     return;
