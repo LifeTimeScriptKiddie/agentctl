@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyProposal, improve, rollbackImprove, type SessionGraphRunner } from '../packages/shared_ptr/src/improve/improve.js';
@@ -21,15 +21,18 @@ function run(aclCount: number, gateOutcome = 'skipped'): GraphRunRecord {
 }
 
 /** A stand-in for SessionGraph: writes analysis.json / scorecard.json like the real CLI. */
-function fakeSessionGraph(pass = true): SessionGraphRunner & { calls: string[][] } {
+function fakeSessionGraph(pass = true, scorecardExit = pass ? 0 : 1, gates?: Array<{ id: string; ok: boolean }>): SessionGraphRunner & { calls: string[][] } {
   const calls: string[][] = [];
   const fn = (async (args: string[]) => {
     calls.push(args);
     const out = args[args.indexOf('--out') + 1]!;
     if (args[0] === 'analyze') writeFileSync(join(out, 'analysis.json'), JSON.stringify({ metrics: { workflow_health: 90 } }));
-    if (args[0] === 'scorecard') writeFileSync(out, JSON.stringify({ gates: [
-      { id: 'workflow_health_delta', ok: pass }, { id: 'finding_count_delta', ok: true }, { id: 'agentctl_evidence_available', ok: false },
-    ] }));
+    if (args[0] === 'scorecard') {
+      writeFileSync(out, JSON.stringify({ gates: gates ?? [
+        { id: 'workflow_health_delta', ok: pass }, { id: 'finding_count_delta', ok: true }, { id: 'agentctl_evidence_available', ok: false },
+      ] }));
+      return { exitCode: scorecardExit, stdout: '', stderr: '' };
+    }
     return { exitCode: 0, stdout: '', stderr: '' };
   }) as SessionGraphRunner & { calls: string[][] };
   fn.calls = calls;
@@ -74,8 +77,18 @@ describe('shared_ptr improve', () => {
 
   it('a failing SessionGraph scorecard rejects the proposal', async () => {
     const report = await improve({ runs: manyEmpty(), outDir: join(home, 'r'), sessiongraph: fakeSessionGraph(false) });
-    expect(report.proposals[0]).toMatchObject({ verdict: 'rejected' });
-    expect(report.proposals[0]!.reasons.join()).toMatch(/scorecard failed: workflow_health_delta/);
+    const p = report.proposals.find((x) => x.id === 'short-circuit-no-candidates')!;
+    expect(p).toMatchObject({ verdict: 'rejected' });
+    expect(p.reasons.join()).toMatch(/scorecard failed: workflow_health_delta/);
+  });
+
+  it('the scorecard must really pass: a nonzero exit or no judged gates rejects', async () => {
+    const exitOnly = await improve({ runs: manyEmpty(), outDir: join(home, 'e'), sessiongraph: fakeSessionGraph(true, 1) });
+    expect(exitOnly.proposals.find((x) => x.id === 'short-circuit-no-candidates')!.verdict).toBe('rejected');
+    const noGates = await improve({ runs: manyEmpty(), outDir: join(home, 'g'), sessiongraph: fakeSessionGraph(true, 0, [{ id: 'agentctl_evidence_available', ok: true }]) });
+    const p = noGates.proposals.find((x) => x.id === 'short-circuit-no-candidates')!;
+    expect(p.verdict).toBe('rejected');
+    expect(p.reasons.join()).toMatch(/no gates judged/);
   });
 
   it('without SessionGraph nothing can be ready', async () => {
@@ -114,8 +127,73 @@ describe('shared_ptr improve', () => {
     expect(existsSync(turnGraphConfigPath())).toBe(false);
   });
 
+  it('apply re-checks the candidate itself: an edited report cannot push an ACL bypass', async () => {
+    const report = await improve({ runs: manyEmpty(), outDir: join(home, 'r'), sessiongraph: null });
+    // attacker marks the rejected proposal ready and points it at a graph without filter_acl
+    const evil = join(home, 'evil.yaml');
+    writeFileSync(evil, `version: 1
+graphs:
+  context_retrieval:
+    entry: resolve_scope
+    terminal_outcomes: [results, abstain_empty_query]
+    nodes:
+      resolve_scope: { action: validate_workspace_provider_kinds }
+      retrieve_candidates: { action: fts_hybrid_fetch }
+      limit_results: { action: apply_limit }
+    edges:
+      - { from: resolve_scope, to: abstain_empty_query, when: abstain_empty_query }
+      - { from: resolve_scope, to: retrieve_candidates }
+      - { from: retrieve_candidates, to: limit_results }
+      - { from: limit_results, to: results }
+`);
+    const doc = JSON.parse(readFileSync(join(report.outDir, 'report.json'), 'utf8'));
+    doc.proposals[0].verdict = 'ready'; doc.proposals[0].candidate = evil; delete doc.proposals[0].candidateSha256;
+    writeFileSync(join(report.outDir, 'report.json'), JSON.stringify(doc));
+    expect(() => applyProposal(report.outDir, doc.proposals[0].id)).toThrow(/not safe.*filter_acl/);
+    expect(existsSync(turnGraphConfigPath())).toBe(false);
+  });
+
+  it('apply refuses a candidate that changed after improve checked it, or a symlink', async () => {
+    const report = await improve({ runs: manyEmpty(), outDir: join(home, 'r'), sessiongraph: fakeSessionGraph() });
+    const p = report.proposals.find((x) => x.id === 'short-circuit-no-candidates')!;
+    writeFileSync(p.candidate, `${readFileSync(p.candidate, 'utf8')}\n# changed\n`);
+    expect(() => applyProposal(report.outDir, p.id)).toThrow(/changed since improve checked it/);
+    const real = join(home, 'real.yaml');
+    writeFileSync(real, 'version: 1');
+    const doc = JSON.parse(readFileSync(join(report.outDir, 'report.json'), 'utf8'));
+    const link = join(home, 'link.yaml'); symlinkSync(real, link);
+    doc.proposals.find((x: { id: string }) => x.id === p.id).candidate = link;
+    writeFileSync(join(report.outDir, 'report.json'), JSON.stringify(doc));
+    expect(() => applyProposal(report.outDir, p.id)).toThrow(/symlinked/);
+  });
+
+  it('rollback of an apply that was logged but never landed is a clean no-op restore', async () => {
+    const report = await improve({ runs: manyEmpty(), outDir: join(home, 'r'), sessiongraph: fakeSessionGraph() });
+    applyProposal(report.outDir, 'short-circuit-no-candidates');
+    // simulate: the swap never happened (live file is back to the pre-apply state: no override)
+    const { rmSync } = await import('node:fs');
+    rmSync(turnGraphConfigPath());
+    expect(() => rollbackImprove()).not.toThrow();
+    expect(existsSync(turnGraphConfigPath())).toBe(false);
+  });
+
   it('only ready proposals can be applied', async () => {
     const report = await improve({ runs: manyEmpty(), outDir: join(home, 'r'), sessiongraph: null });
     expect(() => applyProposal(report.outDir, 'short-circuit-no-candidates')).toThrow(/is rejected/);
   });
+});
+
+/** Real SessionGraph (opt-in): TEST_SESSIONGRAPH_ROOT=<sessiongraph checkout>. */
+const SG_ROOT = process.env.TEST_SESSIONGRAPH_ROOT;
+describe.skipIf(!SG_ROOT)('shared_ptr improve with real SessionGraph', () => {
+  it('analyzes usage and scores both replays with its real gates', async () => {
+    vi.stubEnv('SHARED_PTR_SESSIONGRAPH_ROOT', SG_ROOT!);
+    const report = await improve({ runs: manyEmpty(), outDir: join(home, 'real') });
+    expect(report.usageAnalysis.ran).toBe(true);
+    const p = report.proposals.find((x) => x.id === 'short-circuit-no-candidates')!;
+    expect(p.sessiongraph?.ran).toBe(true);
+    expect(p.sessiongraph!.gates.length).toBeGreaterThan(0);
+    expect(p.sessiongraph!.gates.map((g) => g.id)).toContain('workflow_health_delta');
+    expect(p.verdict, p.reasons.join('; ')).toBe('ready');
+  }, 120_000);
 });

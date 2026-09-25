@@ -11,13 +11,14 @@
  *   apply      writes config/turn-graph.yaml, backing up any previous override;
  *              logged in improve-log.jsonl; `--rollback` undoes the last apply
  */
-import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { sharedPtrHome } from '@shared_ptr/contract/local';
 import { GraphSpecSchema, validateGraph } from '../graphEngine.js';
-import { loadTurnGraphDocument, resetTurnGraphCache, RETRIEVAL_PINNED, RETRIEVAL_RUNTIME, turnGraphConfigPath, type GraphRunRecord } from '../turnGraph.js';
+import { loadTurnGraphDocument, pipelineAclProblems, resetTurnGraphCache, RETRIEVAL_PINNED, RETRIEVAL_RUNTIME, turnGraphConfigPath, type GraphRunRecord } from '../turnGraph.js';
+import { writePrivateFile } from '../privateFs.js';
 import { runSessiongraphCli } from '../sessiongraphBridge.js';
 import { compareBench, runBench, type BenchResult } from './bench.js';
 import { writeSessionGraphExport } from './export.js';
@@ -39,6 +40,18 @@ export interface ProposalReport {
   efficiency?: { stepsBefore: number; stepsAfter: number; msBefore: number; msAfter: number; estimatedSavingMs: number };
   sessiongraph?: { ran: boolean; pass: boolean | null; gates: Array<{ id: string; ok: boolean }> };
   candidate: string;
+  /** hash of the candidate as checked; apply refuses a file that changed since */
+  candidateSha256?: string;
+}
+
+/** Graph and legacy pipeline in a candidate YAML must both keep the ACL filter. */
+export function validateCandidateYaml(text: string): string[] {
+  const doc = parseYaml(text) as { graphs?: Record<string, unknown>; pipelines?: Record<string, unknown> };
+  const spec = GraphSpecSchema.safeParse(doc?.graphs?.context_retrieval);
+  if (!spec.success) return ['graphs.context_retrieval is not a valid graph'];
+  const errors = validateGraph(spec.data, RETRIEVAL_RUNTIME, { pinned: RETRIEVAL_PINNED, mustPassFor: ['results'] });
+  errors.push(...pipelineAclProblems(doc?.pipelines?.context_retrieval));
+  return errors;
 }
 
 export interface ImproveReport {
@@ -70,14 +83,16 @@ async function scorecard(sg: SessionGraphRunner, dir: string, before: BenchResul
     if (r.exitCode !== 0) throw new Error(`sessiongraph analyze (${name}) failed: ${(r.stderr || r.stdout).slice(0, 300)}`);
   }
   const out = join(dir, 'scorecard.json');
+  rmSync(out, { force: true }); // never read a stale result from an earlier run
   // "not worse" gates: health may not drop, findings may not grow
-  await sg(['scorecard', join(paths.before, 'analysis.json'), join(paths.after, 'analysis.json'),
+  const r = await sg(['scorecard', join(paths.before, 'analysis.json'), join(paths.after, 'analysis.json'),
     '--out', out, '--min-health-delta', '0', '--max-finding-delta', '0']);
-  if (!existsSync(out)) throw new Error('sessiongraph scorecard wrote no result');
+  if (!existsSync(out)) throw new Error(`sessiongraph scorecard wrote no result (exit ${r.exitCode})`);
   const card = JSON.parse(readFileSync(out, 'utf8')) as { gates?: Array<{ id: string; ok: boolean }> };
   // agentctl_* gates judge agentctl harness records, which shared_ptr runs do not have
   const gates = (card.gates ?? []).filter((g) => !g.id.startsWith('agentctl_')).map((g) => ({ id: g.id, ok: Boolean(g.ok) }));
-  return { ran: true, pass: gates.every((g) => g.ok), gates };
+  // pass only when SessionGraph itself passed (exit 0) AND it actually judged something
+  return { ran: true, pass: r.exitCode === 0 && gates.length > 0 && gates.every((g) => g.ok), gates };
 }
 
 export async function improve(opts: {
@@ -122,7 +137,7 @@ export async function improve(opts: {
     writeFileSync(candidate, candidateYaml, { mode: 0o600 });
     const report: ProposalReport = {
       id: p.id, title: p.title, rationale: p.rationale, evidence: p.evidence, changesResults: p.changesResults,
-      verdict: 'rejected', reasons, candidate,
+      verdict: 'rejected', reasons, candidate, candidateSha256: sha(candidateYaml),
     };
     reports.push(report);
 
@@ -154,7 +169,8 @@ export async function improve(opts: {
       continue;
     }
     if (!report.sessiongraph.pass) {
-      reasons.push(`SessionGraph scorecard failed: ${report.sessiongraph.gates.filter((g) => !g.ok).map((g) => g.id).join(', ')}`);
+      const failed = report.sessiongraph.gates.filter((g) => !g.ok).map((g) => g.id);
+      reasons.push(`SessionGraph scorecard failed: ${failed.length ? failed.join(', ') : 'no gates judged or nonzero exit'}`);
       continue;
     }
     if (p.changesResults && !opts.allowBehaviorChange) {
@@ -188,19 +204,28 @@ export function applyProposal(outDir: string, id: string): LogEntry {
   const p = report.proposals.find((x) => x.id === id);
   if (!p) throw new Error(`no proposal '${id}' in ${outDir}`);
   if (p.verdict !== 'ready') throw new Error(`proposal '${id}' is ${p.verdict}: ${p.reasons.join('; ')}`);
+  // The report directory is only a record: re-check the candidate itself, so an
+  // edited report or a swapped/symlinked candidate cannot skip the gates.
+  if (lstatSync(p.candidate).isSymbolicLink()) throw new Error(`refusing symlinked candidate ${p.candidate}`);
   const text = readFileSync(p.candidate, 'utf8');
+  if (p.candidateSha256 && sha(text) !== p.candidateSha256) throw new Error(`candidate ${p.candidate} changed since improve checked it`);
+  const problems = validateCandidateYaml(text);
+  if (problems.length) throw new Error(`candidate graph is not safe: ${problems.join('; ')}`);
   const target = turnGraphConfigPath();
   mkdirSync(join(sharedPtrHome(), 'config'), { recursive: true });
   let backup: string | null = null;
   if (existsSync(target)) {
     mkdirSync(join(sharedPtrHome(), 'config-backups'), { recursive: true });
-    backup = join(sharedPtrHome(), 'config-backups', `turn-graph-${new Date().toISOString().replace(/[:.]/g, '-')}.yaml`);
+    backup = join(sharedPtrHome(), 'config-backups',
+      `turn-graph-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.yaml`);
     copyFileSync(target, backup);
   }
-  writeFileSync(target, text, { mode: 0o600 });
-  resetTurnGraphCache();
+  // Log first, then swap atomically: a crash can leave a logged apply that never
+  // landed (rollback treats that as done), never a live graph with no record.
   const entry: LogEntry = { at: new Date().toISOString(), action: 'apply', proposal: id, backup, wroteSha256: sha(text) };
   writeFileSync(logPath(), `${JSON.stringify(entry)}\n`, { flag: 'a', mode: 0o600 });
+  writePrivateFile(target, text);
+  resetTurnGraphCache();
   return entry;
 }
 
@@ -214,10 +239,12 @@ export function rollbackImprove(force = false): LogEntry {
     if (pending > 0) { pending -= 1; continue; }
     const target = turnGraphConfigPath();
     const live = existsSync(target) ? sha(readFileSync(target, 'utf8')) : null;
-    if (!force && live !== e.wroteSha256) {
+    // an apply that was logged but never landed: the pre-apply state is still live
+    const neverLanded = live === (e.backup ? sha(readFileSync(e.backup, 'utf8')) : null);
+    if (!force && live !== e.wroteSha256 && !neverLanded) {
       throw new Error(`${target} changed since '${e.proposal}' was applied; re-run with --force to restore anyway`);
     }
-    if (e.backup) copyFileSync(e.backup, target); else rmSync(target, { force: true });
+    if (e.backup) writePrivateFile(target, readFileSync(e.backup, 'utf8')); else rmSync(target, { force: true });
     resetTurnGraphCache();
     const entry: LogEntry = { at: new Date().toISOString(), action: 'rollback', proposal: e.proposal, backup: e.backup, wroteSha256: e.wroteSha256 };
     writeFileSync(logPath(), `${JSON.stringify(entry)}\n`, { flag: 'a', mode: 0o600 });

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   BENCH_CONFIDENTIAL_MEMORY_ID,
   BENCH_FIXTURE,
@@ -35,12 +35,23 @@ describe('shared_ptr graph improvement benchmark', () => {
     expect(bundled.runs).toHaveLength(BENCH_FIXTURE.queries.length * 2);
   });
 
-  it('compares an identical result as unchanged', () => {
-    expect(compareBench(bundled, bundled)).toMatchObject({
-      sameResults: true,
-      diffs: [],
-      hardFailures: [],
-    });
+  it('two independent replays of the same graph compare as unchanged (the replay is deterministic)', async () => {
+    const again = await runBench(null);
+    expect(again).not.toBe(bundled);
+    expect(compareBench(bundled, again)).toMatchObject({ sameResults: true, diffs: [], hardFailures: [] });
+  });
+
+  it('concurrent replays are serialized and do not corrupt each other', async () => {
+    const [a, b] = await Promise.all([runBench(null), runBench(null)]);
+    expect(compareBench(a, b).sameResults).toBe(true);
+    expect(compareBench(bundled, a).sameResults).toBe(true);
+  });
+
+  it('refuses to run inside a serving process', async () => {
+    const runtime = await import('../packages/shared_ptr/src/runtime.js');
+    const spy = vi.spyOn(runtime, 'isServing').mockReturnValue(true);
+    expect(() => runBench(null)).toThrow(/not inside serve/);
+    spy.mockRestore();
   });
 
   it('reports a changed id list as a case diff', () => {

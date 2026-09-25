@@ -1,4 +1,5 @@
 import { BriefingRequest, CheckpointSetRequest, CONTRACT_VERSION } from '@shared_ptr/contract';
+import { markServing } from './runtime.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -941,6 +942,7 @@ export async function handleMemoryHttpRequest(
 }
 
 export async function startMemoryServer(opts: { host: string; port: number }): Promise<Server> {
+  markServing(); // no benchmark replays in this process (they change process-wide settings)
   const loopback = isLoopbackHost(opts.host);
   if (!loopback && setting('SERVE_ALLOW_ANON') === '1') {
     throw new Error('AGENTCTL_SERVE_ALLOW_ANON=1 is only allowed when memory serve binds to loopback');
