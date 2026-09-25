@@ -169,7 +169,7 @@ export class PostgresMemoryStore {
     assertPostgresConfig();
     const pool = await loadPgPool();
     if (!pool) {
-      throw new Error('Install the `pg` package on the memory VM to use AGENTCTL_MEMORY_BACKEND=postgres.');
+      throw new Error('The pg driver failed to load or SHARED_PTR_MEMORY_DATABASE_URL is unset; pg ships with shared_ptr.');
     }
     if (opts.migrate) {
       const migrate = await runPostgresMigrations({ dryRun: false });
@@ -436,6 +436,13 @@ export class PostgresMemoryStore {
   }
 
   /** `auth` null → unfiltered (single-user CLI); otherwise see `canReadCheckpoint`. */
+  /** Checkpoint row on a given connection (no ACL); FOR UPDATE inside a transaction. */
+  private async readCheckpoint(client: PgQueryable, workspace: string, forUpdate = false): Promise<TaskCheckpoint | null> {
+    const { rows } = await client.query(
+      `SELECT * FROM task_checkpoints WHERE workspace = $1${forUpdate ? ' FOR UPDATE' : ''}`, [workspace]);
+    return rows[0] ? decodeCheckpoint(rows[0]) : null;
+  }
+
   async getCheckpoint(workspace: string, auth: AuthContext | null = null): Promise<TaskCheckpoint | null> {
     label.parse(workspace);
     return this.withClient(async (client) => {
@@ -524,7 +531,10 @@ export class PostgresMemoryStore {
     const { checkpointAcl, checkpointInputSchema } = await import('../store.js');
     const input = checkpointInputSchema.parse(raw);
     return this.transaction(async (client) => {
-      const existing = await this.getCheckpoint(input.workspace);
+      // Read and lock on the transaction's own connection: a pooled
+      // this.getCheckpoint() would use another connection, missing our
+      // uncommitted write and racing concurrent updates.
+      const existing = await this.readCheckpoint(client, input.workspace, true);
       const acl = checkpointAcl(input, this.auth, existing);
       if (!existing) {
         if (input.revision !== null && input.revision !== 0) {
@@ -540,8 +550,12 @@ export class PostgresMemoryStore {
             input.nextAction, JSON.stringify(input.decisionRefs), input.source, Date.now(),
             acl.ownerUserId, JSON.stringify(acl.allowedGroups),
           ],
-        );
-        return (await this.getCheckpoint(input.workspace))!;
+        ).catch((e: { code?: string }) => {
+          // two first writes at once: the other one won
+          if (e.code === '23505') throw new Error('Revision conflict: inspect the current checkpoint before changing it.');
+          throw e;
+        });
+        return (await this.readCheckpoint(client, input.workspace))!;
       }
       if (input.revision === null || input.revision === 0) {
         throw new Error('Revision conflict: inspect the current checkpoint before changing it.');
@@ -549,17 +563,18 @@ export class PostgresMemoryStore {
       if (existing.revision !== input.revision) {
         throw new Error('Revision conflict: inspect the current checkpoint before changing it.');
       }
-      await client.query(
+      const updated = await client.query(
         `UPDATE task_checkpoints SET revision = revision + 1, goal = $1, state = $2, blockers = $3,
           next_action = $4, decision_refs = $5, source = $6, updated_at = $7,
-          owner_user_id = $8, allowed_groups = $9 WHERE workspace = $10`,
+          owner_user_id = $8, allowed_groups = $9 WHERE workspace = $10 AND revision = $11`,
         [
           input.goal, input.state, JSON.stringify(input.blockers), input.nextAction,
           JSON.stringify(input.decisionRefs), input.source, Date.now(),
-          acl.ownerUserId, JSON.stringify(acl.allowedGroups), input.workspace,
+          acl.ownerUserId, JSON.stringify(acl.allowedGroups), input.workspace, input.revision,
         ],
       );
-      return (await this.getCheckpoint(input.workspace))!;
+      if (updated.rowCount !== 1) throw new Error('Revision conflict: inspect the current checkpoint before changing it.');
+      return (await this.readCheckpoint(client, input.workspace))!;
     });
   }
 

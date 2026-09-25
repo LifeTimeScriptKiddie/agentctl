@@ -52,8 +52,19 @@ async function as(user: 'alice' | 'bob', mode: 'local' | 'remote'): Promise<Memo
   return openBackend({ provider: 'claude' });
 }
 
-describe.each(['local', 'remote'] as const)('%s backend: a team idea goes from proposal to briefing', (mode) => {
-  const ws = `team-${mode}`;
+/** Real Postgres runs only when a test database is given (scripts/test-postgres.sh starts one in Docker). */
+const PG_URL = process.env.TEST_SHARED_PTR_DATABASE_URL;
+const STORES = PG_URL ? (['sqlite', 'postgres'] as const) : (['sqlite'] as const);
+
+function useStore(store: 'sqlite' | 'postgres'): void {
+  vi.stubEnv('AGENTCTL_MEMORY_BACKEND', store);
+  vi.stubEnv('AGENTCTL_MEMORY_DATABASE_URL', store === 'postgres' ? PG_URL! : '');
+}
+
+describe.each(STORES.flatMap((store) => (['local', 'remote'] as const).map((mode) => [store, mode] as const)))(
+  '%s store, %s backend: a team idea goes from proposal to briefing', (store, mode) => {
+  const ws = `team-${store}-${mode}-${Date.now()}`;
+  beforeAll(() => useStore(store));
   let id = '';
   let revision = 0;
 
@@ -104,6 +115,28 @@ describe('shared_ptr settings', () => {
     expect(setting('MEMORY_BACKEND')).toBe('sqlite');
     vi.stubEnv('SHARED_PTR_MEMORY_BACKEND', 'postgres');
     expect(setting('MEMORY_BACKEND')).toBe('postgres');
-    vi.unstubAllEnvs();
+    // clean up only what this test set (the file's server home must survive)
+    vi.stubEnv('SHARED_PTR_MEMORY_BACKEND', undefined);
+    vi.stubEnv('AGENTCTL_MEMORY_BACKEND', 'sqlite');
+  });
+});
+
+describe.skipIf(!PG_URL)('postgres: concurrent checkpoint updates through the gatekeeper', () => {
+  it('two saves on the same revision: exactly one wins, the other gets a conflict (no lost update)', async () => {
+    useStore('postgres');
+    const ws = `race-${Date.now()}`;
+    const alice = await as('alice', 'remote');
+    const first = await alice.setCheckpoint({
+      workspace: ws, revision: null, goal: 'g', state: 's0', nextAction: 'n', source: 'race', allowedGroups: ['team'],
+    });
+    const save = (state: string) => alice.setCheckpoint({
+      workspace: ws, revision: first.revision, goal: 'g', state, nextAction: 'n', source: 'race', allowedGroups: ['team'],
+    });
+    const results = await Promise.allSettled([save('from-A'), save('from-B')]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(String(lost.reason)).toMatch(/conflict|400/i);
+    const now = await alice.getCheckpoint(ws);
+    expect(now?.revision).toBe(first.revision + 1);
   });
 });
