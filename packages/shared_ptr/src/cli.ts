@@ -33,6 +33,15 @@ const program = new Command('shared_ptr')
   .option('--server <url>', 'use this shared_ptr gatekeeper (or SHARED_PTR_SERVER); token from SHARED_PTR_TOKEN')
   .version(pkg.version);
 
+// The MCP server works in both modes (team gatekeeper or local store).
+program.command('mcp')
+  .description('serve the team-memory tools over MCP stdio (Claude Code, Codex, Cursor)')
+  .requiredOption('--caller <agent>', 'the agent this serves (claude, codex, cursor, pi): reads are filtered for it')
+  .action(async (o: { caller: string }) => {
+    const { startSharedPtrMcpStdio } = await import('./mcp.js');
+    await startSharedPtrMcpStdio({ caller: o.caller, server });
+  });
+
 if (server) {
   registerRemoteCommands(program, server);
   program.on('command:*', ([name]: string[]) => {

@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@agentctl/kit": "0.1.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@shared_ptr/contract": "1.0.0",
     "commander": "^12.1.0",
     "execa": "^9.5.0",
