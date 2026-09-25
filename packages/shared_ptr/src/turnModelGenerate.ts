@@ -22,7 +22,7 @@ const GATED_CAPABILITIES = ['canPublish', 'canModifyRepo', 'canRunShell', 'canWr
 export type LaneCapabilities = Partial<Record<(typeof GATED_CAPABILITIES)[number] | (typeof TOOL_CAPABILITIES)[number], boolean>>;
 
 export interface ServeModelRunner {
-  /** The lane's capabilities, or null when agentctl has no such lane. */
+  /** The lane's capabilities, or null when unknown (no such lane, or agentctl did not report them). */
   capabilities(agent: string): Promise<LaneCapabilities | null>;
   ask(opts: { agent: string; prompt: string; timeoutSeconds: number; workdir: string }): Promise<{
     ok: boolean; text: string; model: string | null; failureClass: string;
@@ -39,10 +39,15 @@ export function agentctlCliRunner(): ServeModelRunner {
   let lanes: Promise<Map<string, LaneCapabilities>> | null = null;
   const loadLanes = async (): Promise<Map<string, LaneCapabilities>> => {
     const r = await execa(agentctlBin(), ['agents', '--format', 'json'], { reject: false, timeout: 30_000 });
+    if (r.exitCode !== 0) return new Map();
     const env = JSON.parse(r.stdout.trim().split('\n').pop() ?? '{}') as {
       result?: { agents?: Array<{ name: string; capabilities?: LaneCapabilities }> };
     };
-    return new Map((env.result?.agents ?? []).map((a) => [a.name, a.capabilities ?? {}]));
+    // Fail closed: an older agentctl lists lanes without capabilities, and a lane
+    // whose capabilities are unknown must not pass the gate as "no capabilities".
+    return new Map((env.result?.agents ?? [])
+      .filter((a) => a.capabilities && typeof a.capabilities === 'object')
+      .map((a) => [a.name, a.capabilities!]));
   };
   return {
     async capabilities(agent) {

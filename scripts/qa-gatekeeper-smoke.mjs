@@ -12,6 +12,8 @@ import { spawn } from 'node:child_process';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = join(root, 'dist', 'cli.js');
 const dist = (path) => import(pathToFileURL(join(root, 'dist', path)).href);
+// team-memory server code lives in the shared_ptr package since the split
+const sharedPtrDist = (path) => import(pathToFileURL(join(root, 'packages', 'shared_ptr', 'dist', path)).href);
 
 // Identity comes from bearer tokens only (security review S5); start from a clean env.
 for (const name of [
@@ -89,7 +91,7 @@ async function main() {
     if (listed.includes(proposer) || JSON.parse(listed).tokens.length !== 2) throw new Error('token list');
     pass('CLI memory serve token add/list', 'secrets not listed');
 
-    const { createMemoryServerForTest, startMemoryServer } = await dist('memory/serve.js');
+    const { createMemoryServerForTest, startMemoryServer } = await sharedPtrDist('serve.js');
     process.env.AGENTCTL_HOME = home;
     process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS = 'qa-reviewers';
     const server = createMemoryServerForTest();

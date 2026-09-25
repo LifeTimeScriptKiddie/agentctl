@@ -280,7 +280,7 @@ export function registerMemoryCommands(memory: Command): void {
       console.log(JSON.stringify(await postgresStatusPayload(), null, 2));
     });
   postgres.command('migrate')
-    .description('Apply SQL migrations from src/memory/postgres/migrations (requires pg on VM)')
+    .description('Apply SQL migrations from the shared_ptr package (postgres/migrations) (requires pg on VM)')
     .option('--dry-run', 'List pending migration ids without connecting', false)
     .action(async o => {
       const { runPostgresMigrations } = await import('./postgres/migrate.js');
