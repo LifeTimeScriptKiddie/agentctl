@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { setting } from './env.js';
 
 const configSchema = z.object({
   enabled: z.boolean().default(false),
@@ -60,7 +61,7 @@ export function loadLayaConfig(): LayaConfig {
   const path = layaConfigPath();
   if (!existsSync(path)) {
     cachedConfig = configSchema.parse({
-      enabled: process.env.AGENTCTL_LAYA_EVIDENCE === '1' || process.env.AGENTCTL_LAYA === '1',
+      enabled: setting('LAYA_EVIDENCE') === '1' || setting('LAYA') === '1',
     });
     return cachedConfig;
   }
@@ -76,7 +77,7 @@ export function layaEvidenceEnabled(explicit?: boolean): boolean {
 
 /** The operator's own setting (server env or laya.yaml), independent of any request flag. */
 export function layaOperatorEnabled(): boolean {
-  const env = process.env.AGENTCTL_LAYA_EVIDENCE;
+  const env = setting('LAYA_EVIDENCE');
   return env === '1' || env === 'true' || loadLayaConfig().enabled;
 }
 
@@ -100,7 +101,7 @@ function releaseLayaSlot(): void {
 }
 
 function layaTimeoutMs(): number {
-  const configured = Number(process.env.AGENTCTL_LAYA_TIMEOUT_MS);
+  const configured = Number(setting('LAYA_TIMEOUT_MS'));
   return Number.isFinite(configured) && configured > 0 ? configured : 120_000;
 }
 
@@ -165,7 +166,7 @@ function bundledScriptPath(): string {
 
 function resolvePython(cfg: LayaConfig): string {
   return (
-    process.env.AGENTCTL_LAYA_PYTHON
+    setting('LAYA_PYTHON')
     ?? cfg.python
     ?? join(sharedPtrHome(), '.venv-laya', 'bin', 'python3')
   );
@@ -185,7 +186,7 @@ export async function selectEvidence(
   if (!candidates.length) {
     return { ok: true, choice: null, reason: 'no_candidates', latencyMs: 0 };
   }
-  const script = process.env.AGENTCTL_LAYA_SCRIPT ?? bundledScriptPath();
+  const script = setting('LAYA_SCRIPT') ?? bundledScriptPath();
   if (!existsSync(script)) {
     return { ok: false, unavailable: true, error: `Laya script missing: ${script}`, errorCode: 'script_missing', choice: null };
   }

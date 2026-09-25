@@ -13,6 +13,7 @@ import { execa } from 'execa';
 import { quoteUntrusted } from '@agentctl/kit/untrusted';
 import { formatGatewayTurnPrefix } from '@shared_ptr/contract/format';
 import type { ContextBundle } from './contextBundle.js';
+import { setting } from './env.js';
 
 /** Capabilities that let a serve-side agent reach files, the network or a browser. */
 const TOOL_CAPABILITIES = ['canReadFiles', 'canAccessNetwork', 'canUseBrowser'] as const;
@@ -80,7 +81,7 @@ export function setServeModelRunner(next: ServeModelRunner | null): void {
 }
 
 export function resolveServeModelAgent(): string | null {
-  const raw = process.env.AGENTCTL_SERVE_MODEL_AGENT?.trim();
+  const raw = setting('SERVE_MODEL_AGENT')?.trim();
   if (!raw || raw === '0' || raw === 'off' || raw === 'false') return null;
   return raw;
 }
@@ -89,7 +90,7 @@ export function resolveServeModelAgent(): string | null {
 export function shouldRunModelOnTurn(bodyRunModel?: boolean): boolean {
   if (bodyRunModel === true) return true;
   if (bodyRunModel === false) return false;
-  return process.env.AGENTCTL_SERVE_DEFAULT_RUN_MODEL === '1';
+  return setting('SERVE_DEFAULT_RUN_MODEL') === '1';
 }
 
 export async function generateTurnAnswer(opts: {
@@ -116,7 +117,7 @@ export async function generateTurnAnswer(opts: {
   // drive a browser either (security review C).
   const gated = GATED_CAPABILITIES.some((c) => caps[c]);
   const toolCap = TOOL_CAPABILITIES.find((c) => caps[c]);
-  if (gated || (toolCap && process.env.AGENTCTL_SERVE_MODEL_AGENT_ALLOW_TOOLS !== '1')) {
+  if (gated || (toolCap && setting('SERVE_MODEL_AGENT_ALLOW_TOOLS') !== '1')) {
     return { status: 'failed', answer: null, agent: opts.agent, model: null, failureClass: 'unsafe_serve_agent' };
   }
   const prefix = formatGatewayTurnPrefix(
@@ -127,7 +128,7 @@ export async function generateTurnAnswer(opts: {
   const userLine = opts.goal.trim() !== opts.query.trim()
     ? `${quoteUntrusted('goal', opts.goal)}\n${quoteUntrusted('user query', opts.query)}\n\n${instruction}`
     : `${quoteUntrusted('user query', opts.query)}\n\n${instruction}`;
-  const timeoutSeconds = opts.timeoutSeconds ?? Number(process.env.AGENTCTL_SERVE_MODEL_TIMEOUT ?? 120);
+  const timeoutSeconds = opts.timeoutSeconds ?? Number(setting('SERVE_MODEL_TIMEOUT') ?? 120);
   // Run in a fresh empty folder so the agent cannot read the server's working tree.
   const workdir = mkdtempSync(join(tmpdir(), 'shared-ptr-serve-model-'));
   let result;

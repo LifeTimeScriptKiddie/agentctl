@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setting } from './env.js';
 
 function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_./:@=-]+$/.test(value)) return value;
@@ -20,7 +21,7 @@ export function runMemoryRemote(
   if (host.startsWith('-') || /\s/.test(host)) {
     throw new Error('invalid remote host');
   }
-  const cli = process.env.AGENTCTL_CLI_PATH ?? bundledCliPath();
+  const cli = setting('CLI_PATH') ?? bundledCliPath();
   const parts = [
     remoteHome ? `AGENTCTL_HOME=${shellQuote(remoteHome)}` : '',
     shellQuote(cli),

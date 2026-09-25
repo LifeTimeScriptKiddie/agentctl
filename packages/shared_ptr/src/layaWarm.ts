@@ -1,10 +1,11 @@
+import { setting } from './env.js';
 /** Optional one-shot Laya load at memory-serve startup (reduces first-request latency). */
 export async function warmLayaIfConfigured(): Promise<{ warmed: boolean; detail?: string }> {
-  if (process.env.AGENTCTL_LAYA_WARM === '0') {
+  if (setting('LAYA_WARM') === '0') {
     return { warmed: false, detail: 'AGENTCTL_LAYA_WARM=0' };
   }
   const evidenceOn =
-    process.env.AGENTCTL_LAYA_EVIDENCE === '1' || process.env.AGENTCTL_LAYA_EVIDENCE === 'true';
+    setting('LAYA_EVIDENCE') === '1' || setting('LAYA_EVIDENCE') === 'true';
   const { loadLayaConfig, selectEvidence } = await import('./layaEvidence.js');
   const cfg = loadLayaConfig();
   if (!cfg.enabled && !evidenceOn) {

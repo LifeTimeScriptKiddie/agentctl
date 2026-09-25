@@ -11,6 +11,7 @@ import { validateKind } from './kinds.js';
 import type { Memory, MemoryInput } from './store.js';
 import type { GraphTraceStep } from './turnGraph.js';
 import { turnGraphConfigPath } from './turnGraph.js';
+import { setting } from './env.js';
 
 const stepSchema = z.object({
   id: z.string(),
@@ -201,7 +202,7 @@ export async function runMemoryWriteGraph(opts: {
       }
       case 'redact_scan': {
         piiFindings = scanPii(opts.request.text);
-        const allow = process.env.AGENTCTL_MEMORY_PII_ALLOW === '1';
+        const allow = setting('MEMORY_PII_ALLOW') === '1';
         if (piiFindings.length && !allow) {
           traceStep(trace, step.id, step.action, 'pii_blocked', t0, { findings: piiFindings });
           return {

@@ -96,3 +96,14 @@ describe.each(['local', 'remote'] as const)('%s backend: a team idea goes from p
     await alice.close();
   });
 });
+
+describe('shared_ptr settings', () => {
+  it('SHARED_PTR_* wins over the legacy AGENTCTL_* name, which still works alone', async () => {
+    const { setting } = await import('../packages/shared_ptr/src/env.js');
+    vi.stubEnv('AGENTCTL_MEMORY_BACKEND', 'sqlite');
+    expect(setting('MEMORY_BACKEND')).toBe('sqlite');
+    vi.stubEnv('SHARED_PTR_MEMORY_BACKEND', 'postgres');
+    expect(setting('MEMORY_BACKEND')).toBe('postgres');
+    vi.unstubAllEnvs();
+  });
+});

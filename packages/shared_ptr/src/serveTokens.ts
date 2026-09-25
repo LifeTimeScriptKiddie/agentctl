@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { sharedPtrHome } from '@shared_ptr/contract/local';
 import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 import { ANONYMOUS_USER_ID, type AuthContext, type Classification } from './authContext.js';
+import { setting } from './env.js';
 
 /**
  * Memory-serve bearer tokens. Per-user tokens live in
@@ -127,7 +128,7 @@ export function readOwnerServeToken(): string | null {
  * generates an owner token so it is never open to other local accounts.
  */
 export function ensureOwnerServeToken(): { path: string; created: boolean } | null {
-  if (process.env.AGENTCTL_SERVE_TOKEN) return null;
+  if (setting('SERVE_TOKEN')) return null;
   if (readServeTokens().tokens.length > 0) return null;
   const path = ownerServeTokenPath();
   if (readOwnerServeToken()) return { path, created: false };

@@ -29,6 +29,7 @@ import { PostgresMemoryStore } from './postgres/memoryStorePostgres.js';
 import type { PgPool } from './postgres/pgClient.js';
 import { redact } from '@agentctl/kit/redact';
 import { ApprovalRequiredError, assertApproved } from '@agentctl/kit/destructive';
+import { setting } from './env.js';
 
 /**
  * Caller identity comes only from the bearer token, never from headers:
@@ -73,7 +74,7 @@ class BodyTooLargeError extends Error {
 }
 
 function maxBodyBytes(): number {
-  const configured = Number(process.env.AGENTCTL_SERVE_MAX_BODY);
+  const configured = Number(setting('SERVE_MAX_BODY'));
   return Number.isSafeInteger(configured) && configured > 0
     ? configured
     : DEFAULT_MAX_BODY_BYTES;
@@ -153,7 +154,7 @@ type Authentication =
  */
 function runModelAllowed(callerIsOwner: boolean, auth: AuthContext): boolean {
   if (callerIsOwner) return true;
-  const allowed = (process.env.AGENTCTL_SERVE_RUN_MODEL_USERS ?? '')
+  const allowed = (setting('SERVE_RUN_MODEL_USERS') ?? '')
     .split(',').map((u) => u.trim()).filter(Boolean);
   return auth.userId !== 'anonymous' && allowed.includes(auth.userId);
 }
@@ -161,7 +162,7 @@ function runModelAllowed(callerIsOwner: boolean, auth: AuthContext): boolean {
 function authenticate(req: IncomingMessage, boundHost: string): Authentication {
   const authorization = req.headers.authorization?.toString();
   if (authorization === undefined) {
-    if (process.env.AGENTCTL_SERVE_ALLOW_ANON === '1' && isLoopbackHost(boundHost)) {
+    if (setting('SERVE_ALLOW_ANON') === '1' && isLoopbackHost(boundHost)) {
       return { ok: true, auth: anonymousAuthContext(), owner: false };
     }
     return { ok: false, status: 401, error: 'token_required' };
@@ -170,7 +171,7 @@ function authenticate(req: IncomingMessage, boundHost: string): Authentication {
   if (!presented) return { ok: false, status: 401, error: 'unauthorized' };
   const perUser = lookupServeToken(presented);
   // An empty AGENTCTL_SERVE_TOKEN is treated as unset.
-  const legacy = process.env.AGENTCTL_SERVE_TOKEN || undefined;
+  const legacy = setting('SERVE_TOKEN') || undefined;
   const owner = readOwnerServeToken();
   const isLegacy = legacy !== undefined && serveTokenMatches(presented, legacy);
   const isOwner = owner !== null && serveTokenMatches(presented, owner);
@@ -193,14 +194,14 @@ function hostName(hostHeader: string): string | null {
 }
 
 function configuredOrigins(): string[] {
-  return (process.env.AGENTCTL_SERVE_ALLOWED_ORIGINS ?? '')
+  return (setting('SERVE_ALLOWED_ORIGINS') ?? '')
     .split(',')
     .map(origin => origin.trim())
     .filter(Boolean);
 }
 
 function reviewerGroups(): string[] {
-  return (process.env.AGENTCTL_MEMORY_REVIEWER_GROUPS ?? '')
+  return (setting('MEMORY_REVIEWER_GROUPS') ?? '')
     .split(',')
     .map(group => group.trim())
     .filter(Boolean);
@@ -292,7 +293,7 @@ let servePostgresPool: Promise<PgPool> | null = null;
  */
 export function servePostgres(): Promise<PgPool> {
   servePostgresPool ??= PostgresMemoryStore.openPool({
-    migrate: process.env.AGENTCTL_MEMORY_MIGRATE_ON_SERVE !== '0',
+    migrate: setting('MEMORY_MIGRATE_ON_SERVE') !== '0',
   }).catch((error: unknown) => {
     servePostgresPool = null;
     throw error;
@@ -811,7 +812,7 @@ export async function handleMemoryHttpRequest(
     if (parsed.data.mode === 'commit') {
       // A commit is always the caller's own text, so it is a self-accept: use
       // propose + accept by a second reviewer unless the operator opts in.
-      if (isReviewer(auth) && process.env.AGENTCTL_MEMORY_ALLOW_SELF_COMMIT !== '1') {
+      if (isReviewer(auth) && setting('MEMORY_ALLOW_SELF_COMMIT') !== '1') {
         auditEvent({
           route: '/v1/memory/write',
           request_id: requestId,
@@ -941,17 +942,17 @@ export async function handleMemoryHttpRequest(
 
 export async function startMemoryServer(opts: { host: string; port: number }): Promise<Server> {
   const loopback = isLoopbackHost(opts.host);
-  if (!loopback && process.env.AGENTCTL_SERVE_ALLOW_ANON === '1') {
+  if (!loopback && setting('SERVE_ALLOW_ANON') === '1') {
     throw new Error('AGENTCTL_SERVE_ALLOW_ANON=1 is only allowed when memory serve binds to loopback');
   }
   const perUserTokens = readServeTokens().tokens.length;
-  if (!loopback && !process.env.AGENTCTL_SERVE_TOKEN && perUserTokens === 0) {
+  if (!loopback && !setting('SERVE_TOKEN') && perUserTokens === 0) {
     throw new Error(
       'Binding memory serve off loopback requires per-user tokens (agentctl memory serve token add) '
         + 'or AGENTCTL_SERVE_TOKEN',
     );
   }
-  if (process.env.AGENTCTL_SERVE_TOKEN) {
+  if (setting('SERVE_TOKEN')) {
     process.stderr.write(
       'agentctl memory serve: warning: AGENTCTL_SERVE_TOKEN is deprecated; every holder acts as the server owner. '
         + 'Issue per-user tokens with `agentctl memory serve token add`.\n',
@@ -972,7 +973,7 @@ export async function startMemoryServer(opts: { host: string; port: number }): P
   const warm = await warmLayaIfConfigured();
   if (warm.warmed) {
     process.stderr.write('agentctl memory serve: Laya warmup ok\n');
-  } else if (warm.detail && process.env.AGENTCTL_LAYA_WARM !== '0') {
+  } else if (warm.detail && setting('LAYA_WARM') !== '0') {
     process.stderr.write(`agentctl memory serve: Laya warmup skipped (${warm.detail})\n`);
   }
   if (resolveMemoryBackend() === 'postgres') await servePostgres();
