@@ -1,6 +1,52 @@
 # agentctl
 
-**Pi extension and CLI** built around **multi-subscription orchestration**: one entry point (`/agentctl`, `agentctl delegate`, `agentctl orchestrate`) that routes work to **your** signed-in agents — GitHub Copilot via Pi, OpenAI Codex, Anthropic Claude, Cursor, or any backend in [`src/adapters/presets`](src/adapters/presets). You pick the subscription and model with **`--to`** / **`--model`**; agentctl handles lane selection, bounded plans, and worker subprocesses without merging billing or credentials across providers.
+**Pi extension and CLI** built around **multi-subscription orchestration**: one entry point (`/agentctl`, `agentctl delegate`, `agentctl orchestrate`) that routes work to **your** signed-in agents — GitHub Copilot via Pi, OpenAI Codex, Anthropic Claude, Cursor, opt-in Hermes, or another configured backend. You pick the subscription and model with **`--to`** / **`--model`**; agentctl handles lane selection, bounded plans, and worker subprocesses without merging billing or credentials across providers.
+
+## Start here
+
+Choose the surface you are operating from:
+
+| Cockpit | Start with | Integration |
+| --- | --- | --- |
+| **Pi** | `pi install npm:@lifetimescriptkiddie/agentctl` | Native `/agentctl …` extension; recommended interactive path |
+| **Terminal / CI** | `npm install -g @lifetimescriptkiddie/agentctl` | Standalone `agentctl …` commands |
+| **Cursor / Claude / Codex** | Install the CLI, then load the agentctl skill | One-shot shell delegation; see [IDE integration](docs/CURSOR-INVOCATION.md) |
+| **Hermes as a worker** | Install the CLI and configure the opt-in Docker lane | See [Hermes integration](docs/HERMES-INTEGRATION.md) |
+
+Agentctl is the controller. Pi and Hermes remain agent environments. Do not invoke agentctl from
+inside a worker already launched by agentctl (`AGENTCTL_WORKER_DEPTH` is set for this reason).
+
+### Five-minute Pi path
+
+Requires Node.js 20+ and a Pi provider that is already authenticated.
+
+```sh
+pi install npm:@lifetimescriptkiddie/agentctl
+```
+
+Restart Pi, or run `/reload`, then verify the extension without spending provider quota:
+
+```text
+/agentctl health
+/agentctl ask --to dry_run "hello"
+/agentctl delegate --dry-route --explain "summarize this repository"
+```
+
+Run one real worker only after health and routing look correct:
+
+```text
+/agentctl delegate --to pi "summarize this repository"
+```
+
+For a multi-step job, preview first and execute after reviewing the plan:
+
+```text
+/agentctl orchestrate "review this package"
+/agentctl orchestrate --run "review this package"
+```
+
+Success means `health` marks the selected lane available, the dry-run returns a canned response,
+and the real delegation returns the worker answer to the same Pi conversation.
 
 The project **started there** (route · ask · delegate · orchestrate across CLIs). It **grew** optional layers on the same core:
 
@@ -19,7 +65,7 @@ Nothing beyond orchestration is required for a single developer with Pi and one 
 
 Deploy walkthrough (VM, Postgres, nightly analysis): [`docs/STACK-SETUP.md`](docs/STACK-SETUP.md).
 
-## Install (Pi)
+## Pi installation and daily use
 
 Requires [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) and Node.js 20+. Authenticate the providers you use in Pi (for example **GitHub Copilot** or Codex) before running live tasks.
 
@@ -37,7 +83,7 @@ agentctl setup --show   # inspect preferences + live availability
 
 Preferences land in `~/.agentctl/preferences.yaml` and drive default `--orchestrator` / worker models. Per-command `--to` / `--model` still override.
 
-Reload Pi, then:
+Restart Pi or run `/reload`, then:
 
 ```text
 /agentctl
@@ -82,6 +128,7 @@ These IDEs are cockpits, not silent wrappers. Load the **agentctl skill**, then 
 | --- | --- |
 | **Pi** | `/agentctl …` (slash extension) |
 | **Cursor / Claude / Codex** | Skill [`docs/CURSOR-INVOCATION.md`](docs/CURSOR-INVOCATION.md) + skill path `~/code/skillz/ai-agents/agentctl` (or `~/.cursor/skills/agentctl` / `~/.claude/skills/agentctl`) → run `agentctl delegate` / `ask` / `orchestrate` / `memory` / `setup` |
+| **Hermes worker** | Opt-in Docker adapter configured through `agents.yaml`; follow [`docs/HERMES-INTEGRATION.md`](docs/HERMES-INTEGRATION.md) |
 
 Prefer `delegate --dry-route` before spending quota. Never nest `agentctl` inside an agentctl worker (`AGENTCTL_WORKER_DEPTH`).
 
@@ -436,6 +483,21 @@ Overrides go in an **`agents.yaml`** ([example](examples/agents.yaml)); entries 
 3. **`$AGENTCTL_HOME/agents.yaml`** (default `~/.agentctl/agents.yaml`).
 
 A local file can replace any lane’s command, health probe and environment, and a cloned repo or a write-capable worker can plant one, so an untrusted local file is skipped with a warning. Review it, then run **`agentctl config trust [path]`** (default `./agents.yaml`). This prints the file and records `sha256(realpath + '\0' + content)` in `$AGENTCTL_HOME/trusted-configs.json`. Any edit revokes trust; **`agentctl config untrust [path]`** removes it.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Pi says `/agentctl` is unknown | Run `/reload`; confirm the package appears in Pi’s installed extensions |
+| A lane is unavailable | Run `agentctl agents health`; authenticate that provider’s native CLI first |
+| Routing is surprising | Run `agentctl delegate --dry-route --explain "…"`, then pin `--to` and `--model` |
+| `agents.yaml` is ignored | Review it and run `agentctl config trust /absolute/path/to/agents.yaml`, or place the reviewed file at `$AGENTCTL_HOME/agents.yaml` |
+| Hermes is missing from `agents list` | Hermes is opt-in; follow [the Hermes guide](docs/HERMES-INTEGRATION.md) |
+| Hermes cannot see project files | Docker can see only mounted paths; confirm the container mount and working directory |
+| A worker tries to invoke agentctl again | Stop the nested call; workers must return their result to the original controller |
+
+Use `agentctl setup --show`, `agentctl status`, and the relevant subcommand’s `--help` before
+changing configuration.
 
 ## Privacy and trust
 
