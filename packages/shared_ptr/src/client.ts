@@ -6,6 +6,7 @@
 import { CONTRACT_VERSION, MetaResponse, ROUTES, routePath, type RoutePath } from '@shared_ptr/contract';
 import { readOwnerToken } from '@shared_ptr/contract/local';
 import type { z } from 'zod';
+import { setting } from './env.js';
 
 type Req<P extends RoutePath> = z.input<(typeof ROUTES)[P]['request']>;
 type Res<P extends RoutePath> = z.output<(typeof ROUTES)[P]['response']>;
@@ -19,13 +20,13 @@ export class SharedPtrHttpError extends Error {
 
 /** Server URL: explicit, else SHARED_PTR_SERVER, else the legacy AGENTCTL_GATEWAY_URL. */
 export function resolveServerUrl(explicit?: string | null): string | null {
-  const url = explicit?.trim() || process.env.SHARED_PTR_SERVER?.trim() || process.env.AGENTCTL_GATEWAY_URL?.trim();
+  const url = explicit?.trim() || process.env.SHARED_PTR_SERVER?.trim() || setting('GATEWAY_URL')?.trim();
   return url || null;
 }
 
 /** Bearer token: SHARED_PTR_TOKEN, the legacy AGENTCTL_GATEWAY_TOKEN, else the local owner token (same machine). */
 export function resolveToken(server: string): string | null {
-  const explicit = process.env.SHARED_PTR_TOKEN?.trim() || process.env.AGENTCTL_GATEWAY_TOKEN?.trim();
+  const explicit = process.env.SHARED_PTR_TOKEN?.trim() || setting('GATEWAY_TOKEN')?.trim();
   if (explicit) return explicit;
   const host = new URL(server).hostname;
   return ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host) ? readOwnerToken() : null;

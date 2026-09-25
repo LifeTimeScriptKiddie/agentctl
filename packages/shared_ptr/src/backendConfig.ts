@@ -1,14 +1,15 @@
+import { setting } from './env.js';
 export type MemoryBackend = 'sqlite' | 'postgres';
 
 /** Active memory plane. Default sqlite; postgres is scaffold-only until the store adapter lands. */
 export function resolveMemoryBackend(): MemoryBackend {
-  const raw = process.env.AGENTCTL_MEMORY_BACKEND?.trim().toLowerCase();
+  const raw = setting('MEMORY_BACKEND')?.trim().toLowerCase();
   if (raw === 'postgres' || raw === 'pg') return 'postgres';
   return 'sqlite';
 }
 
 export function resolveMemoryDatabaseUrl(): string | null {
-  const url = process.env.AGENTCTL_MEMORY_DATABASE_URL?.trim();
+  const url = setting('MEMORY_DATABASE_URL')?.trim();
   return url || null;
 }
 

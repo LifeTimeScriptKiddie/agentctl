@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPostgresConfig, resolveMemoryBackend } from '../backendConfig.js';
+import { setting } from '../env.js';
 
 export interface MigrationFile {
   id: string;
@@ -108,8 +109,8 @@ export async function postgresStatusPayload(): Promise<Record<string, unknown>> 
   const files = listMigrationFiles();
   const pgInstalled = (await loadPgClient()) !== null;
   return {
-    backend: process.env.AGENTCTL_MEMORY_BACKEND ?? 'sqlite',
-    databaseUrlConfigured: Boolean(process.env.AGENTCTL_MEMORY_DATABASE_URL?.trim()),
+    backend: setting('MEMORY_BACKEND') ?? 'sqlite',
+    databaseUrlConfigured: Boolean(setting('MEMORY_DATABASE_URL')?.trim()),
     pgDriverInstalled: pgInstalled,
     migrationFiles: files.map((f) => f.id),
     storeAdapter: resolveMemoryBackend() === 'postgres' ? 'postgres' : 'sqlite-only',

@@ -11,9 +11,9 @@ import { parseKindList } from './kinds.js';
 import { runMemoryRemote } from './remote.js';
 
 function applyAuthCliOptions(o: { asUser?: string; groups?: string; clearance?: string }): void {
-  if (o.asUser) process.env.AGENTCTL_USER_ID = o.asUser;
-  if (o.groups !== undefined) process.env.AGENTCTL_GROUPS = o.groups;
-  if (o.clearance) process.env.AGENTCTL_CLEARANCE = o.clearance;
+  if (o.asUser) setEnv('USER_ID', o.asUser);
+  if (o.groups !== undefined) setEnv('GROUPS', o.groups);
+  if (o.clearance) setEnv('CLEARANCE', o.clearance);
 }
 
 function authOptions(cmd: Command): void {
@@ -33,6 +33,7 @@ function memoryAccessOptions(cmd: Command): void {
 }
 
 import type { EvidenceGateInput } from './turnGraph.js';
+import { setting, setEnv } from './env.js';
 
 function parseEvidenceGate(o: {
   layaEvidence?: boolean;
@@ -87,13 +88,13 @@ export function registerMemoryCommands(memory: Command): void {
     }));
   const remote = memory.command('remote')
     .description('Admin-only: run `agentctl memory …` on the VM via SSH (not for delegate/ask; use AGENTCTL_GATEWAY_URL + memory serve for team Q&A)')
-    .option('--host <target>', 'SSH target user@host', process.env.AGENTCTL_SSH_HOST)
-    .option('--remote-home <path>', 'Remote AGENTCTL_HOME', process.env.AGENTCTL_REMOTE_HOME)
+    .option('--host <target>', 'SSH target user@host', setting('SSH_HOST'))
+    .option('--remote-home <path>', 'Remote AGENTCTL_HOME', setting('REMOTE_HOME'))
     .argument('[memoryArgs...]', 'subcommand and flags, e.g. briefing --workspace team-sec-cve');
   authOptions(remote);
   remote.action((memoryArgs, o) => {
     applyAuthCliOptions(o);
-    const host = o.host ?? process.env.AGENTCTL_SSH_HOST;
+    const host = o.host ?? setting('SSH_HOST');
     if (!host) {
       console.error(JSON.stringify({ error: 'Provide --host or AGENTCTL_SSH_HOST' }));
       process.exitCode = 1;
@@ -226,7 +227,7 @@ export function registerMemoryCommands(memory: Command): void {
       return {
         typesafe_api_key: key ? 'present' : 'missing',
         jev_evidence_enabled: jevEvidenceEnabled(true, 'jev'),
-        model: process.env.AGENTCTL_JEV_MODEL?.trim() || 'jev-latest',
+        model: setting('JEV_MODEL')?.trim() || 'jev-latest',
       };
     }));
   const checkpoint = memory.command('checkpoint')
@@ -572,8 +573,8 @@ export function registerMemoryCommands(memory: Command): void {
       return { revoked: id };
     }));
   serve
-    .option('--host <addr>', 'bind address', process.env.AGENTCTL_SERVE_HOST ?? '127.0.0.1')
-    .option('--port <n>', 'port', process.env.AGENTCTL_SERVE_PORT ?? '8741')
+    .option('--host <addr>', 'bind address', setting('SERVE_HOST') ?? '127.0.0.1')
+    .option('--port <n>', 'port', setting('SERVE_PORT') ?? '8741')
     .action(async o => {
       const { startMemoryServer } = await import('./serve.js');
       const host = o.host ?? '127.0.0.1';

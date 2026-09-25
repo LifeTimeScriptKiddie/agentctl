@@ -4,6 +4,8 @@ delete process.env.AGENTCTL_WORKER_DEPTH;
 // Caller detection must not see the agent that happens to run the suite.
 delete process.env.AGENTCTL_CALLER;
 delete process.env.CODEX_SANDBOX_NETWORK_DISABLED;
+// shared_ptr prefers SHARED_PTR_* over the legacy AGENTCTL_* names tests set.
+for (const k of Object.keys(process.env)) if (k.startsWith('SHARED_PTR_')) delete process.env[k];
 delete process.env.FORCE_COLOR;
 process.env.NO_COLOR = '1';
 

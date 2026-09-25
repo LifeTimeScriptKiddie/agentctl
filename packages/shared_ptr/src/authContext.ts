@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { setting } from './env.js';
 
 const classification = z.enum(['public', 'internal', 'confidential']);
 export type Classification = z.infer<typeof classification>;
@@ -51,7 +52,7 @@ export class SelfAcceptForbiddenError extends Error {
 export function assertMayAccept(proposedBy: string | null, ctx: AuthContext | null): void {
   if (!ctx) return;
   if (proposedBy === null) {
-    if (process.env.AGENTCTL_MEMORY_ALLOW_LEGACY_ACCEPT !== '1') throw new SelfAcceptForbiddenError('unknown_proposer');
+    if (setting('MEMORY_ALLOW_LEGACY_ACCEPT') !== '1') throw new SelfAcceptForbiddenError('unknown_proposer');
     return;
   }
   if (proposedBy === ctx.userId) throw new SelfAcceptForbiddenError('self');
@@ -64,10 +65,10 @@ export interface CheckpointAccessFields {
 
 /** No env / flags → null (single-user dev: no auth trim). */
 export function loadAuthContext(overrides?: Partial<AuthContext>): AuthContext | null {
-  const userId = overrides?.userId ?? process.env.AGENTCTL_USER_ID?.trim();
+  const userId = overrides?.userId ?? setting('USER_ID')?.trim();
   if (!userId) return null;
-  const groupsRaw = overrides?.groups ?? process.env.AGENTCTL_GROUPS?.split(',').map(g => g.trim()).filter(Boolean) ?? [];
-  const clearance = classification.parse(overrides?.clearance ?? process.env.AGENTCTL_CLEARANCE ?? 'internal');
+  const groupsRaw = overrides?.groups ?? setting('GROUPS')?.split(',').map(g => g.trim()).filter(Boolean) ?? [];
+  const clearance = classification.parse(overrides?.clearance ?? setting('CLEARANCE') ?? 'internal');
   return { userId, groups: [...new Set(groupsRaw)].sort(), clearance };
 }
 
