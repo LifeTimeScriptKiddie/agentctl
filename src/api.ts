@@ -38,7 +38,7 @@ import { buildWorkerPrompt } from './memory/briefingPrompt.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
 import { resolveDefaultOrchestrator, resolveOrchestratorModel, resolveWorkerModel } from './core/orchestrateRoster.js';
-import { loadPreferences, preferredModel } from './core/preferences.js';
+import { loadPreferences, preferredModel, routingPrefer } from './core/preferences.js';
 import { visibleAgentNames } from './core/orchestrateRuntime.js';
 
 export type { AskResult, RouteDecision, OrchestrationResult, StepOutcome, AgentStatus };
@@ -424,13 +424,13 @@ export async function agentRoute(
     assertApproved(opts.task, opts.approve ?? false);
   } catch (e) {
     if (e instanceof ApprovalRequiredError) {
-      const decision = route(opts.task, agents);
+      const decision = route(opts.task, agents, { prefer: routingPrefer(loadPreferences()) });
       return { exitCode: 3, warnings, route: decision, agents, approvalRequired: true, error: e.message };
     }
     throw e;
   }
 
-  const decision = route(opts.task, agents);
+  const decision = route(opts.task, agents, { prefer: routingPrefer(loadPreferences()) });
 
   logRoute({
     ...(opts.delegate ? { delegate: true } : {}),

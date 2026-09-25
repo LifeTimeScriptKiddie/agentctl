@@ -115,3 +115,12 @@ describe('parseSince', () => {
     expect(() => parseSince('soon', now)).toThrow(/invalid --since/);
   });
 });
+
+describe('self-improvement protected paths', () => {
+  it('flags a branch that edits the benchmark or a safety gate', async () => {
+    const { protectedTouched } = await import('../src/graph/command.js');
+    expect(protectedTouched(['src/core/router.ts', 'src/bench/cases.yaml', 'src/approval.ts']))
+      .toEqual(['src/bench/cases.yaml', 'src/approval.ts']);
+    expect(protectedTouched(['src/core/router.ts', 'test/router.test.ts'])).toEqual([]);
+  });
+});

@@ -7,6 +7,7 @@ const copies = [
   ['src/prompts', 'dist/prompts'],
   ['src/adapters/presets', 'dist/adapters/presets'],
   ['src/specs', 'dist/specs'],
+  ['src/bench/cases.yaml', 'dist/bench/cases.yaml'],
   ['docs', 'dist/docs'],
   ['scripts/laya_evidence.py', 'dist/scripts/laya_evidence.py'],
   ['src/memory/turn-graph.default.yaml', 'dist/memory/turn-graph.default.yaml'],

@@ -37,6 +37,13 @@ const preferencesSchema = z.object({
   agents: z.record(z.string(), agentPrefSchema).default({}),
   /** Cost/quality bias for deterministic routing when no --model is given. */
   tier: z.enum(COST_TIERS).default('balanced'),
+  /**
+   * Routing overrides: lane order per router signal id (e.g. `search: [cursor, agy]`).
+   * Written by hand or by `agentctl tune`; capability guards still apply.
+   */
+  routing: z.object({
+    prefer: z.record(z.string(), z.array(z.string().trim().min(1)).min(1)).default({}),
+  }).default({ prefer: {} }),
 });
 
 export type Preferences = z.infer<typeof preferencesSchema>;
@@ -84,6 +91,11 @@ export function preferredModel(prefs: Preferences | null, agent: string): string
   const entry = prefs.agents[agent];
   if (!entry || entry.enabled === false) return null;
   return entry.defaultModel ?? null;
+}
+
+/** Per-signal lane order overrides for the router (empty when unset). */
+export function routingPrefer(prefs: Preferences | null): Record<string, string[]> {
+  return prefs?.routing?.prefer ?? {};
 }
 
 export function isAgentEnabled(prefs: Preferences | null, agent: string): boolean {

@@ -15,7 +15,7 @@ import {
   buildAgentRoster, formatRosterForPlanner, loopWorkerLane, orchestrationWorkerNames,
   resolveBackupOrchestrator, resolveDefaultOrchestrator, resolveOrchestratorModel,
 } from './orchestrateRoster.js';
-import { isAgentEnabled, loadPreferences } from './preferences.js';
+import { isAgentEnabled, loadPreferences, routingPrefer } from './preferences.js';
 import {
   parseTaskBatch, runLoopOrchestration, runTaskGraph, REROUTABLE_FAILURES,
   type GraphDeps, type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
@@ -382,11 +382,12 @@ export async function runTaskGraphGoal(registry: AdapterRegistry, opts: RunTaskG
   const routable = workers.agents.filter((a) => a.available).map((a) => ({
     name: a.name, capabilities: a.capabilities, available: true,
   }));
+  const prefer = routingPrefer(loadPreferences());
   const filled = opts.tasks.map((t: unknown) => {
     if (!t || typeof t !== 'object' || (t as { agent?: unknown }).agent) return t;
     const task = t as { instruction?: unknown; type?: unknown };
     const text = `${typeof task.type === 'string' ? task.type : 'reason'} ${String(task.instruction ?? '')}`;
-    return { ...task, agent: route(text, routable).agent ?? '' };
+    return { ...task, agent: route(text, routable, { prefer }).agent ?? '' };
   });
   const parsed = parseTaskBatch(filled);
   if ('error' in parsed) throw new Error(parsed.error);

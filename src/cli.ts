@@ -8,6 +8,7 @@ import { registerMemoryCommands } from './memory/command.js';
 import { registerConfigCommands } from './config/command.js';
 import { registerJobsCommands } from './jobs/command.js';
 import { registerGraphCommands } from './graph/command.js';
+import { registerBenchCommands } from './bench/command.js';
 import { registerSetupCommands } from './setup/command.js';
 import { isEntrypoint } from './util/entry.js';
 import { loadRegistry, cmdAsk, cmdAgents, cmdStatus, cmdRoute, cmdDelegate, cmdOrchestrate, cmdRun, cmdComet, cmdSessions, resolveSession, stdio } from './commands.js';
@@ -59,6 +60,7 @@ export function buildProgram(): Command {
   registerConfigCommands(program);
   registerJobsCommands(program);
   registerGraphCommands(program);
+  registerBenchCommands(program);
   program
     .command('mcp')
     .description('run agentctl as an MCP server on stdio (for Claude Code, Cursor, Codex, Pi)')
