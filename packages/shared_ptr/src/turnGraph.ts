@@ -343,12 +343,16 @@ export interface GraphRunRecord {
   terminal: string;
   evidenceStatus: string;
   totalMs: number;
-  steps: Array<{ node: string; action: string; outcome: string; ms: number }>;
+  /** `count` is the only detail kept: a number (candidates/results), never content. */
+  steps: Array<{ node: string; action: string; outcome: string; ms: number; count?: number }>;
 }
 
 export function graphRunRecord(workspace: string, r: ContextRetrievalResult): GraphRunRecord | null {
   if (setting('GRAPH_RUN_LOG') === '0') return null;
-  const steps = r.trace.map((t) => ({ node: t.node, action: t.action, outcome: t.outcome, ms: t.ms }));
+  const steps = r.trace.map((t) => ({
+    node: t.node, action: t.action, outcome: t.outcome, ms: t.ms,
+    ...(typeof t.detail?.count === 'number' ? { count: t.detail.count } : {}),
+  }));
   return {
     id: randomUUID(), at: Date.now(), workspace, graph: r.graph, source: r.graphSource ?? 'bundled',
     terminal: r.terminal, evidenceStatus: r.evidenceStatus,
