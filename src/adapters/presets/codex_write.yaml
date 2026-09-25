@@ -2,6 +2,8 @@ name: codex_write
 family: subprocess
 transport: subprocess
 parse: codex_lastmsg
+# One ChatGPT login backs codex and codex_write, so a usage cap on one caps both.
+quotaAccount: codex
 # Explicit repository-editing lane. Keep the ordinary `codex` preset read-only;
 # callers must opt into this preset and pin workdir to an isolated worktree.
 promptDelivery: stdin

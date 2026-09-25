@@ -235,6 +235,33 @@ describe('SubprocessAdapter step-down', () => {
     expect(r.stderr).toContain('You’ve hit your usage limit');
     expect(r.stderr).not.toMatch(/^Reading prompt/);
   });
+
+  it('caches a no-ladder cap and skips the next call until it resets', async () => {
+    const events = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again at 5:38 PM."}}';
+    runMock.mockResolvedValue({ exitCode: 1, stdout: events, stderr: '', timedOut: false, failed: true });
+    const adapter = new SubprocessAdapter(loadPreset('codex'));
+
+    await adapter.invoke(req({ model: 'gpt-5.6-luna' }));
+    const until = exhaustedUntil(loadLimits(), 'codex', 'gpt-5.6-luna');
+    expect(until).not.toBeNull();
+    expect(until!.getMinutes()).toBe(38); // parsed from "try again at", not the 15-min default
+
+    const second = await adapter.invoke(req({ model: 'gpt-5.6-luna' }));
+    expect(runMock).toHaveBeenCalledTimes(1);
+    expect(second.failureClass).toBe('usage_limit');
+    expect(second.stderr).toMatch(/cached; call skipped/);
+  });
+
+  it('a different model on a capped no-ladder lane is still tried', async () => {
+    const events = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit."}}';
+    runMock.mockResolvedValueOnce({ exitCode: 1, stdout: events, stderr: '', timedOut: false, failed: true });
+    runMock.mockResolvedValueOnce({ exitCode: 0, stdout: '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}', stderr: '', timedOut: false });
+    const adapter = new SubprocessAdapter(loadPreset('codex'));
+    await adapter.invoke(req({ model: 'gpt-5.6-luna' }));
+    const r = await adapter.invoke(req({ model: 'gpt-5.6-sol' }));
+    expect(runMock).toHaveBeenCalledTimes(2);
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe('structured detection (preferred over prose)', () => {
@@ -297,6 +324,12 @@ describe('parseResetAt', () => {
 
   it('reads a relative duration', () => {
     expect(parseResetAt('try again in 45 minutes', now)?.getTime()).toBe(now.getTime() + 45 * 60_000);
+  });
+
+  it('reads codex-style "try again at 10:58 PM"', () => {
+    const d = parseResetAt('You’ve hit your usage limit … or try again at 10:58 PM.', now)!;
+    expect([d.getHours(), d.getMinutes()]).toEqual([22, 58]);
+    expect(d > now).toBe(true);
   });
 
   it('ignores a time already in the past', () => {
@@ -375,12 +408,13 @@ describe('persistent limit memory', () => {
     expect(modelOf(0)).toBe('fable');
   });
 
-  it('ladder-less agents never touch the limits file', async () => {
+  it('ladder-less agents record their cap so later calls and routing skip them', async () => {
     runMock.mockResolvedValue(limitRun);
     const adapter = new SubprocessAdapter(loadPreset('cursor'));
     await adapter.invoke(req({ model: 'composer-2.5' }));
 
-    expect(existsSync(limitsFile)).toBe(false);
+    expect(existsSync(limitsFile)).toBe(true);
+    expect(exhaustedUntil(loadLimits(), 'cursor', 'composer-2.5')).not.toBeNull();
   });
 });
 
