@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { MemoryStore } from '../src/memory/store.js';
-import { resetMemoryWriteGraphCache } from '../src/memory/memoryWriteGraph.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import { resetMemoryWriteGraphCache } from '../packages/shared_ptr/src/memoryWriteGraph.js';
 
 describe('memory_write graph', () => {
   afterEach(() => {

@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 import {
   type AuthContext,
   type Classification,
@@ -207,7 +207,7 @@ export class MemoryStore {
     private readonly auth: AuthContext | null,
   ) {}
   static async open(
-    path = join(agentctlHome(), 'memory', 'memory.sqlite'),
+    path = join(sharedPtrHome(), 'memory', 'memory.sqlite'),
     options: MemoryStoreOptions = {},
   ): Promise<MemoryStore> {
     ensureKindsConfig();

@@ -2,10 +2,13 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryStore } from '../src/memory/store.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
 import { buildWorkerPrompt, formatBriefingPrefix } from '../src/memory/briefingPrompt.js';
 import { resolveSession, persistSessionExchange } from '../src/commands.js';
 import { loadSession } from '../src/core/session.js';
+import { useInProcessBriefing } from './helpers/sharedPtrInProcess.js';
+
+beforeEach(async () => { await useInProcessBriefing(); });
 
 describe('resume briefing injection', () => {
   afterEach(() => vi.unstubAllEnvs());

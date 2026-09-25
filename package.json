@@ -39,7 +39,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check": "npm run build:packages --silent && tsc --noEmit && vitest run",
-    "build:packages": "npm run build -w @agentctl/kit -w @shared_ptr/contract",
+    "build:packages": "npm run build -w @agentctl/kit -w @shared_ptr/contract -w @shared_ptr/server",
     "pretest": "npm run build:packages --silent"
   },
   "dependencies": {

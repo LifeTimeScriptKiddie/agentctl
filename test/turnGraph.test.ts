@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { MemoryStore } from '../src/memory/store.js';
-import * as laya from '../src/memory/layaEvidence.js';
-import { loadContextRetrievalPipeline, resetTurnGraphCache } from '../src/memory/turnGraph.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import * as laya from '../packages/shared_ptr/src/layaEvidence.js';
+import { loadContextRetrievalPipeline, resetTurnGraphCache } from '../packages/shared_ptr/src/turnGraph.js';
 
 describe('turn graph context_retrieval', () => {
   afterEach(() => {

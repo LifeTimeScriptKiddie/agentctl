@@ -1,5 +1,5 @@
 import { describe,it,expect,vi } from 'vitest';
-import { runMemoryPilot } from '../src/memory/pilot.js';
+import { runMemoryPilot } from '../packages/shared_ptr/src/pilot.js';
 import { okResult } from '../src/adapters/protocol.js';
 
 describe('agent memory pilot',()=>{

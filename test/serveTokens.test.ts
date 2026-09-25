@@ -12,8 +12,16 @@ import {
   readOwnerServeToken,
   revokeServeToken,
   serveTokensPath,
-} from '../src/memory/serveTokens.js';
-import { buildProgram } from '../src/cli.js';
+} from '../packages/shared_ptr/src/serveTokens.js';
+import { Command } from 'commander';
+import { registerMemoryCommands } from '../packages/shared_ptr/src/command.js';
+
+/** The shared_ptr CLI (`shared_ptr serve token …`), which owns these commands now. */
+function buildProgram(): Command {
+  const program = new Command('shared_ptr').exitOverride();
+  registerMemoryCommands(program);
+  return program;
+}
 
 // Security review S5 (N2, H3 residual): identity comes from per-user tokens stored as sha256.
 
@@ -102,26 +110,26 @@ describe('serve token store', () => {
   it('`memory serve token add|list|revoke` prints the secret once and never lists it', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     await buildProgram().parseAsync([
-      'node', 'agentctl', 'memory', 'serve', 'token', 'add', '--user', 'alice', '--groups', 'a,b', '--clearance', 'confidential',
+      'node', 'shared_ptr', 'serve', 'token', 'add', '--user', 'alice', '--groups', 'a,b', '--clearance', 'confidential',
     ]);
     const added = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as { id: string; token: string; userId: string; groups: string[] };
     expect(added).toMatchObject({ userId: 'alice', groups: ['a', 'b'], clearance: 'confidential' });
     expect(lookupServeToken(added.token)?.userId).toBe('alice');
 
-    await buildProgram().parseAsync(['node', 'agentctl', 'memory', 'serve', 'token', 'list']);
+    await buildProgram().parseAsync(['node', 'shared_ptr', 'serve', 'token', 'list']);
     const listed = String(log.mock.calls.at(-1)?.[0]);
     expect(listed).toContain(added.id);
     expect(listed).not.toContain(added.token);
     expect(listed).not.toContain('sha256');
 
-    await buildProgram().parseAsync(['node', 'agentctl', 'memory', 'serve', 'token', 'revoke', added.id]);
+    await buildProgram().parseAsync(['node', 'shared_ptr', 'serve', 'token', 'revoke', added.id]);
     expect(lookupServeToken(added.token)).toBeNull();
   });
 
   it('refuses to issue tokens from a nested worker', async () => {
     vi.stubEnv('AGENTCTL_WORKER_DEPTH', '1');
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await buildProgram().parseAsync(['node', 'agentctl', 'memory', 'serve', 'token', 'add', '--user', 'mallory']);
+    await buildProgram().parseAsync(['node', 'shared_ptr', 'serve', 'token', 'add', '--user', 'mallory']);
     expect(String(error.mock.calls.at(-1)?.[0])).toContain('workers cannot issue');
     expect(existsSync(serveTokensPath())).toBe(false);
     process.exitCode = 0;

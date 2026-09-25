@@ -5,7 +5,7 @@ import { dirname, join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 
 const configSchema = z.object({
   enabled: z.boolean().default(false),
@@ -52,7 +52,7 @@ export interface LayaEvidenceResult {
 let cachedConfig: LayaConfig | undefined;
 
 export function layaConfigPath(): string {
-  return join(agentctlHome(), 'config', 'laya.yaml');
+  return join(sharedPtrHome(), 'config', 'laya.yaml');
 }
 
 export function loadLayaConfig(): LayaConfig {
@@ -160,14 +160,14 @@ function runLayaProcess(
 
 function bundledScriptPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  return pathJoin(here, '..', '..', 'scripts', 'laya_evidence.py');
+  return pathJoin(here, '..', 'scripts', 'laya_evidence.py');
 }
 
 function resolvePython(cfg: LayaConfig): string {
   return (
     process.env.AGENTCTL_LAYA_PYTHON
     ?? cfg.python
-    ?? join(agentctlHome(), '.venv-laya', 'bin', 'python3')
+    ?? join(sharedPtrHome(), '.venv-laya', 'bin', 'python3')
   );
 }
 

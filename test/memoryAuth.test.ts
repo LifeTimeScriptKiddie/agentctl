@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryStore } from '../src/memory/store.js';
-import { canReadMemory } from '../src/memory/authContext.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import { canReadMemory } from '../packages/shared_ptr/src/authContext.js';
 
 const base = {
   workspace: 'team-atlas',

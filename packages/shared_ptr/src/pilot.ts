@@ -3,9 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { MemoryStore } from './store.js';
-import type { AdapterResult } from '../schema/result.js';
+/** The fields the pilot reads from one worker answer (agentctl's AdapterResult satisfies it). */
+export interface PilotAnswer {
+  ok: boolean;
+  normalizedText: string;
+  failureClass: string;
+  model: string | null;
+  usage: unknown;
+}
 
-export type PilotRunner = (prompt: string, workdir: string) => Promise<AdapterResult>;
+export type PilotRunner = (prompt: string, workdir: string) => Promise<PilotAnswer>;
 
 /** Three fresh worker calls, one synthetic store. Never touches the personal memory home. */
 export async function runMemoryPilot(run: PilotRunner) {

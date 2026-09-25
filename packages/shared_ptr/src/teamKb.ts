@@ -9,7 +9,7 @@
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 import type { Classification } from './authContext.js';
 
 const label = z.string().trim().min(1).max(200);
@@ -253,11 +253,11 @@ Links to internal policies, assessment records, and authoritative sources.
 `;
 }
 
-export function kbRoot(home = agentctlHome()): string {
+export function kbRoot(home = sharedPtrHome()): string {
   return join(home, 'kb');
 }
 
-export function evidenceVaultRoot(home = agentctlHome()): string {
+export function evidenceVaultRoot(home = sharedPtrHome()): string {
   return join(home, 'evidence', 'vault');
 }
 
@@ -269,7 +269,7 @@ export interface KbInitResult {
 }
 
 /** Scaffold the Markdown knowledge tree and evidence vault directory (0700). */
-export function initTeamKb(home = agentctlHome()): KbInitResult {
+export function initTeamKb(home = sharedPtrHome()): KbInitResult {
   const root = kbRoot(home);
   const vault = evidenceVaultRoot(home);
   mkdirSync(root, { recursive: true, mode: 0o700 });

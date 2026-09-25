@@ -3,19 +3,19 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { SelfAcceptForbiddenError, type AuthContext } from '../src/memory/authContext.js';
-import { MemoryStore } from '../src/memory/store.js';
+import { SelfAcceptForbiddenError, type AuthContext } from '../packages/shared_ptr/src/authContext.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
 
 // Security review N1: the store records who proposed a memory and the gatekeeper
 // accept path refuses self-acceptance, in both backends.
 
 const pg = vi.hoisted(() => ({ memories: new Map<string, Record<string, unknown>>() }));
 
-vi.mock('../src/memory/postgres/migrate.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../src/memory/postgres/migrate.js')>()),
+vi.mock('../packages/shared_ptr/src/postgres/migrate.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../packages/shared_ptr/src/postgres/migrate.js')>()),
   runPostgresMigrations: async () => ({ dryRun: false, applied: [], pending: [] }),
 }));
-vi.mock('../src/memory/postgres/pgClient.js', () => ({
+vi.mock('../packages/shared_ptr/src/postgres/pgClient.js', () => ({
   sqliteFtsMatchToTsQuery: (m: string) => m,
   loadPgPool: async () => ({
     end: async () => {},
@@ -150,7 +150,7 @@ describe('postgres proposedBy and self-accept', () => {
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-pg-proposed-by-')));
     vi.stubEnv('AGENTCTL_MEMORY_BACKEND', 'postgres');
     vi.stubEnv('AGENTCTL_MEMORY_DATABASE_URL', 'postgres://local/test');
-    const { PostgresMemoryStore } = await import('../src/memory/postgres/memoryStorePostgres.js');
+    const { PostgresMemoryStore } = await import('../packages/shared_ptr/src/postgres/memoryStorePostgres.js');
     return PostgresMemoryStore.open({ auth });
   }
 
@@ -175,7 +175,7 @@ describe('postgres proposedBy and self-accept', () => {
   });
 
   it('ships migrations 003_proposed_by and 004_checkpoint_acl', async () => {
-    const { listMigrationFiles } = await import('../src/memory/postgres/migrate.js');
+    const { listMigrationFiles } = await import('../packages/shared_ptr/src/postgres/migrate.js');
     const files = listMigrationFiles();
     const ids = files.map(f => f.id);
     expect(ids.slice(0, 4)).toEqual(['001_core', '002_search', '003_proposed_by', '004_checkpoint_acl']);

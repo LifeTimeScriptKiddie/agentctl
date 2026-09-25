@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';
 import { runMemoryPilot } from './pilot.js';
-import { BOOTSTRAP_CHECKPOINT, DEFAULT_RESUME_WORKSPACE } from './briefingPrompt.js';
-import { AdapterRegistry } from '../adapters/registry.js';
+import { DEFAULT_RESUME_WORKSPACE } from '@shared_ptr/contract';
+import { BOOTSTRAP_CHECKPOINT } from './bootstrap.js';
+import { agentctlCliPilotRunner } from './pilotRunner.js';
 import { loadAuthContext, type Classification } from './authContext.js';
 import { parseKindList } from './kinds.js';
 import { runMemoryRemote } from './remote.js';
@@ -53,16 +54,12 @@ function parseSaveAccess(o: {
   };
 }
 
-export function registerMemoryCommands(program: Command): void {
-  const memory = program.command('memory').description('opt-in local memory; all output is JSON; no automatic capture');
+/** Register the server-side commands on `memory` (the shared_ptr root command). */
+export function registerMemoryCommands(memory: Command): void {
   memory.command('test').description('three live Cursor/Composer calls against isolated synthetic memory; no manual IDs')
     .action(async () => {
       try {
-        const adapter = AdapterRegistry.fromPackaged().get('cursor');
-        const result = await runMemoryPilot((prompt,workdir) => adapter.invoke({
-          role:'chat',prompt,workdir,model:'composer-2.5',effort:null,resumeSessionId:null,
-          outputContract:'text',contextPaths:[],timeoutSeconds:90,maxTurns:1,allowedTools:[],
-        }));
+        const result = await runMemoryPilot(agentctlCliPilotRunner({ agent: 'cursor', model: 'composer-2.5', timeoutSeconds: 90 }));
         console.log(JSON.stringify(result,null,2));
         if (!result.ok) process.exitCode=1;
       } catch(e) { console.error(JSON.stringify({error:e instanceof Error?e.message:String(e)}));process.exitCode=1; }
@@ -275,78 +272,6 @@ export function registerMemoryCommands(program: Command): void {
     s => s.resumeBriefing(o.workspace, o.provider, Number(o.maxBytes), parseKindList(o.kinds)),
     o,
   ));
-  const gateway = memory.command('gateway')
-    .description('call team gatekeeper HTTP API (requires AGENTCTL_GATEWAY_URL)');
-  gateway.command('review').requiredOption('--workspace <id>')
-    .action(async o => {
-      const { getGatewayReview, resolveGatewayUrl } = await import('./gatewayClient.js');
-      const base = resolveGatewayUrl();
-      if (!base) {
-        console.error(JSON.stringify({ error: 'Set AGENTCTL_GATEWAY_URL' }));
-        process.exitCode = 2;
-        return;
-      }
-      try {
-        console.log(JSON.stringify(await getGatewayReview(base, o.workspace), null, 2));
-      } catch (e) {
-        console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
-        process.exitCode = 1;
-      }
-    });
-  gateway.command('write')
-    .requiredOption('--workspace <id>')
-    .requiredOption('--text <text>')
-    .requiredOption('--source <reference>')
-    .option('--mode <mode>', 'propose | commit', 'propose')
-    .option('--human-approved', 'required for commit', false)
-    .action(async o => {
-      const { postGatewayWrite, resolveGatewayUrl } = await import('./gatewayClient.js');
-      const base = resolveGatewayUrl();
-      if (!base) {
-        console.error(JSON.stringify({ error: 'Set AGENTCTL_GATEWAY_URL' }));
-        process.exitCode = 2;
-        return;
-      }
-      try {
-        const out = await postGatewayWrite(base, {
-          mode: o.mode === 'commit' ? 'commit' : 'propose',
-          workspace: o.workspace,
-          text: o.text,
-          source: o.source,
-          human_approved: Boolean(o.humanApproved),
-        });
-        console.log(JSON.stringify(out, null, 2));
-        if (out.status === 'rejected' || out.status === 'review_required') process.exitCode = 1;
-      } catch (e) {
-        console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
-        process.exitCode = 1;
-      }
-    });
-  gateway.command('accept')
-    .requiredOption('--workspace <id>')
-    .requiredOption('--id <uuid>')
-    .requiredOption('--revision <n>')
-    .option('--human-approved', 'required', true)
-    .action(async o => {
-      const { postGatewayAccept, resolveGatewayUrl } = await import('./gatewayClient.js');
-      const base = resolveGatewayUrl();
-      if (!base) {
-        console.error(JSON.stringify({ error: 'Set AGENTCTL_GATEWAY_URL' }));
-        process.exitCode = 2;
-        return;
-      }
-      try {
-        console.log(JSON.stringify(await postGatewayAccept(base, {
-          workspace: o.workspace,
-          memory_id: o.id,
-          revision: Number(o.revision),
-          human_approved: Boolean(o.humanApproved),
-        }), null, 2));
-      } catch (e) {
-        console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
-        process.exitCode = 1;
-      }
-    });
   const postgres = memory.command('postgres').description('PostgreSQL memory plane (scaffold: migrations + status; store adapter not wired in 0.2.x)');
   postgres.command('status')
     .description('Show backend env, migration files, and whether the pg driver is installed')

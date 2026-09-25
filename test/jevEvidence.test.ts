@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { jevEvidenceEnabled, selectJevEvidence } from '../src/memory/jevEvidence.js';
-import * as laya from '../src/memory/layaEvidence.js';
+import { jevEvidenceEnabled, selectJevEvidence } from '../packages/shared_ptr/src/jevEvidence.js';
+import * as laya from '../packages/shared_ptr/src/layaEvidence.js';
 
 describe('jev evidence helpers', () => {
   afterEach(() => {

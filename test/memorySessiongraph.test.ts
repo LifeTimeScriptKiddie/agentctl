@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { aggregateAuditSince, parseSinceToMs, MEMORY_PLANE_SCHEMA } from '../src/memory/memoryUsageExport.js';
-import { resolveSessiongraphPackageDir, resolveSessiongraphRoot } from '../src/memory/sessiongraphBridge.js';
+import { aggregateAuditSince, parseSinceToMs, MEMORY_PLANE_SCHEMA } from '../packages/shared_ptr/src/memoryUsageExport.js';
+import { resolveSessiongraphPackageDir, resolveSessiongraphRoot } from '../packages/shared_ptr/src/sessiongraphBridge.js';
 
 describe('memoryUsageExport', () => {
   it('parses relative since windows', () => {

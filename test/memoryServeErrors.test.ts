@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMemoryServerForTest } from '../src/memory/serve.js';
-import { MemoryStore } from '../src/memory/store.js';
+import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
 
 // Security review L4: callers get error codes; exception detail stays in the audit log.
 

@@ -9,9 +9,6 @@ const copies = [
   ['src/specs', 'dist/specs'],
   ['src/bench/cases.yaml', 'dist/bench/cases.yaml'],
   ['docs', 'dist/docs'],
-  ['scripts/laya_evidence.py', 'dist/scripts/laya_evidence.py'],
-  ['src/memory/turn-graph.default.yaml', 'dist/memory/turn-graph.default.yaml'],
-  ['src/memory/postgres/migrations', 'dist/memory/postgres/migrations'],
 ];
 
 for (const [from, to] of copies) {
