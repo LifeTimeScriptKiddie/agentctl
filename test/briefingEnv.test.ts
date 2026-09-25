@@ -9,10 +9,10 @@ import { buildWorkerPrompt } from '../src/memory/briefingPrompt.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryStore } from '../packages/shared_ptr/src/store.js';
-import { useInProcessBriefing } from './helpers/sharedPtrInProcess.js';
+import { MemoryStore } from './helpers/fakeSharedPtr.js';
+import { useFakeSharedPtr } from './helpers/fakeSharedPtr.js';
 
-beforeEach(async () => { await useInProcessBriefing(); });
+beforeEach(() => { useFakeSharedPtr(); });
 
 describe('briefing env defaults', () => {
   afterEach(() => vi.unstubAllEnvs());

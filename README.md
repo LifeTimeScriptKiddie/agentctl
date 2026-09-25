@@ -2,6 +2,10 @@
 
 **Pi extension and CLI** built around **multi-subscription orchestration**: one entry point (`/agentctl`, `agentctl delegate`, `agentctl orchestrate`) that routes work to **your** signed-in agents — GitHub Copilot via Pi, OpenAI Codex, Anthropic Claude, Cursor, opt-in Hermes, or another configured backend. You pick the subscription and model with **`--to`** / **`--model`**; agentctl handles lane selection, bounded plans, and worker subprocesses without merging billing or credentials across providers.
 
+> **Team memory** (a shared, reviewed memory for your agents, with a gatekeeper, Postgres, and MCP and Pi tools) lives in its own repo:
+> [shared_ptr](https://github.com/LifeTimeScriptKiddie/shared_ptr). agentctl uses it for worker briefings when it is installed
+> (`shared_ptr` on PATH, or `AGENTCTL_GATEWAY_URL` pointing at a gatekeeper). `agentctl memory <cmd>` forwards to `shared_ptr <cmd>`.
+
 ## Start here
 
 Choose the surface you are operating from:
@@ -306,7 +310,7 @@ Migrations and tables: [POSTGRES-MEMORY.md](docs/POSTGRES-MEMORY.md) (`memories`
 agentctl memory sessiongraph nightly --since 24h
 ```
 
-That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture + graph-engineering suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/` (see **`Architecture recommendations`** in `report.md` and `suggest-agentctl/`). Gatekeeper graphs themselves live in agentctl: [`turn-graph.default.yaml`](packages/shared_ptr/src/turn-graph.default.yaml) (in the shared_ptr package), optional override `$AGENTCTL_HOME/config/turn-graph.yaml` — [TURN-GRAPH.md](docs/TURN-GRAPH.md). Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
+That **exports** → **`sessiongraph analyze-memory-plane`** → **architecture + graph-engineering suggest** into `$AGENTCTL_HOME/reports/sessiongraph/YYYY-MM-DD/` (see **`Architecture recommendations`** in `report.md` and `suggest-agentctl/`). Gatekeeper graphs themselves live in agentctl: [`turn-graph.default.yaml`](https://github.com/LifeTimeScriptKiddie/shared_ptr/blob/main/src/turn-graph.default.yaml) (in shared_ptr), optional override `$AGENTCTL_HOME/config/turn-graph.yaml` — [TURN-GRAPH.md](docs/TURN-GRAPH.md). Details: [SESSIONGRAPH-NIGHTLY.md](docs/SESSIONGRAPH-NIGHTLY.md).
 
 **Direction (plan):** tighten backend placement so SessionGraph continuously **observes user input and DB flow** on the VM—richer turn/query metadata, cross-workspace usage, and retrieval outcomes—then surfaces **actionable suggestions**, especially **graph engineering** (when to add evidence nodes, split pipelines, or adjust abstain/fallback edges) plus kinds/workspaces and review cadence. Human operators merge graph YAML and database changes; SessionGraph only proposes.
 

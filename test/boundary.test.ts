@@ -1,8 +1,7 @@
 /**
- * The shared_ptr split, enforced: agentctl (src/) never imports the shared_ptr
- * server package, and shared_ptr never imports agentctl's src/. Both may use
- * only @lifetimescriptkiddie/agentctl-kit and @lifetimescriptkiddie/shared-ptr-contract. (Tests may cross; they are the
- * integration layer.)
+ * Team memory lives in its own repo (github.com/LifeTimeScriptKiddie/shared_ptr).
+ * agentctl reaches it only over HTTP or by running its CLI, and shares code with
+ * it only through published packages (agentctl-kit, shared-ptr-contract).
  */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -19,42 +18,26 @@ function tsFiles(dir: string): string[] {
 }
 
 function imports(file: string): string[] {
-  const text = readFileSync(file, 'utf8');
-  return [...text.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1]!);
-}
-
-/** Relative imports of `file`, resolved to absolute paths. */
-function resolvedImports(file: string): string[] {
-  return imports(file).filter((i) => i.startsWith('.')).map((i) => resolve(dirname(file), i));
+  return [...readFileSync(file, 'utf8').matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1]!);
 }
 
 const inside = (p: string, dir: string) => p === dir || p.startsWith(dir + sep);
-const SHARED_PTR = join(root, 'packages', 'shared_ptr');
 
 describe('shared_ptr boundary', () => {
-  it('agentctl src/ never imports the shared_ptr server', () => {
-    const bad = tsFiles(join(root, 'src')).flatMap((f) => [
-      ...resolvedImports(f).filter((p) => inside(p, SHARED_PTR)),
-      ...imports(f).filter((i) => (i === '@lifetimescriptkiddie/shared-ptr' || i.startsWith('@lifetimescriptkiddie/shared-ptr/'))),
-    ].map((i) => `${relative(root, f)} → ${relative(root, i)}`));
+  it('agentctl never imports the shared_ptr server package', () => {
+    const bad = tsFiles(join(root, 'src')).flatMap((f) => imports(f)
+      .filter((i) => i === '@lifetimescriptkiddie/shared-ptr' || i.startsWith('@lifetimescriptkiddie/shared-ptr/'))
+      .map((i) => `${relative(root, f)} → ${i}`));
     expect(bad).toEqual([]);
   });
 
-  it('shared_ptr never imports agentctl src/ (or anything outside its package)', () => {
-    const bad = tsFiles(join(SHARED_PTR, 'src')).flatMap((f) => resolvedImports(f)
-      .filter((p) => !inside(p, SHARED_PTR))
+  it('kit imports nothing outside itself', () => {
+    const kit = join(root, 'packages', 'kit');
+    const bad = tsFiles(join(kit, 'src')).flatMap((f) => imports(f)
+      .filter((i) => i.startsWith('.'))
+      .map((i) => resolve(dirname(f), i))
+      .filter((p) => !inside(p, kit))
       .map((p) => `${relative(root, f)} → ${relative(root, p)}`));
-    expect(bad).toEqual([]);
-  });
-
-  it('kit and contract import nothing outside themselves', () => {
-    const bad = ['kit', 'contract'].flatMap((pkg) => {
-      const dir = join(root, 'packages', pkg);
-      return tsFiles(join(dir, 'src')).flatMap((f) => [
-        ...resolvedImports(f).filter((p) => !inside(p, dir)),
-        ...imports(f).filter((i) => (i === '@lifetimescriptkiddie/shared-ptr' || i.startsWith('@lifetimescriptkiddie/shared-ptr/'))),
-      ].map((i) => `${relative(root, f)} → ${i}`));
-    });
     expect(bad).toEqual([]);
   });
 });

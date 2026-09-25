@@ -9,8 +9,6 @@ export default defineConfig({
     alias: [
       { find: /^@lifetimescriptkiddie\/agentctl-kit$/, replacement: pkg('kit/src/index.ts') },
       { find: /^@lifetimescriptkiddie\/agentctl-kit\/(.*)$/, replacement: pkg('kit/src/$1.ts') },
-      { find: /^@lifetimescriptkiddie\/shared-ptr-contract$/, replacement: pkg('contract/src/index.ts') },
-      { find: /^@lifetimescriptkiddie\/shared-ptr-contract\/(.*)$/, replacement: pkg('contract/src/$1.ts') },
     ],
   },
   test: {

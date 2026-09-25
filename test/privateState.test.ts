@@ -16,7 +16,6 @@ import { loadPreset } from '../src/assets.js';
 import { PresetSchema } from '../src/schema/agents.js';
 import type { RunState } from '../src/schema/runState.js';
 import type { StepOutcome } from '../src/core/orchestrator.js';
-import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
 
 // Security review M4: state files are 0600 inside 0700 directories.
 
@@ -174,34 +173,6 @@ describe.skipIf(process.platform === 'win32')('private state files', () => {
       chmodSync(custom, 0o755);
       prepareProfileDir(PresetSchema.parse({ ...loadPreset('comet'), userDataDir: custom }));
       expect(mode(custom)).toBe(0o700);
-    });
-
-    it('memory serve audit log', async () => {
-      vi.stubEnv('AGENTCTL_SERVE_ALLOW_ANON', '1');
-      for (const name of ['AGENTCTL_USER_ID', 'AGENTCTL_SERVE_TOKEN']) vi.stubEnv(name, undefined);
-      const logs = join(home, 'logs');
-      mkdirSync(logs, { mode: 0o755 });
-      chmodSync(logs, 0o755);
-      const audit = join(logs, 'memory-serve-audit.jsonl');
-      writeFileSync(audit, '', { mode: 0o644 });
-      chmodSync(audit, 0o644);
-
-      const server = createMemoryServerForTest();
-      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
-      try {
-        const addr = server.address();
-        if (!addr || typeof addr === 'string') throw new Error('no address');
-        const r = await fetch(`http://127.0.0.1:${addr.port}/v1/context`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ workspace: 'w', query: 'anything' }),
-        });
-        expect(r.status).toBe(200);
-      } finally {
-        await new Promise<void>(resolve => server.close(() => resolve()));
-      }
-      expect(mode(logs)).toBe(0o700);
-      expect(mode(audit)).toBe(0o600);
     });
   });
 });

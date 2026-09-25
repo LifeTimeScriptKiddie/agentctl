@@ -9,9 +9,9 @@ import {
   postTurn,
   resolveGatewayUrl,
 } from '../src/memory/gatewayClient.js';
-import { useInProcessBriefing } from './helpers/sharedPtrInProcess.js';
+import { useFakeSharedPtr } from './helpers/fakeSharedPtr.js';
 
-beforeEach(async () => { await useInProcessBriefing(); });
+beforeEach(() => { useFakeSharedPtr(); });
 
 describe('gateway briefing client', () => {
   afterEach(() => {
@@ -114,7 +114,7 @@ describe('gateway briefing client', () => {
 
   it('uses local briefing when gateway is unset', async () => {
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-gw-local-')));
-    const { MemoryStore } = await import('../packages/shared_ptr/src/store.js');
+    const { MemoryStore } = await import('./helpers/fakeSharedPtr.js');
     const s = await MemoryStore.open();
     s.setCheckpoint({
       workspace: 'pilot',
