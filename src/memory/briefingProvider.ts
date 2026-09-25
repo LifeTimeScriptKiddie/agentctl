@@ -5,7 +5,7 @@
  */
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ResumeBriefing } from '@shared_ptr/contract';
+import { ResumeBriefing } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { run } from '../util/exec.js';
 
 export type ProviderKind = 'http' | 'exec' | 'none';

@@ -182,7 +182,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<Check[]> {
 
 /** Which briefing provider is active: gateway (http) > shared_ptr CLI (exec) > none. */
 export async function teamMemoryChecks(): Promise<Check[]> {
-  const { CONTRACT_VERSION, MetaResponse } = await import('@shared_ptr/contract');
+  const { CONTRACT_VERSION, MetaResponse } = await import('@lifetimescriptkiddie/shared-ptr-contract');
   const { resolveGatewayUrl } = await import('./memory/gatewayClient.js');
   const { resolveSharedPtrCommand } = await import('./memory/briefingProvider.js');
   const { run } = await import('./util/exec.js');

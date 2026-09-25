@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { resolveMemoryBackend } from './backendConfig.js';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';
 import type { MemoryUsageStats } from './store.js';

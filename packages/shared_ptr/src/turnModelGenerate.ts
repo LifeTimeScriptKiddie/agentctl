@@ -10,8 +10,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
-import { quoteUntrusted } from '@agentctl/kit/untrusted';
-import { formatGatewayTurnPrefix } from '@shared_ptr/contract/format';
+import { quoteUntrusted } from '@lifetimescriptkiddie/agentctl-kit/untrusted';
+import { formatGatewayTurnPrefix } from '@lifetimescriptkiddie/shared-ptr-contract/format';
 import type { ContextBundle } from './contextBundle.js';
 import { setting } from './env.js';
 

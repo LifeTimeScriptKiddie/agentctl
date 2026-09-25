@@ -5,8 +5,8 @@
  */
 import type { AdapterCapabilities } from './schema/capabilities.js';
 
-// Detection lives in @agentctl/kit so shared_ptr's write gate uses the same patterns.
-import { ApprovalRequiredError, assertApproved, findDestructive, type ApprovalSource } from '@agentctl/kit/destructive';
+// Detection lives in @lifetimescriptkiddie/agentctl-kit so shared_ptr's write gate uses the same patterns.
+import { ApprovalRequiredError, assertApproved, findDestructive, type ApprovalSource } from '@lifetimescriptkiddie/agentctl-kit/destructive';
 export { ApprovalRequiredError, assertApproved, findDestructive, type ApprovalSource };
 
 export const GATED_CAPABILITIES = ['canPublish', 'canModifyRepo', 'canRunShell', 'canWriteFiles'] as const;

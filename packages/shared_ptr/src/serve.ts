@@ -1,4 +1,4 @@
-import { BriefingRequest, CheckpointSetRequest, CONTRACT_VERSION } from '@shared_ptr/contract';
+import { BriefingRequest, CheckpointSetRequest, CONTRACT_VERSION } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { markServing } from './runtime.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -21,15 +21,15 @@ import { publicGraphTrace } from './turnGraph.js';
 import type { MemoryProvider } from './layaEvidence.js';
 import { MEMORY_PROVIDERS, layaOperatorEnabled } from './layaEvidence.js';
 import { jevOperatorEnabled } from './jevEvidence.js';
-import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { sharedPtrHome } from '@lifetimescriptkiddie/shared-ptr-contract/local';
 import { appendPrivate, ensurePrivateDir } from './privateFs.js';
 import { writeBodySchema } from './memoryWriteGraph.js';
 import { evidencePointerInputSchema, findingInputSchema } from './teamKb.js';
 import { resolveMemoryBackend } from './backendConfig.js';
 import { PostgresMemoryStore } from './postgres/memoryStorePostgres.js';
 import type { PgPool } from './postgres/pgClient.js';
-import { redact } from '@agentctl/kit/redact';
-import { ApprovalRequiredError, assertApproved } from '@agentctl/kit/destructive';
+import { redact } from '@lifetimescriptkiddie/agentctl-kit/redact';
+import { ApprovalRequiredError, assertApproved } from '@lifetimescriptkiddie/agentctl-kit/destructive';
 import { setting } from './env.js';
 
 /**

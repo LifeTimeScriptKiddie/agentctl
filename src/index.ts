@@ -65,4 +65,4 @@ export { collectOutput as collectMonitorOutput } from './monitor/collect.js';
 export { writeFeedAtomic, runFeed } from './monitor/feed.js';
 export type { AgentwatchOutput as MonitorOutput, AgentReport as MonitorAgentReport } from './monitor/types.js';
 
-// MemoryStore moved to shared_ptr (@shared_ptr/server); agentctl reaches it over HTTP or its CLI.
+// MemoryStore moved to shared_ptr (@lifetimescriptkiddie/shared-ptr); agentctl reaches it over HTTP or its CLI.

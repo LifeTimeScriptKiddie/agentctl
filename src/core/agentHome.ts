@@ -1,4 +1,4 @@
-import { appHome, looksLikeEphemeralHome } from '@agentctl/kit/appHome';
+import { appHome, looksLikeEphemeralHome } from '@lifetimescriptkiddie/agentctl-kit/appHome';
 
 /** State root: ~/.agentctl (override with AGENTCTL_HOME). */
 export function agentctlHome(): string {

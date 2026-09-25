@@ -1,7 +1,7 @@
 /**
  * The shared_ptr split, enforced: agentctl (src/) never imports the shared_ptr
  * server package, and shared_ptr never imports agentctl's src/. Both may use
- * only @agentctl/kit and @shared_ptr/contract. (Tests may cross; they are the
+ * only @lifetimescriptkiddie/agentctl-kit and @lifetimescriptkiddie/shared-ptr-contract. (Tests may cross; they are the
  * integration layer.)
  */
 import { describe, it, expect } from 'vitest';
@@ -35,7 +35,7 @@ describe('shared_ptr boundary', () => {
   it('agentctl src/ never imports the shared_ptr server', () => {
     const bad = tsFiles(join(root, 'src')).flatMap((f) => [
       ...resolvedImports(f).filter((p) => inside(p, SHARED_PTR)),
-      ...imports(f).filter((i) => i.startsWith('@shared_ptr/server')),
+      ...imports(f).filter((i) => i.startsWith('@lifetimescriptkiddie/shared-ptr')),
     ].map((i) => `${relative(root, f)} → ${relative(root, i)}`));
     expect(bad).toEqual([]);
   });
@@ -52,7 +52,7 @@ describe('shared_ptr boundary', () => {
       const dir = join(root, 'packages', pkg);
       return tsFiles(join(dir, 'src')).flatMap((f) => [
         ...resolvedImports(f).filter((p) => !inside(p, dir)),
-        ...imports(f).filter((i) => i.startsWith('@shared_ptr/server')),
+        ...imports(f).filter((i) => i.startsWith('@lifetimescriptkiddie/shared-ptr')),
       ].map((i) => `${relative(root, f)} → ${i}`));
     });
     expect(bad).toEqual([]);

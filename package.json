@@ -41,13 +41,13 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check": "npm run build:packages --silent && tsc --noEmit && vitest run",
-    "build:packages": "npm run build -w @agentctl/kit -w @shared_ptr/contract -w @shared_ptr/server",
+    "build:packages": "npm run build -w @lifetimescriptkiddie/agentctl-kit -w @lifetimescriptkiddie/shared-ptr-contract -w @lifetimescriptkiddie/shared-ptr",
     "pretest": "npm run build:packages --silent"
   },
   "dependencies": {
-    "@agentctl/kit": "0.1.0",
+    "@lifetimescriptkiddie/agentctl-kit": "0.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@shared_ptr/contract": "1.0.0",
+    "@lifetimescriptkiddie/shared-ptr-contract": "1.0.0",
     "commander": "^12.1.0",
     "execa": "^9.5.0",
     "neo-blessed": "^0.2.0",
@@ -98,7 +98,7 @@
     "packages/*"
   ],
   "bundleDependencies": [
-    "@agentctl/kit",
-    "@shared_ptr/contract"
+    "@lifetimescriptkiddie/agentctl-kit",
+    "@lifetimescriptkiddie/shared-ptr-contract"
   ]
 }

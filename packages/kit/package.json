@@ -1,8 +1,7 @@
 {
-  "name": "@agentctl/kit",
+  "name": "@lifetimescriptkiddie/agentctl-kit",
   "version": "0.1.0",
-  "private": true,
-  "description": "Security and state helpers shared by agentctl and shared_ptr: redaction, untrusted-text quoting, private files, app home.",
+  "description": "Security and state helpers shared by agentctl and shared_ptr: secret redaction, untrusted-text quoting, destructive-intent detection, private files, app home.",
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -32,10 +31,22 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LifeTimeScriptKiddie/agentctl.git",
+    "directory": "packages/kit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

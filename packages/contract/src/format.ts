@@ -3,7 +3,7 @@
  * (worker briefings) and the shared_ptr server (its own model prompt), so both
  * quote untrusted memory the same way.
  */
-import { quoteUntrusted } from '@agentctl/kit/untrusted';
+import { quoteUntrusted } from '@lifetimescriptkiddie/agentctl-kit/untrusted';
 import type { ContextBundle } from './index.js';
 
 export interface TurnResponse {

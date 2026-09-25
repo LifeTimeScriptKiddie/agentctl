@@ -1,4 +1,4 @@
-import { DEFAULT_RESUME_WORKSPACE } from '@shared_ptr/contract';
+import { DEFAULT_RESUME_WORKSPACE } from '@lifetimescriptkiddie/shared-ptr-contract';
 
 /** Seed checkpoint for `shared_ptr checkpoint bootstrap`. */
 export const BOOTSTRAP_CHECKPOINT = {

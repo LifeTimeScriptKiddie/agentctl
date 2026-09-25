@@ -1,5 +1,5 @@
 import type { SessionTurn } from '../schema/session.js';
-import type { ResumeBriefing } from '@shared_ptr/contract';
+import type { ResumeBriefing } from '@lifetimescriptkiddie/shared-ptr-contract';
 import { boundTranscript } from '../core/session.js';
 import { loadGatewayTurnPrefix, resolveGatewayUrl } from './gatewayClient.js';
 import { quoteUntrusted } from '../core/untrusted.js';
@@ -108,4 +108,4 @@ export async function loadBriefingContext(opts: {
     : loadBriefingPrefix(opts.briefingWorkspace, opts.agent);
 }
 
-export { DEFAULT_RESUME_WORKSPACE } from '@shared_ptr/contract';
+export { DEFAULT_RESUME_WORKSPACE } from '@lifetimescriptkiddie/shared-ptr-contract';
