@@ -179,6 +179,8 @@ export const RETRIEVAL_RUNTIME: Runtime<RetrievalState> = {
     jev_disabled: (s) => !s.gates.jev,
     laya_disabled: (s) => !s.gates.laya,
     has_candidates: (s) => s.readable.length > 0,
+    no_candidates: (s) => s.readable.length === 0,
+    single_candidate: (s) => s.readable.length === 1,
   },
   handlers: {
     validate_workspace_provider_kinds: (s) => {
