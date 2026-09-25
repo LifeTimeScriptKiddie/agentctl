@@ -28,6 +28,10 @@
     "./destructive": {
       "types": "./dist/destructive.d.ts",
       "import": "./dist/destructive.js"
+    },
+    "./ownerToken": {
+      "types": "./dist/ownerToken.d.ts",
+      "import": "./dist/ownerToken.js"
     }
   },
   "files": [
