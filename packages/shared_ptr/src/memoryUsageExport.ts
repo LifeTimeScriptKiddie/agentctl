@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 import { resolveMemoryBackend } from './backendConfig.js';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';
 import type { MemoryUsageStats } from './store.js';
@@ -51,7 +51,7 @@ export function parseSinceToMs(since: string, now = Date.now()): number {
 }
 
 function auditLogPath(): string {
-  return join(agentctlHome(), 'logs', 'memory-serve-audit.jsonl');
+  return join(sharedPtrHome(), 'logs', 'memory-serve-audit.jsonl');
 }
 
 export async function aggregateAuditSince(sinceMs: number): Promise<MemoryPlaneExport['audit']> {
@@ -158,11 +158,11 @@ export async function buildMemoryPlaneExport(sinceMs: number): Promise<MemoryPla
 }
 
 export function defaultExportDir(): string {
-  return join(agentctlHome(), 'exports');
+  return join(sharedPtrHome(), 'exports');
 }
 
 export function defaultReportsDir(): string {
-  return join(agentctlHome(), 'reports', 'sessiongraph');
+  return join(sharedPtrHome(), 'reports', 'sessiongraph');
 }
 
 export function writeMemoryPlaneExport(payload: MemoryPlaneExport, outPath: string): string {

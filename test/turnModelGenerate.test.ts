@@ -1,12 +1,15 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { DryRunAdapter } from '../src/adapters/dryRun.js';
 import { SubprocessAdapter } from '../src/adapters/subprocess.js';
 import {
   resolveServeModelAgent,
   shouldRunModelOnTurn,
   generateTurnAnswer,
-} from '../src/memory/turnModelGenerate.js';
-import type { ContextBundle } from '../src/memory/contextBundle.js';
+} from '../packages/shared_ptr/src/turnModelGenerate.js';
+import type { ContextBundle } from '../packages/shared_ptr/src/contextBundle.js';
+import { useInProcessModelRunner } from './helpers/sharedPtrInProcess.js';
+
+beforeEach(async () => { await useInProcessModelRunner(); });
 
 describe('turn model generate', () => {
   afterEach(() => {

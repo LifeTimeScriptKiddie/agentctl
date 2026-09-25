@@ -5,7 +5,7 @@ const { spawnSync } = vi.hoisted(() => ({
 }));
 vi.mock('node:child_process', () => ({ spawnSync }));
 
-import { runMemoryRemote } from '../src/memory/remote.js';
+import { runMemoryRemote } from '../packages/shared_ptr/src/remote.js';
 
 describe('memory remote host validation', () => {
   it('rejects option-like and whitespace-containing hosts', () => {

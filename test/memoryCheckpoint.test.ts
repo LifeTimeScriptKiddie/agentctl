@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryStore } from '../src/memory/store.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
 
 const memoryInput = {
   workspace: 'pilot', text: 'Use SQLite for memory', source: 'user:explicit',

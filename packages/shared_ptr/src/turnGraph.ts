@@ -3,7 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 import type { Memory } from './store.js';
 import type { MemoryProvider } from './layaEvidence.js';
 import {
@@ -77,7 +77,7 @@ function bundledDefaultPath(): string {
 }
 
 export function turnGraphConfigPath(): string {
-  return join(agentctlHome(), 'config', 'turn-graph.yaml');
+  return join(sharedPtrHome(), 'config', 'turn-graph.yaml');
 }
 
 export function normalizeEvidenceGate(

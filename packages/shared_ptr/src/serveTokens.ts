@@ -2,8 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
-import { ensurePrivateDir, writePrivateFile } from '../core/privateFs.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 import { ANONYMOUS_USER_ID, type AuthContext, type Classification } from './authContext.js';
 
 /**
@@ -29,11 +29,11 @@ export type ServeTokenFile = z.infer<typeof fileSchema>;
 export type ServeTokenInfo = Omit<ServeTokenEntry, 'sha256'>;
 
 export function serveTokensPath(): string {
-  return join(agentctlHome(), 'serve-tokens.json');
+  return join(sharedPtrHome(), 'serve-tokens.json');
 }
 
 export function ownerServeTokenPath(): string {
-  return join(agentctlHome(), 'serve-token');
+  return join(sharedPtrHome(), 'serve-token');
 }
 
 export function hashServeToken(token: string): string {
@@ -56,7 +56,7 @@ export function readServeTokens(): ServeTokenFile {
 }
 
 function writeServeTokens(file: ServeTokenFile): void {
-  ensurePrivateDir(agentctlHome());
+  ensurePrivateDir(sharedPtrHome());
   writePrivateFile(serveTokensPath(), `${JSON.stringify(file, null, 2)}\n`);
 }
 
@@ -131,7 +131,7 @@ export function ensureOwnerServeToken(): { path: string; created: boolean } | nu
   if (readServeTokens().tokens.length > 0) return null;
   const path = ownerServeTokenPath();
   if (readOwnerServeToken()) return { path, created: false };
-  ensurePrivateDir(agentctlHome());
+  ensurePrivateDir(sharedPtrHome());
   writePrivateFile(path, `${newToken()}\n`);
   return { path, created: true };
 }

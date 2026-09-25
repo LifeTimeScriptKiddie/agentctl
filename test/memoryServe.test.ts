@@ -1,10 +1,13 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMemoryServerForTest } from '../src/memory/serve.js';
-import { MemoryStore } from '../src/memory/store.js';
-import { addServeToken } from '../src/memory/serveTokens.js';
+import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import { addServeToken } from '../packages/shared_ptr/src/serveTokens.js';
+import { useInProcessModelRunner } from './helpers/sharedPtrInProcess.js';
+
+beforeEach(async () => { await useInProcessModelRunner(); });
 
 describe('memory serve HTTP', () => {
   let server: ReturnType<typeof createMemoryServerForTest> | undefined;

@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryStore } from '../src/memory/store.js';
-import { assertNoInlineSecrets, initTeamKb, nextFindingKey } from '../src/memory/teamKb.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import { assertNoInlineSecrets, initTeamKb, nextFindingKey } from '../packages/shared_ptr/src/teamKb.js';
 
 const stores: MemoryStore[] = [];
 async function open(path = ':memory:') {

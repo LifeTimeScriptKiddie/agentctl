@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadKindRegistry, validateKind, parseKindList } from '../src/memory/kinds.js';
+import { loadKindRegistry, validateKind, parseKindList } from '../packages/shared_ptr/src/kinds.js';
 
 describe('memory kind registry', () => {
   it('creates default registry under AGENTCTL_HOME', () => {

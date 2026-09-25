@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import {
   applyWorkerBriefingArgv,
   defaultMemoryWorkspace,
@@ -9,7 +9,10 @@ import { buildWorkerPrompt } from '../src/memory/briefingPrompt.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryStore } from '../src/memory/store.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import { useInProcessBriefing } from './helpers/sharedPtrInProcess.js';
+
+beforeEach(async () => { await useInProcessBriefing(); });
 
 describe('briefing env defaults', () => {
   afterEach(() => vi.unstubAllEnvs());

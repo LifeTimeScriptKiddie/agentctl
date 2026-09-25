@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import * as laya from '../src/memory/layaEvidence.js';
-import { MemoryStore } from '../src/memory/store.js';
+import * as laya from '../packages/shared_ptr/src/layaEvidence.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
 
 describe('laya evidence helpers', () => {
   afterEach(() => vi.unstubAllEnvs());

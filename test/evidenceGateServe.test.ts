@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import * as laya from '../src/memory/layaEvidence.js';
-import * as jev from '../src/memory/jevEvidence.js';
-import { MemoryStore, type Memory } from '../src/memory/store.js';
-import { createMemoryServerForTest } from '../src/memory/serve.js';
-import { publicGraphTrace, resetTurnGraphCache, runContextRetrievalGraph } from '../src/memory/turnGraph.js';
+import * as laya from '../packages/shared_ptr/src/layaEvidence.js';
+import * as jev from '../packages/shared_ptr/src/jevEvidence.js';
+import { MemoryStore, type Memory } from '../packages/shared_ptr/src/store.js';
+import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
+import { publicGraphTrace, resetTurnGraphCache, runContextRetrievalGraph } from '../packages/shared_ptr/src/turnGraph.js';
 
 // Security review M3: request flags can't switch on evidence gates the operator
 // hasn't enabled, and Jev never receives confidential memories.

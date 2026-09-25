@@ -16,7 +16,7 @@ import { loadPreset } from '../src/assets.js';
 import { PresetSchema } from '../src/schema/agents.js';
 import type { RunState } from '../src/schema/runState.js';
 import type { StepOutcome } from '../src/core/orchestrator.js';
-import { createMemoryServerForTest } from '../src/memory/serve.js';
+import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
 
 // Security review M4: state files are 0600 inside 0700 directories.
 

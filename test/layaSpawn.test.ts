@@ -18,7 +18,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
-const { selectEvidence } = await import('../src/memory/layaEvidence.js');
+const { selectEvidence } = await import('../packages/shared_ptr/src/layaEvidence.js');
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();

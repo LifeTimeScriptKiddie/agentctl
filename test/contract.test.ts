@@ -9,8 +9,8 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONTRACT_VERSION, ROUTES, type RoutePath } from '@shared_ptr/contract';
-import { createMemoryServerForTest } from '../src/memory/serve.js';
-import { addServeToken } from '../src/memory/serveTokens.js';
+import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
+import { addServeToken } from '../packages/shared_ptr/src/serveTokens.js';
 
 vi.mock('../src/util/listenerOwner.js', async (orig) => ({
   ...(await orig<typeof import('../src/util/listenerOwner.js')>()),

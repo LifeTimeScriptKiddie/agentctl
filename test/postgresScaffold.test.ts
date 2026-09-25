@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { resolveMemoryBackend, resolveMemoryDatabaseUrl } from '../src/memory/backendConfig.js';
-import { listMigrationFiles } from '../src/memory/postgres/migrate.js';
-import { openMemoryStore } from '../src/memory/openMemoryStore.js';
+import { resolveMemoryBackend, resolveMemoryDatabaseUrl } from '../packages/shared_ptr/src/backendConfig.js';
+import { listMigrationFiles } from '../packages/shared_ptr/src/postgres/migrate.js';
+import { openMemoryStore } from '../packages/shared_ptr/src/openMemoryStore.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,7 +42,7 @@ describe('memory backend config', () => {
   it('postgres migrate dry-run lists pending ids', async () => {
     vi.stubEnv('AGENTCTL_MEMORY_BACKEND', 'postgres');
     vi.stubEnv('AGENTCTL_MEMORY_DATABASE_URL', 'postgres://local/test');
-    const { runPostgresMigrations } = await import('../src/memory/postgres/migrate.js');
+    const { runPostgresMigrations } = await import('../packages/shared_ptr/src/postgres/migrate.js');
     const r = await runPostgresMigrations({ dryRun: true });
     expect(r.pending).toContain('001_core');
   });

@@ -398,3 +398,44 @@ export type FindingListResponse = z.output<typeof FindingListResponse>;
 export type FindingShowRequest = z.input<typeof FindingShowRequest>;
 export type FindingShowResponse = z.output<typeof FindingShowResponse>;
 export type MetaResponse = z.output<typeof MetaResponse>;
+
+/** Every memory provider name, including the operator-only `local` (store.ts MEMORY_PROVIDERS). */
+export const MEMORY_PROVIDERS = ['cursor', 'codex', 'claude', 'pi', 'laya', 'jev', 'local'] as const;
+export type MemoryProvider = (typeof MEMORY_PROVIDERS)[number];
+
+/** Default workspace for resume briefings and operator commands. */
+export const DEFAULT_RESUME_WORKSPACE = 'agentctl-pilot';
+
+/**
+ * `shared_ptr briefing --format json` output (store.ts resumeBriefing): the
+ * local, no-network briefing the exec provider reads.
+ */
+export const ResumeBriefing = z.object({
+  packet: z.object({
+    version: z.literal(1),
+    kind: z.literal('resume_briefing'),
+    workspace: z.string(),
+    provider: z.string(),
+    checkpoint: z.object({
+      revision: z.number().int(),
+      goal: z.string(),
+      state: z.string(),
+      blockers: z.array(z.string()),
+      nextAction: z.string(),
+      source: z.string(),
+      updatedAt: z.number(),
+    }).passthrough().nullable(),
+    decisions: z.array(z.object({
+      id: z.string(),
+      revision: z.number().int(),
+      text: z.string(),
+      source: z.string(),
+      kind: z.string(),
+    }).passthrough()),
+    omittedDecisionRefs: z.array(z.string()),
+    unresolvedDecisionRefs: z.array(z.string()),
+  }).passthrough(),
+  bytes: z.number().optional(),
+  maxBytes: z.number().optional(),
+}).passthrough();
+export type ResumeBriefing = z.output<typeof ResumeBriefing>;

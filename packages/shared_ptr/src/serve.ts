@@ -20,15 +20,15 @@ import { publicGraphTrace } from './turnGraph.js';
 import type { MemoryProvider } from './layaEvidence.js';
 import { MEMORY_PROVIDERS, layaOperatorEnabled } from './layaEvidence.js';
 import { jevOperatorEnabled } from './jevEvidence.js';
-import { agentctlHome } from '../core/agentHome.js';
-import { appendPrivate, ensurePrivateDir } from '../core/privateFs.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { appendPrivate, ensurePrivateDir } from './privateFs.js';
 import { writeBodySchema } from './memoryWriteGraph.js';
 import { evidencePointerInputSchema, findingInputSchema } from './teamKb.js';
 import { resolveMemoryBackend } from './backendConfig.js';
 import { PostgresMemoryStore } from './postgres/memoryStorePostgres.js';
 import type { PgPool } from './postgres/pgClient.js';
-import { redact } from '../core/redact.js';
-import { ApprovalRequiredError, assertApproved } from '../approval.js';
+import { redact } from '@agentctl/kit/redact';
+import { ApprovalRequiredError, assertApproved } from '@agentctl/kit/destructive';
 
 /**
  * Caller identity comes only from the bearer token, never from headers:
@@ -243,7 +243,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 
 function auditEvent(event: Record<string, unknown>): void {
   try {
-    const dir = join(agentctlHome(), 'logs');
+    const dir = join(sharedPtrHome(), 'logs');
     ensurePrivateDir(dir);
     appendPrivate(
       join(dir, 'memory-serve-audit.jsonl'),

@@ -4,11 +4,11 @@ import type { Server } from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMemoryServerForTest, startMemoryServer } from '../src/memory/serve.js';
-import { MemoryStore } from '../src/memory/store.js';
+import { createMemoryServerForTest, startMemoryServer } from '../packages/shared_ptr/src/serve.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
 import { gatewayAuthHeaders, getGatewayReview } from '../src/memory/gatewayClient.js';
-import { addServeToken, ownerServeTokenPath, revokeServeToken, serveTokensPath } from '../src/memory/serveTokens.js';
-import type { Classification } from '../src/memory/authContext.js';
+import { addServeToken, ownerServeTokenPath, revokeServeToken, serveTokensPath } from '../packages/shared_ptr/src/serveTokens.js';
+import type { Classification } from '../packages/shared_ptr/src/authContext.js';
 
 const listenerOwner = vi.hoisted(() => ({ result: { ok: true, verified: true } as { ok: true; verified: boolean } | { ok: false; reason: string } }));
 vi.mock('../src/util/listenerOwner.js', async (orig) => ({

@@ -1,10 +1,11 @@
 import type { SessionTurn } from '../schema/session.js';
-import { MemoryStore } from './store.js';
+import type { ResumeBriefing } from '@shared_ptr/contract';
 import { boundTranscript } from '../core/session.js';
 import { loadGatewayTurnPrefix, resolveGatewayUrl } from './gatewayClient.js';
 import { quoteUntrusted } from '../core/untrusted.js';
+import { loadLocalBriefing } from './briefingProvider.js';
 
-type BriefingResult = ReturnType<MemoryStore['resumeBriefing']>;
+type BriefingResult = ResumeBriefing;
 
 /** Render a local resume packet as untrusted context prepended to a worker prompt. */
 export function formatBriefingPrefix(result: BriefingResult): string {
@@ -46,12 +47,9 @@ export async function loadBriefingPrefix(
   provider: string,
   maxBytes = 8000,
 ): Promise<string> {
-  const store = await MemoryStore.open();
-  try {
-    return formatBriefingPrefix(store.resumeBriefing(workspace, provider, maxBytes));
-  } finally {
-    store.close();
-  }
+  // No gateway: the shared_ptr CLI (or an injected source) gives the local packet.
+  const briefing = await loadLocalBriefing(workspace, provider, maxBytes);
+  return briefing ? formatBriefingPrefix(briefing) : '';
 }
 
 /** Worker prompt with optional transcript replay and local briefing prefix. Stores original user text in sessions. */
@@ -110,16 +108,4 @@ export async function loadBriefingContext(opts: {
     : loadBriefingPrefix(opts.briefingWorkspace, opts.agent);
 }
 
-export const DEFAULT_RESUME_WORKSPACE = 'agentctl-pilot';
-
-export const BOOTSTRAP_CHECKPOINT = {
-  workspace: DEFAULT_RESUME_WORKSPACE,
-  goal: 'Personal assistant continuity across Pi, Cursor, Claude, and Codex',
-  state: 'Memory slice and synthetic pilot green; checkpoint + briefing landed',
-  blockers: [
-    'Workspace capture enrollment not chosen',
-    'Phase 0 session concurrency still hardening',
-  ],
-  nextAction: 'Use briefing before delegate; finish session write retries; then Pi capture design',
-  source: 'operator:bootstrap-2026-09-22',
-} as const;
+export { DEFAULT_RESUME_WORKSPACE } from '@shared_ptr/contract';

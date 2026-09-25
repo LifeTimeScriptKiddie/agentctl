@@ -169,12 +169,48 @@ export async function runDoctor(opts: DoctorOptions): Promise<Check[]> {
       ...(real === self ? {} : { fix: 'point the MCP entry (or its symlink) at the build you want' }) });
   }
 
-  // 6. features
+  // 6. team memory (shared_ptr): which provider briefs workers, and its contract version
+  checks.push(...await teamMemoryChecks());
+
+  // 7. features
   const off = FEATURES.filter((f) => !featureEnabled(f.name, prefs)).map((f) => f.name);
   checks.push({ area: 'features', name: 'optional features', status: 'ok',
     detail: off.length ? `off: ${off.join(', ')}` : 'all on', fix: 'agentctl features' });
 
   return checks;
+}
+
+/** Which briefing provider is active: gateway (http) > shared_ptr CLI (exec) > none. */
+export async function teamMemoryChecks(): Promise<Check[]> {
+  const { CONTRACT_VERSION, MetaResponse } = await import('@shared_ptr/contract');
+  const { resolveGatewayUrl } = await import('./memory/gatewayClient.js');
+  const { resolveSharedPtrCommand } = await import('./memory/briefingProvider.js');
+  const { run } = await import('./util/exec.js');
+  const gateway = resolveGatewayUrl();
+  if (gateway) {
+    try {
+      const res = await fetch(new URL('/v1/meta', gateway), { signal: AbortSignal.timeout(5_000) });
+      const meta = MetaResponse.safeParse(await res.json());
+      if (!meta.success) {
+        return [{ area: 'team memory', name: 'gateway', status: 'warn', detail: `${gateway} has no /v1/meta (older than contract v${CONTRACT_VERSION})`,
+          fix: 'upgrade the gatekeeper to shared_ptr' }];
+      }
+      const same = meta.data.contract_version === CONTRACT_VERSION;
+      return [{ area: 'team memory', name: 'gateway', status: same ? 'ok' : 'warn',
+        detail: `${gateway}: shared_ptr contract v${meta.data.contract_version}${same ? '' : ` (agentctl speaks v${CONTRACT_VERSION})`}`,
+        ...(same ? {} : { fix: 'upgrade whichever side is older' }) }];
+    } catch (e) {
+      return [{ area: 'team memory', name: 'gateway', status: 'fail', detail: `${gateway} unreachable: ${e instanceof Error ? e.message : String(e)}`,
+        fix: 'start the gatekeeper (`shared_ptr serve`) or unset AGENTCTL_GATEWAY_URL' }];
+    }
+  }
+  const cmd = resolveSharedPtrCommand();
+  const r = cmd ? await run(cmd.file, [...cmd.args, '--version'], { timeoutMs: 10_000 }).catch(() => null) : null;
+  if (r && r.exitCode === 0) {
+    return [{ area: 'team memory', name: 'briefings', status: 'ok', detail: `local shared_ptr ${r.stdout.trim()} (via ${cmd!.via})` }];
+  }
+  return [{ area: 'team memory', name: 'briefings', status: 'ok',
+    detail: 'off: no gateway and no shared_ptr CLI, so workers get no team briefing', fix: 'install shared_ptr or set AGENTCTL_GATEWAY_URL' }];
 }
 
 export function formatDoctor(checks: Check[]): string {

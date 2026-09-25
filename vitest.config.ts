@@ -10,6 +10,7 @@ export default defineConfig({
       { find: /^@agentctl\/kit$/, replacement: pkg('kit/src/index.ts') },
       { find: /^@agentctl\/kit\/(.*)$/, replacement: pkg('kit/src/$1.ts') },
       { find: /^@shared_ptr\/contract$/, replacement: pkg('contract/src/index.ts') },
+      { find: /^@shared_ptr\/contract\/(.*)$/, replacement: pkg('contract/src/$1.ts') },
     ],
   },
   test: {

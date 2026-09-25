@@ -13,8 +13,8 @@ const pg = vi.hoisted(() => ({
   migrations: 0,
 }));
 
-vi.mock('../src/memory/postgres/pgClient.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../src/memory/postgres/pgClient.js')>()),
+vi.mock('../packages/shared_ptr/src/postgres/pgClient.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../packages/shared_ptr/src/postgres/pgClient.js')>()),
   loadPgPool: vi.fn(async () => {
     pg.pools++;
     return {
@@ -27,15 +27,15 @@ vi.mock('../src/memory/postgres/pgClient.js', async importOriginal => ({
   }),
 }));
 
-vi.mock('../src/memory/postgres/migrate.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../src/memory/postgres/migrate.js')>()),
+vi.mock('../packages/shared_ptr/src/postgres/migrate.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../packages/shared_ptr/src/postgres/migrate.js')>()),
   runPostgresMigrations: vi.fn(async () => {
     pg.migrations++;
     return { dryRun: false, applied: [], pending: [] };
   }),
 }));
 
-const { createMemoryServerForTest, servePostgres, closeServePostgresForTest } = await import('../src/memory/serve.js');
+const { createMemoryServerForTest, servePostgres, closeServePostgresForTest } = await import('../packages/shared_ptr/src/serve.js');
 
 describe('memory serve Postgres pool', () => {
   let server: ReturnType<typeof createMemoryServerForTest> | undefined;
@@ -107,7 +107,7 @@ describe('memory serve Postgres pool', () => {
   });
 
   it('the CLI store still owns and closes its own pool', async () => {
-    const { PostgresMemoryStore } = await import('../src/memory/postgres/memoryStorePostgres.js');
+    const { PostgresMemoryStore } = await import('../packages/shared_ptr/src/postgres/memoryStorePostgres.js');
     const store = await PostgresMemoryStore.open({ auth: null });
     await store.close();
     expect(pg.migrations).toBe(1);

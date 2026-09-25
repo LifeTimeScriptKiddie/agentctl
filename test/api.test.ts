@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,9 @@ import { orchestrationRunPath } from '../src/core/orchestrateFlow.js';
 import { okResult } from '../src/adapters/protocol.js';
 import { loadPreset } from '../src/assets.js';
 import { runOrchestrateGoal } from '../src/core/orchestrateFlow.js';
+import { useInProcessBriefing } from './helpers/sharedPtrInProcess.js';
+
+beforeEach(async () => { await useInProcessBriefing(); });
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -68,7 +71,7 @@ describe('injected context approval (executeSingleAsk)', () => {
   const seedBriefing = async (nextAction: string) => {
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-inject-')));
     vi.stubEnv('AGENTCTL_GATEWAY_URL', '');
-    const { MemoryStore } = await import('../src/memory/store.js');
+    const { MemoryStore } = await import('../packages/shared_ptr/src/store.js');
     const store = await MemoryStore.open();
     store.setCheckpoint({
       workspace: 'team-atlas', revision: 0, goal: 'fix tests', state: 'red', blockers: [],
@@ -131,7 +134,7 @@ describe('injected context to gated targets needs --approve-context (N3)', () =>
   const seed = async (nextAction: string) => {
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-n3-')));
     vi.stubEnv('AGENTCTL_GATEWAY_URL', '');
-    const { MemoryStore } = await import('../src/memory/store.js');
+    const { MemoryStore } = await import('../packages/shared_ptr/src/store.js');
     const store = await MemoryStore.open();
     store.setCheckpoint({
       workspace: 'team-atlas', revision: 0, goal: 'fix tests', state: 'red', blockers: [],

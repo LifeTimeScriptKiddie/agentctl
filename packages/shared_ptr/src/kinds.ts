@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 
 const kindEntry = z.object({
   label: z.string().min(1),
@@ -64,13 +64,13 @@ kinds:
 `;
 
 export function kindsConfigPath(): string {
-  return join(agentctlHome(), 'config', 'memory-kinds.yaml');
+  return join(sharedPtrHome(), 'config', 'memory-kinds.yaml');
 }
 
 export function ensureKindsConfig(): string {
   const path = kindsConfigPath();
   if (!existsSync(path)) {
-    mkdirSync(join(agentctlHome(), 'config'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(sharedPtrHome(), 'config'), { recursive: true, mode: 0o700 });
     writeFileSync(path, DEFAULT_YAML, { encoding: 'utf8', mode: 0o600 });
   }
   return path;

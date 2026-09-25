@@ -1,3 +1,4 @@
+import type { AdapterCapabilities } from './schema/capabilities.js';
 /**
  * Stable programmatic API for pi, Hermes, Cursor scripts, and other agents.
  * Prefer these functions over parsing CLI stdout.
@@ -191,7 +192,7 @@ export interface StatusResult {
 
 export interface AgentsResult {
   exitCode: number;
-  agents: Array<{ name: string; transport: string }>;
+  agents: Array<{ name: string; transport: string; capabilities?: AdapterCapabilities }>;
 }
 
 async function routerAgents(registry: AdapterRegistry, exclude: string[] = []): Promise<RouterAgent[]> {
@@ -742,6 +743,8 @@ export async function agentAgents(registry: AdapterRegistry): Promise<AgentsResu
   const agents = registry.names().map((name) => ({
     name,
     transport: registry.get(name).transport,
+    // capabilities let external tools (e.g. shared_ptr's model gate) vet a lane
+    capabilities: registry.get(name).capabilities(),
   }));
   return { exitCode: 0, agents };
 }

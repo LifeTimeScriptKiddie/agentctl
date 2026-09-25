@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { agentctlHome } from '../core/agentHome.js';
+import { sharedPtrHome } from '@shared_ptr/contract/local';
 import type { Classification } from './authContext.js';
 import { assertCanWriteScope, type AuthContext } from './authContext.js';
 import { validateKind } from './kinds.js';

@@ -2,20 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canReadMemory, type AuthContext, type Classification } from '../src/memory/authContext.js';
-import { MemoryStore } from '../src/memory/store.js';
-import { createMemoryServerForTest } from '../src/memory/serve.js';
-import { addServeToken } from '../src/memory/serveTokens.js';
+import { canReadMemory, type AuthContext, type Classification } from '../packages/shared_ptr/src/authContext.js';
+import { MemoryStore } from '../packages/shared_ptr/src/store.js';
+import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
+import { addServeToken } from '../packages/shared_ptr/src/serveTokens.js';
 
 // Security review M2 (+ S5 residual): checkpoints carry an owner/group ACL and
 // are filtered by the caller's access.
 
 const pg = vi.hoisted(() => ({ rows: { checkpoint: null as Record<string, unknown> | null, memories: {} as Record<string, Record<string, unknown>> } }));
 
-vi.mock('../src/memory/postgres/migrate.js', () => ({
+vi.mock('../packages/shared_ptr/src/postgres/migrate.js', () => ({
   runPostgresMigrations: async () => ({ applied: [], pending: [] }),
 }));
-vi.mock('../src/memory/postgres/pgClient.js', () => ({
+vi.mock('../packages/shared_ptr/src/postgres/pgClient.js', () => ({
   sqliteFtsMatchToTsQuery: (m: string) => m,
   loadPgPool: async () => ({
     end: async () => {},
@@ -178,7 +178,7 @@ describe('postgres getCheckpoint auth', () => {
       owner_user_id: null, allowed_groups: '["atlas"]', ...checkpoint,
     };
     pg.rows.memories = { [refId]: memoryRow() };
-    const { PostgresMemoryStore } = await import('../src/memory/postgres/memoryStorePostgres.js');
+    const { PostgresMemoryStore } = await import('../packages/shared_ptr/src/postgres/memoryStorePostgres.js');
     return PostgresMemoryStore.open({ auth });
   }
 

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { resolve, dirname, basename, join } from 'node:path';
 import { registerUsageCommand } from './usage/command.js';
-import { registerMemoryCommands } from './memory/command.js';
+import { registerMemoryClientCommands } from './memory/clientCommands.js';
 import { registerConfigCommands } from './config/command.js';
 import { registerJobsCommands } from './jobs/command.js';
 import { registerGraphCommands } from './graph/command.js';
@@ -17,7 +17,7 @@ import { resolveDefaultOrchestrator, resolveBackupOrchestrator } from './core/or
 import { loadPreferences } from './core/preferences.js';
 import { looksLikeEphemeralAgentctlHome } from './core/agentHome.js';
 import { startRepl } from './repl.js';
-import { runSessiongraphCli } from './memory/sessiongraphBridge.js';
+import { runSessiongraphCli } from './graph/sessiongraphBridge.js';
 import { directorySessionScope } from './core/sessionFlow.js';
 import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { ChatMode } from './schema/session.js';
@@ -118,7 +118,7 @@ async function readStdin(): Promise<string> {
 export function buildProgram(): Command {
   const program = new Command();
   registerSetupCommands(program);
-  registerMemoryCommands(program);
+  registerMemoryClientCommands(program);
   registerUsageCommand(program);
   registerConfigCommands(program);
   registerJobsCommands(program);
@@ -484,7 +484,34 @@ export function buildProgram(): Command {
   return program;
 }
 
-if (isEntrypoint(import.meta.url)) {
+/**
+ * `agentctl memory <cmd>` for anything but `gateway`: team memory moved to
+ * shared_ptr, so run its CLI with the same arguments (stdio passes through).
+ * Keeps existing scripts and the Pi extension (`memory briefing …`) working.
+ */
+async function runMemoryPassthrough(args: string[]): Promise<number> {
+  const { resolveSharedPtrCommand } = await import('./memory/briefingProvider.js');
+  const cmd = resolveSharedPtrCommand();
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolveExit) => {
+    const child = spawn(cmd!.file, [...cmd!.args, ...args], { stdio: 'inherit' });
+    child.on('error', () => {
+      process.stderr.write('agentctl: team memory moved to shared_ptr, and its CLI was not found. '
+        + 'Install shared_ptr, or set SHARED_PTR_BIN to its cli.js.\n');
+      resolveExit(127);
+    });
+    child.on('exit', (code) => resolveExit(code ?? 1));
+  });
+}
+
+function isMemoryPassthrough(argv: string[]): boolean {
+  const [cmd, sub] = argv.slice(2);
+  return cmd === 'memory' && sub !== undefined && sub !== 'gateway' && !sub.startsWith('-');
+}
+
+if (isEntrypoint(import.meta.url) && isMemoryPassthrough(process.argv)) {
+  runMemoryPassthrough(process.argv.slice(3)).then((code) => { process.exitCode = code; });
+} else if (isEntrypoint(import.meta.url)) {
   buildProgram()
     .parseAsync(process.argv)
     .catch((err: unknown) => {

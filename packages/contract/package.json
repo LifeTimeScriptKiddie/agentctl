@@ -6,10 +6,30 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./local": {
+      "types": "./dist/local.d.ts",
+      "import": "./dist/local.js"
+    },
+    "./format": {
+      "types": "./dist/format.d.ts",
+      "import": "./dist/format.js"
+    }
   },
-  "files": ["dist"],
-  "scripts": { "build": "tsc -p tsconfig.json" },
-  "peerDependencies": { "zod": "^4.0.0" },
-  "license": "MIT"
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@agentctl/kit": "0.1.0"
+  }
 }
