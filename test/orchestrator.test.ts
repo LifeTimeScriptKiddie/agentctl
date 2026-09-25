@@ -542,6 +542,77 @@ describe('runOrchestration', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
+  it('does not start planning when already cancelled', async () => {
+    const plan = vi.fn();
+    const result = await runOrchestration('g', deps({ plan }), { shouldAbort: () => true });
+    expect(result.status).toBe('cancelled');
+    expect(plan).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('does not parse interrupted planner output (dryPlan=%s)', async (dryPlan) => {
+    let aborted = false;
+    const plan = vi.fn(async () => {
+      aborted = true;
+      return { text: 'process interrupted', costUsd: 0.1 };
+    });
+    const dispatch = vi.fn();
+    const result = await runOrchestration('g', deps({ plan, dispatch }), {
+      dryPlan, shouldAbort: () => aborted,
+    });
+    expect(result).toMatchObject({ status: 'cancelled', outcomes: [], totalCostUsd: 0.1 });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('handles a rejected planner call after cancellation', async () => {
+    let aborted = false;
+    const plan = async () => {
+      aborted = true;
+      throw new Error('process aborted');
+    };
+    const result = await runOrchestration('g', deps({ plan }), { shouldAbort: () => aborted });
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('keeps outcomes when the verifier call fails, without re-running the worker', async () => {
+    const dispatch = vi.fn(async () => ({ ok: true, text: 'STEP OUTPUT' }));
+    const verify = vi.fn(async () => { throw new Error('cursor verify failed (timeout): slow'); });
+    const res = await runOrchestration('g', deps({ dispatch, verify }), { maxRetries: 2 });
+    expect(res.status).toBe('failed');
+    expect(res.outcomes[0]).toMatchObject({ id: 's1', ok: false });
+    expect(res.outcomes[0]!.note).toContain('verifier failed');
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('returns completed outcomes and the reason when synthesis fails', async () => {
+    const synthesize = async () => { throw new Error('cursor synth failed (usage_limit): quota'); };
+    const res = await runOrchestration('g', deps({ synthesize }), {});
+    expect(res).toMatchObject({ status: 'failed', synthesis: null });
+    expect(res.outcomes[0]).toMatchObject({ id: 's1', ok: true });
+    expect(res.error).toContain('usage_limit');
+  });
+
+  it('never reports an unaudited synthesis as done', async () => {
+    const synthesize = async () => 'FINAL';
+    const verifySynthesis = async () => { throw new Error('verify failed (timeout)'); };
+    const res = await runOrchestration('g', deps({ synthesize, verifySynthesis }), {});
+    expect(res).toMatchObject({ status: 'failed', synthesis: 'FINAL' });
+    expect(res.error).toContain('timeout');
+  });
+
+  it('keeps outcomes when the replan call fails', async () => {
+    const verify = async () => ({ passed: false, feedback: 'no' });
+    const replan = async () => { throw new Error('replan failed (transport_error)'); };
+    const res = await runOrchestration('g', deps({ verify, replan }), { maxReplans: 1, maxRetries: 0 });
+    expect(res.status).toBe('failed');
+    expect(res.outcomes).toHaveLength(1);
+    expect(res.error).toContain('transport_error');
+  });
+
+  it('preserves planner call errors when not cancelled', async () => {
+    const plan = async () => { throw new Error('provider unavailable'); };
+    await expect(runOrchestration('g', deps({ plan }))).rejects.toThrow('provider unavailable');
+  });
+
   it('replan: on failure with maxReplans, the planner is asked to revise', async () => {
     const plan = async () => '{"goal":"g","steps":[{"id":"a","instruction":"A","acceptance":"x"}]}';
     const verify = vi.fn(async () => ({ passed: false, feedback: 'no' }));

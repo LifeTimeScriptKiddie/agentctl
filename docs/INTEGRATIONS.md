@@ -1,6 +1,6 @@
 # Shared agentctl entry point
 
-Codex, Claude Code and Cursor can invoke `agentctl` through their terminal/shell tool. Pi uses `/agentctl`. From a terminal, run the same CLI directly; `agentctl chat` provides the interactive interface. All clients use the same routing policy. The invoking client owns intent and approvals; Codex/Astra remains the default orchestration backend regardless of caller.
+Codex, Claude Code and Cursor can invoke `agentctl` through their terminal/shell tool. Pi uses `/agentctl`. From a terminal, run the same CLI directly; `agentctl chat` provides a conversational lead with selective delegation. All clients use the configured adapters and approval policy. The invoking client owns intent and approvals; lead/orchestrator preferences come from setup. Explicit heavy orchestration falls back to Codex/Astra only when no preference exists. See [chat behavior, resume and SessionGraph](CHAT.md).
 
 ```sh
 # Preview routing without invoking a model

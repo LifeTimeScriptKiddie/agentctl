@@ -6,6 +6,8 @@ import {
   newSession, saveSession, latestSession, boundTranscript, addTurn,
 } from '../src/core/session.js';
 import { resolveSession, renderTranscript } from '../src/commands.js';
+import { directorySessionScope } from '../src/core/sessionFlow.js';
+import { loadSession } from '../src/core/session.js';
 
 describe('scoped session resume', () => {
   let home: string;
@@ -16,6 +18,33 @@ describe('scoped session resume', () => {
   afterEach(() => {
     delete process.env.AGENTCTL_HOME;
     rmSync(home, { recursive: true, force: true });
+  });
+
+  it('falls back to unscoped sessions when the scope is only the working directory', () => {
+    saveSession(newSession(100, 'older-unscoped', null), 100);
+    expect(resolveSession({ resume: true, scope: '/work/repo', implicitScope: true })?.record.id).toBe('older-unscoped');
+    expect(resolveSession({ resume: true, scope: '/work/repo' })).toBeNull();
+    saveSession(newSession(200, 'here', '/work/repo'), 200);
+    expect(resolveSession({ resume: true, scope: '/work/repo', implicitScope: true })?.record.id).toBe('here');
+  });
+
+  it('opens a named session from another directory unless the scope was chosen explicitly', () => {
+    saveSession(newSession(100, 'work', '/work/a'), 100);
+    expect(resolveSession({ session: 'work', scope: '/work/b', implicitScope: true })?.record.scope).toBe('/work/a');
+    expect(() => resolveSession({ session: 'work', scope: 'team-b' })).toThrow('belongs to scope');
+  });
+
+  it('derives a valid, distinct scope from very long directory paths', () => {
+    const deep = `/Users/x/${'nested-directory/'.repeat(20)}`;
+    const a = directorySessionScope(`${deep}a`);
+    const b = directorySessionScope(`${deep}b`);
+    expect(a.length).toBeLessThanOrEqual(200);
+    expect(a).not.toBe(b);
+    expect(directorySessionScope('/short/path')).toBe('/short/path');
+    const sess = resolveSession({ session: 'deep', scope: a, implicitScope: true })!;
+    sess.persist(sess.record);
+    sess.persist(sess.record);
+    expect(loadSession('deep')?.scope).toBe(a);
   });
 
   it('resumes the latest session within a scope only', () => {
