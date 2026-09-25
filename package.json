@@ -30,7 +30,7 @@
     "scripts/postinstall-hint.mjs"
   ],
   "scripts": {
-    "build": "npm run gen:specs && tsc && node scripts/copy-assets.mjs && node scripts/build-pi.mjs",
+    "build": "npm run build:packages && npm run gen:specs && tsc && node scripts/copy-assets.mjs && node scripts/build-pi.mjs",
     "gen:specs": "tsx scripts/gen-specs.ts",
     "prepare": "npm run build",
     "postinstall": "node scripts/postinstall-hint.mjs || true",
@@ -38,10 +38,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "check": "tsc --noEmit && vitest run"
+    "check": "npm run build:packages --silent && tsc --noEmit && vitest run",
+    "build:packages": "npm run build -w @agentctl/kit -w @shared_ptr/contract",
+    "pretest": "npm run build:packages --silent"
   },
   "dependencies": {
+    "@agentctl/kit": "0.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@shared_ptr/contract": "1.0.0",
     "commander": "^12.1.0",
     "execa": "^9.5.0",
     "neo-blessed": "^0.2.0",
@@ -87,5 +91,12 @@
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "bundleDependencies": [
+    "@agentctl/kit",
+    "@shared_ptr/contract"
+  ]
 }

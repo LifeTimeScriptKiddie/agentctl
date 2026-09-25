@@ -1,3 +1,4 @@
+import { CONTRACT_VERSION } from '@shared_ptr/contract';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -336,6 +337,13 @@ export async function handleMemoryHttpRequest(
 
   if (isHealth) {
     json(res, 200, { ok: true, service: 'agentctl-memory-serve', version: 1 });
+    return;
+  }
+
+  // Version handshake (unauthenticated, like /health): clients check the
+  // contract version before relying on any other route.
+  if (method === 'GET' && url.pathname === '/v1/meta') {
+    json(res, 200, { service: 'shared_ptr', contract_version: CONTRACT_VERSION });
     return;
   }
 
