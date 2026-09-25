@@ -13,6 +13,7 @@ import { presetsDir } from '../assets.js';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { featureEnabled } from '../core/preferences.js';
 
 /** Expand a leading `~` so preset workdirs stay machine-portable. */
 export function expandHome(p: string): string {
@@ -213,10 +214,12 @@ export class SubprocessAdapter implements AgentAdapter {
     }
     const ladder = this.preset.models?.stepDown ?? [];
     const laddered = ladder.length > 0;
+    // capCache off: only a model ladder uses the cache (to step down), as before.
+    const cacheCaps = laddered || featureEnabled('capCache');
     let model = resolveModel(this.preset, request.model).model;
     // Every lane reads the cap cache, not just laddered ones: a lane with no
     // ladder that is known-capped fails fast instead of burning a call.
-    let limits = loadLimits();
+    let limits = cacheCaps ? loadLimits() : {};
     const tried: string[] = [];
     const skipped: string[] = [];
     let usage = ZERO_USAGE;
@@ -226,7 +229,7 @@ export class SubprocessAdapter implements AgentAdapter {
       const capped = exhaustedUntil(limits, this.quotaKey, model, now);
       const nextIfCapped = nextModel(ladder, model);
 
-      if (capped && !onLadder(ladder, model)) {
+      if (capped && !onLadder(ladder, model) && cacheCaps) {
         const reason = `usage limit on ${this.name}${model ? `/${model}` : ''} until ${capped.toISOString()} (cached; call skipped)`;
         return failResult({ adapter: this.name, transport: this.transport,
           failureClass: 'usage_limit', reason, stderr: reason, durationMs: 0, model, steppedDown: 0 });
@@ -263,9 +266,11 @@ export class SubprocessAdapter implements AgentAdapter {
         return { ...result, usage, steppedDown: skipped.length + tried.length - 1 };
       }
 
-      {
-        // Cache the cap for every lane so later calls, the router and the
-        // orchestrator roster can avoid it until it resets.
+      // A laddered lane caches every cap (it has somewhere to step). A lane with
+      // no ladder fails fast until reset, so it caches only a cap whose reset
+      // time the CLI stated: a bare 429 or rate-limit guess must not lock out a
+      // lane for the default cooldown.
+      if (cacheCaps && (onLadder(ladder, model) || limit.resetAt)) {
         limits = updateLimits((current) => markExhausted(
           current,
           this.quotaKey,

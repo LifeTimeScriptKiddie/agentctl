@@ -16,7 +16,7 @@
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { agentctlHome } from '../core/agentHome.js';
-import { SIGNAL_DEFAULTS, type RouterAgent } from '../core/router.js';
+import { GENERAL_LANES, SIGNAL_DEFAULTS, type RouterAgent } from '../core/router.js';
 import {
   loadPreferences, preferencesPath, routingPrefer, savePreferences, type Preferences,
 } from '../core/preferences.js';
@@ -68,19 +68,32 @@ function recordVerdict(e: Evidence, agent: unknown, ok: unknown, note: unknown):
 export function gatherEvidence(home: string = agentctlHome(), sinceMs = 0): Evidence {
   const e: Evidence = {};
 
+  // A job-run orchestration logs its steps as job events AND may leave a run
+  // file; count it once (from the job) by skipping run files for job goals.
+  const jobsDir = join(home, 'jobs');
+  const jobGoals = new Set<string>();
+  if (existsSync(jobsDir)) {
+    for (const j of readdirSync(jobsDir)) {
+      try {
+        const input = JSON.parse(readFileSync(join(jobsDir, j, 'input.json'), 'utf8')) as { goal?: unknown };
+        if (typeof input.goal === 'string') jobGoals.add(input.goal);
+      } catch { /* job without input: nothing to dedupe */ }
+    }
+  }
+
   const orchDir = join(home, 'orchestrations');
   if (existsSync(orchDir)) {
     for (const f of readdirSync(orchDir).filter((x) => x.endsWith('.json'))) {
       const path = join(orchDir, f);
       if (statSync(path).mtimeMs < sinceMs) continue;
       try {
-        const run = JSON.parse(readFileSync(path, 'utf8')) as { outcomes?: Array<Record<string, unknown>> };
+        const run = JSON.parse(readFileSync(path, 'utf8')) as { goal?: string; outcomes?: Array<Record<string, unknown>> };
+        if (run.goal && jobGoals.has(run.goal)) continue;
         for (const o of run.outcomes ?? []) recordVerdict(e, o.agent, o.ok, o.note);
       } catch { /* unreadable run file: skip */ }
     }
   }
 
-  const jobsDir = join(home, 'jobs');
   if (existsSync(jobsDir)) {
     for (const j of readdirSync(jobsDir)) {
       for (const ev of readJsonLines(join(jobsDir, j, 'events.ndjson'))) {
@@ -141,7 +154,9 @@ export function proposeRouting(evidence: Evidence, current: Record<string, reado
     const bad = from.filter((n) => isBad(evidence[n]));
     const keep = from.filter((n) => !bad.includes(n));
     const promote = roster
-      .filter((a) => !from.includes(a.name) && a.name !== 'dry_run')
+      // specialist lanes (repo writer, research, image, browser) are never promoted
+      // into a signal: they would take tasks their guards were meant to keep away
+      .filter((a) => !from.includes(a.name) && GENERAL_LANES.includes(a.name))
       .filter((a) => !sig.requires || a.capabilities[sig.requires])
       .filter((a) => !isBad(evidence[a.name]) && (opsShare(evidence[a.name]) ?? 0) >= PROMOTE_MIN_OPS)
       .sort((x, y) => (opsShare(evidence[y.name]) ?? 0) - (opsShare(evidence[x.name]) ?? 0))
@@ -182,7 +197,7 @@ export interface TuneResult {
   evidence: Evidence;
   changes: TuneChange[];
   bench: { before: RoutingBenchResult; after: RoutingBenchResult };
-  /** hard benchmark cases the candidate would newly break; non-empty = rejected */
+  /** hard cases a proposed change would newly break; those changes were dropped */
   regressions: string[];
   applied: boolean;
   backup: string | null;
@@ -201,17 +216,24 @@ export function tune(opts: {
   if (!prefs) throw new Error(`no preferences at ${preferencesPath(home)}; run \`agentctl setup\` first`);
   const evidence = gatherEvidence(home, opts.sinceMs ?? 0);
   const current = routingPrefer(prefs);
-  const changes = proposeRouting(evidence, current, opts.roster);
+  const proposed = proposeRouting(evidence, current, opts.roster);
 
-  const candidate: Record<string, string[]> = { ...current };
-  for (const c of changes) candidate[c.signal] = c.to;
+  // Gate each change on its own so one bad reorder can't sink the good ones.
   const before = runRoutingBench(opts.cases, opts.roster, current);
+  const candidate: Record<string, string[]> = { ...current };
+  const changes: TuneChange[] = [];
+  const regressions: string[] = [];
+  for (const c of proposed) {
+    const trial = { ...candidate, [c.signal]: c.to };
+    const broke = newFailures(before, runRoutingBench(opts.cases, opts.roster, trial));
+    if (broke.length) regressions.push(...broke.map((id) => `${id} (${c.signal})`));
+    else { candidate[c.signal] = c.to; changes.push(c); }
+  }
   const after = runRoutingBench(opts.cases, opts.roster, candidate);
-  const regressions = newFailures(before, after);
 
   let applied = false;
   let backup: string | null = null;
-  if (opts.apply && changes.length > 0 && regressions.length === 0) {
+  if (opts.apply && changes.length > 0) {
     const now = opts.now ?? new Date();
     const dir = join(home, 'config-backups');
     mkdirSync(dir, { recursive: true, mode: 0o700 });

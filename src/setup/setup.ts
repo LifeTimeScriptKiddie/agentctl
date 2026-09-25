@@ -12,6 +12,8 @@ import { looksLikeEphemeralAgentctlHome } from '../core/agentHome.js';
 import {
   type CostTier,
   type Preferences,
+  FEATURES,
+  FEATURE_DEFAULTS,
   loadPreferences,
   preferredOrchestrator,
   preferencesPath,
@@ -26,6 +28,8 @@ export interface AgentProbe {
   models: string[];
   defaultModel: string | null;
   optional: boolean;
+  /** how to install/sign in, from the preset's setupHint */
+  hint: string | null;
 }
 
 export interface SetupPlan {
@@ -79,7 +83,7 @@ const ORCH_BACKUP_MODELS: Record<string, string> = {
 };
 
 export async function probeAgents(registry: AdapterRegistry): Promise<AgentProbe[]> {
-  const health = await registry.healthcheck();
+  const health = await registry.healthcheck(undefined, { ignoreCaps: true });
   return registry.names().map((name) => {
     const preset = registry.getPreset(name);
     const h = health[name];
@@ -90,6 +94,7 @@ export async function probeAgents(registry: AdapterRegistry): Promise<AgentProbe
       models: preset?.models?.options ?? (preset?.model ? [preset.model] : []),
       defaultModel: preset?.models?.default ?? preset?.model ?? null,
       optional: Boolean(preset?.optional),
+      hint: preset?.setupHint ?? null,
     };
   });
 }
@@ -191,6 +196,9 @@ export function planAutoSetup(
     );
   }
 
+  for (const p of probes.filter((x) => !x.available && !x.optional && x.hint)) {
+    summary.push(`to use ${p.name}: ${p.hint}`);
+  }
   const availableCount = probes.filter((p) => p.available).length;
   if (availableCount === 0) {
     summary.push('warning: no agent CLIs detected on PATH — install/sign in to Codex, Cursor, Claude, or Pi, then re-run setup');
@@ -207,8 +215,9 @@ export function planAutoSetup(
       orchestratorBackup: backup,
       agents,
       tier,
-      // Re-running setup must not discard tuned routing overrides.
+      // Re-running setup must not discard tuned routing overrides or feature choices.
       routing: loadPreferences()?.routing ?? { prefer: {} },
+      features: loadPreferences()?.features ?? { ...FEATURE_DEFAULTS },
     },
     summary,
     probes,
@@ -239,21 +248,37 @@ async function pickIndex(
   return n - 1;
 }
 
+async function askYesNo(rl: ReturnType<typeof createInterface>, question: string, def: boolean): Promise<boolean> {
+  const raw = await ask(rl, `${question} [${def ? 'Y/n' : 'y/N'}]: `);
+  if (!raw) return def;
+  return /^y/i.test(raw);
+}
+
 /** Interactive TTY wizard. */
 export async function runInteractiveSetup(
   registry: AdapterRegistry,
   opts: { tier?: CostTier } = {},
 ): Promise<SetupPlan> {
-  const probes = await probeAgents(registry);
+  // dry_run is a canned test lane, not a tool a user sets up
+  const probes = (await probeAgents(registry)).filter((p) => p.name !== 'dry_run');
   const available = probes.filter((p) => p.available);
   process.stderr.write('\nagentctl setup — detect agents and choose models\n\n');
   process.stderr.write('Detected:\n');
   for (const p of probes) {
     const mark = p.available ? '✓' : '·';
-    const models = p.models.length ? ` models: ${p.models.slice(0, 5).join(', ')}${p.models.length > 5 ? '…' : ''}` : '';
-    process.stderr.write(`  ${mark} ${p.name}${p.available ? '' : ` (${p.detail || 'not found'})`}${models}\n`);
+    const models = p.available && p.models.length ? ` models: ${p.models.slice(0, 5).join(', ')}${p.models.length > 5 ? '…' : ''}` : '';
+    process.stderr.write(`  ${mark} ${p.name}${p.available ? '' : ' — not set up'}${models}\n`);
+    if (!p.available && p.hint) process.stderr.write(`      ${p.hint}\n`);
   }
   process.stderr.write('\n');
+  if (available.length === 0) {
+    process.stderr.write(
+      'No agent CLI is ready yet. agentctl routes work to tools you already use (Claude Code, Codex, Cursor or Pi);\n'
+        + 'set up at least one using the hints above, then run `agentctl setup` again.\n'
+        + 'Saving defaults for now so commands can explain what is missing.\n\n',
+    );
+    return planAutoSetup(probes, { tier: opts.tier ?? 'balanced', source: 'auto' });
+  }
 
   if (!process.stdin.isTTY || !process.stderr.isTTY) {
     process.stderr.write('No TTY — running auto optimization instead. Re-run with a terminal for prompts.\n');
@@ -272,7 +297,18 @@ export async function runInteractiveSetup(
     const tier = tierChoices[tierIdx] ?? 'balanced';
 
     const auto = planAutoSetup(probes, { tier, source: 'interactive' });
-    const orchChoices = (available.length ? available : probes)
+
+    process.stderr.write('\nWhich of your tools should agentctl use? (Enter keeps it on)\n');
+    const chosen: AgentProbe[] = [];
+    for (const probe of available) {
+      const on = await askYesNo(rl, `  use ${probe.name}?`, true);
+      if (on) chosen.push(probe);
+    }
+    if (chosen.length === 0) {
+      process.stderr.write('  none chosen — keeping all detected tools on; turn them off later with `agentctl setup`.\n');
+      chosen.push(...available);
+    }
+    const orchChoices = chosen
       .filter((p) => ORCH_CANDIDATES.includes(p.name as (typeof ORCH_CANDIDATES)[number]) || p.available)
       .map((p) => p.name);
     const uniqueOrch = [...new Set(orchChoices.length ? orchChoices : [auto.preferences.orchestrator.agent])];
@@ -320,7 +356,10 @@ export async function runInteractiveSetup(
     }
 
     const agents: Preferences['agents'] = { ...auto.preferences.agents };
-    for (const probe of available) {
+    for (const probe of available.filter((p) => !chosen.includes(p))) {
+      agents[probe.name] = { enabled: false, defaultModel: probe.defaultModel };
+    }
+    for (const probe of chosen) {
       if (probe.name === orchAgent) {
         agents[probe.name] = { enabled: true, defaultModel: orchModel };
         continue;
@@ -343,6 +382,14 @@ export async function runInteractiveSetup(
       };
     }
 
+    process.stderr.write('\nOptional features (Enter keeps the default):\n');
+    const current = loadPreferences()?.features ?? FEATURE_DEFAULTS;
+    const features = { ...current };
+    for (const f of FEATURES) {
+      process.stderr.write(`  ${f.name}: ${f.summary}\n`);
+      features[f.name] = await askYesNo(rl, `    enable ${f.name}?`, current[f.name]);
+    }
+
     const preferences: Preferences = {
       version: 1,
       updatedAt: new Date().toISOString(),
@@ -352,6 +399,7 @@ export async function runInteractiveSetup(
       agents,
       tier,
       routing: loadPreferences()?.routing ?? { prefer: {} },
+      features,
     };
 
     const summary = [
@@ -364,6 +412,7 @@ export async function runInteractiveSetup(
         const status = p.available ? 'available' : 'unavailable';
         return `${p.name}: ${status}${a?.defaultModel ? ` → ${a.defaultModel}` : ''}${a?.enabled === false ? ' (disabled)' : ''}`;
       }),
+      `features: ${FEATURES.map((f) => `${f.name} ${features[f.name] ? 'on' : 'off'}`).join(', ')}`,
     ];
 
     return { preferences, summary, probes };

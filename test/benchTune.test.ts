@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,7 @@ function prefs(prefer: Record<string, string[]> = {}): Preferences {
     version: 1, updatedAt: '2026-09-24T00:00:00.000Z', source: 'manual',
     orchestrator: { agent: 'cursor', model: 'composer-2.5' }, agents: {}, tier: 'balanced',
     routing: { prefer },
+    features: { usageLedger: true, routeLog: true, sessionTraces: true, capCache: true, selfTune: false },
   };
 }
 
@@ -40,6 +41,31 @@ function seedCalls(agent: string, ok: number, failed: number, failureClass = 'no
   ];
   writeFileSync(join(home, 'usage', 'calls.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n', { flag: 'a' });
 }
+
+describe('features', () => {
+  it('defaults: everything on except selfTune; a saved choice wins', async () => {
+    const { featureEnabled } = await import('../src/core/preferences.js');
+    expect(featureEnabled('routeLog', null)).toBe(true);
+    expect(featureEnabled('selfTune', null)).toBe(false);
+    const p = { ...prefs(), features: { usageLedger: true, routeLog: false, sessionTraces: true, capCache: true, selfTune: true } };
+    expect(featureEnabled('routeLog', p)).toBe(false);
+    expect(featureEnabled('selfTune', p)).toBe(true);
+  });
+
+  it('routeLog off: logRoute writes nothing', async () => {
+    const { logRoute } = await import('../src/core/orchestrateFlow.js');
+    const prev = process.env.AGENTCTL_HOME;
+    process.env.AGENTCTL_HOME = home;
+    try {
+      savePreferences({ ...prefs(), features: { usageLedger: true, routeLog: false, sessionTraces: true, capCache: true, selfTune: false } }, home);
+      logRoute({ task: 'secret task text' });
+      expect(existsSync(join(home, 'route-log.jsonl'))).toBe(false);
+      savePreferences(prefs(), home);
+      logRoute({ task: 'ok' });
+      expect(existsSync(join(home, 'route-log.jsonl'))).toBe(true);
+    } finally { process.env.AGENTCTL_HOME = prev; }
+  });
+});
 
 describe('router overrides', () => {
   it('routing.prefer reorders a signal but keeps its capability guard', () => {
@@ -142,12 +168,62 @@ describe('tune', () => {
     seedCalls('cursor', 9, 1);
     const strict = [{ id: 'web-must-be-agy', task: 'search the web for the latest news', mustHave: [], notAgents: ['cursor'] }];
     const r = tune({ cases: strict, roster, apply: true, home });
-    expect(r.regressions).toEqual(['web-must-be-agy']);
+    expect(r.regressions).toEqual(['web-must-be-agy (search)']);
+    expect(r.changes).toEqual([]);
     expect(r.applied).toBe(false);
     expect(routingPrefer(loadPreferences(home))).toEqual({});
   });
 
+  it('never promotes a specialist lane (codex_write) into a general signal', () => {
+    seedRejections('cursor', 5);
+    seedCalls('codex_write', 20, 0);
+    const changes = proposeRouting(gatherEvidence(home), {}, roster);
+    for (const c of changes) expect(c.to).not.toContain('codex_write');
+  });
+
+  it('counts a job-run orchestration once, not from both the job and its run file', () => {
+    seedRejections('agy', 2);
+    const goal = 'g';
+    mkdirSync(join(home, 'jobs', 'job_1'), { recursive: true });
+    writeFileSync(join(home, 'jobs', 'job_1', 'input.json'), JSON.stringify({ kind: 'orchestrate', goal }));
+    writeFileSync(join(home, 'jobs', 'job_1', 'events.ndjson'), [0, 1].map((i) => JSON.stringify({
+      at: new Date().toISOString(), type: 'step', step: `s${i}`, agent: 'agy', ok: false, note: 'rejected: thin',
+    })).join('\n') + '\n');
+    expect(gatherEvidence(home).agy!.rejected).toBe(2);
+  });
+
+  it('keeps the good changes when another proposed change breaks the bench', () => {
+    savePreferences(prefs(), home);
+    seedRejections('agy', 5);
+    seedRejections('agy_image', 5);
+    seedCalls('cursor', 9, 1);
+    const strict = [{ id: 'image-not-cursor', task: 'generate a hero image of a lighthouse', mustHave: [], notAgents: ['cursor'] }];
+    const r = tune({ cases: strict, roster, apply: true, home });
+    expect(r.changes.map((c) => c.signal)).toContain('search');
+    expect(r.regressions.some((x) => x.includes('(image)'))).toBe(true);
+    expect(routingPrefer(loadPreferences(home)).search?.[0]).toBe('cursor');
+    expect(routingPrefer(loadPreferences(home)).image).toBeUndefined();
+  });
+
   it('rejects when there are no preferences to tune', () => {
     expect(() => tune({ cases: cases.routing, roster, apply: false, home })).toThrow(/agentctl setup/);
+  });
+});
+
+describe('disabled lanes', () => {
+  it('route never picks a lane switched off in preferences', async () => {
+    const { agentRoute } = await import('../src/api.js');
+    const prev = process.env.AGENTCTL_HOME;
+    process.env.AGENTCTL_HOME = home;
+    try {
+      savePreferences({ ...prefs(), agents: { agy: { enabled: false, defaultModel: null } } }, home);
+      const reg = AdapterRegistry.fromPackaged();
+      const spy = vi.spyOn(reg, 'healthcheck').mockResolvedValue(
+        Object.fromEntries(reg.names().map((n) => [n, { available: true, detail: '', checkedVia: 'test' }])),
+      );
+      const r = await agentRoute(reg, { task: 'search the web for the latest Node.js LTS release', dryRoute: true });
+      expect(r.route.agent).not.toBe('agy');
+      spy.mockRestore();
+    } finally { process.env.AGENTCTL_HOME = prev; }
   });
 });

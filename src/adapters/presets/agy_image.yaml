@@ -2,6 +2,7 @@ name: agy_image
 family: subprocess
 adapter: agy_image
 transport: subprocess
+setupHint: "Needs `agy` plus the NanoBanana extension. Optional: image generation."
 hideWhenUnavailable: true
 parse: agy_json
 optional: true

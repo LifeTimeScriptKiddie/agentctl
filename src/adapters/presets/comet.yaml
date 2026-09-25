@@ -1,6 +1,7 @@
 name: comet
 family: browser
 transport: browser
+setupHint: "Run `agentctl comet setup` to sign in to Perplexity once in the dedicated browser. Optional."
 parse: text
 optional: true
 # Drives perplexity.ai in a dedicated, Playwright-controlled browser. NOTE: Comet

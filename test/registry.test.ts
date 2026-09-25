@@ -131,6 +131,13 @@ describe('mergeConfig + healthcheck', () => {
     expect(health.cursor?.available).toBe(true);
   });
 
+  it('setup probes ignore caps so a temporary limit is never saved as disabled', async () => {
+    runMock.mockResolvedValue({ exitCode: 0, stdout: '/usr/bin/codex', stderr: '', timedOut: false, failed: false });
+    saveLimits(markExhausted({}, 'codex', 'gpt-5.6-luna', new Date(Date.now() + 3_600_000), 'structured'));
+    const health = await AdapterRegistry.fromPackaged().healthcheck(undefined, { ignoreCaps: true });
+    expect(health.codex?.available).toBe(true);
+  });
+
   it('lanes on one provider login share a cap (codex caps codex_write)', async () => {
     runMock.mockResolvedValue({ exitCode: 0, stdout: '/usr/bin/codex', stderr: '', timedOut: false, failed: false });
     saveLimits(markExhausted({}, 'codex', 'gpt-5.6-luna', new Date(Date.now() + 3_600_000), 'structured'));

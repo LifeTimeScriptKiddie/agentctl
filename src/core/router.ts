@@ -292,6 +292,9 @@ const FALLBACK_ORDER = ['cursor', 'codex', 'claude', 'pi'];
 /** Agents never chosen by general routing unless a signal explicitly prefers them. */
 const NON_GENERAL = new Set(['dry_run', 'comet', 'agy', 'agy_image', 'codex_write']);
 
+/** Lanes the router may pick with no signal; `agentctl tune` promotes only these. */
+export const GENERAL_LANES: readonly string[] = FALLBACK_ORDER.filter((n) => !NON_GENERAL.has(n));
+
 function hasCap(a: RouterAgent, cap: keyof AdapterCapabilities): boolean {
   return Boolean(a.capabilities[cap]);
 }

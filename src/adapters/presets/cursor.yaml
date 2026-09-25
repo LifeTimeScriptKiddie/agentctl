@@ -1,6 +1,7 @@
 name: cursor
 family: subprocess
 transport: subprocess
+setupHint: "Install Cursor's command-line agent (`cursor-agent`), then run `cursor-agent login`."
 # Structured envelope preserves any usage the CLI reports; absent usage stays unknown.
 parse: cursor_json
 promptDelivery: arg

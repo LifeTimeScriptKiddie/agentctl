@@ -1,6 +1,7 @@
 name: hermes
 family: docker_exec
 transport: docker_exec
+setupHint: "Start the `hermes-gateway-local` Docker container (see docs/HERMES-INTEGRATION.md). Optional sandbox shell."
 parse: text
 containerResolve:
   preferName: hermes-gateway-local      # the persistent gateway container

@@ -252,8 +252,18 @@ describe('SubprocessAdapter step-down', () => {
     expect(second.stderr).toMatch(/cached; call skipped/);
   });
 
+  it('a no-ladder lane does not cache a limit with no stated reset (a bare 429 is transient)', async () => {
+    runMock.mockResolvedValue({ exitCode: 1, stdout: '', stderr: 'HTTP 429 too many requests', timedOut: false });
+    const adapter = new SubprocessAdapter(loadPreset('cursor'));
+    const r = await adapter.invoke(req({ model: 'composer-2.5' }));
+    expect(r.failureClass).toBe('usage_limit');
+    expect(exhaustedUntil(loadLimits(), 'cursor', 'composer-2.5')).toBeNull();
+    await adapter.invoke(req({ model: 'composer-2.5' }));
+    expect(runMock).toHaveBeenCalledTimes(2);
+  });
+
   it('a different model on a capped no-ladder lane is still tried', async () => {
-    const events = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit."}}';
+    const events = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again in 30 minutes."}}';
     runMock.mockResolvedValueOnce({ exitCode: 1, stdout: events, stderr: '', timedOut: false, failed: true });
     runMock.mockResolvedValueOnce({ exitCode: 0, stdout: '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}', stderr: '', timedOut: false });
     const adapter = new SubprocessAdapter(loadPreset('codex'));
@@ -408,8 +418,8 @@ describe('persistent limit memory', () => {
     expect(modelOf(0)).toBe('fable');
   });
 
-  it('ladder-less agents record their cap so later calls and routing skip them', async () => {
-    runMock.mockResolvedValue(limitRun);
+  it('ladder-less agents record a cap with a stated reset so later calls and routing skip them', async () => {
+    runMock.mockResolvedValue(limitRun); // "…will reset at 3pm"
     const adapter = new SubprocessAdapter(loadPreset('cursor'));
     await adapter.invoke(req({ model: 'composer-2.5' }));
 
