@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iseeagents.local/contracts/sessiongraph-generic-event.v1.schema.json",
+  "title": "iseeagents to SessionGraph generic event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "parent_id",
+    "parent_ids",
+    "parent_relations",
+    "kind",
+    "role",
+    "name",
+    "timestamp",
+    "content",
+    "is_error"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "parent_id": { "type": ["string", "null"] },
+    "parent_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "parent_relations": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1 },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "kind": { "type": "string", "minLength": 1 },
+    "role": { "type": ["string", "null"] },
+    "name": { "type": ["string", "null"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "content": { "type": "string" },
+    "is_error": { "type": "boolean" },
+    "usage": {
+      "type": "object",
+      "additionalProperties": { "type": "number", "minimum": 0 }
+    },
+    "iseeagents": {
+      "type": "object",
+      "required": ["seamVersion", "schemaVersion", "sessionId", "parentEventIds", "lineageEventIds"],
+      "properties": {
+        "seamVersion": { "const": "iseeagents.sessiongraph.seam.v2" },
+        "schemaVersion": { "const": "iseeagents.context.v1" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "parentEventIds": { "type": "array", "items": { "type": "string" } },
+        "lineageEventIds": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
