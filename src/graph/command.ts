@@ -53,6 +53,26 @@ async function agentctlRepo(explicit?: string): Promise<string> {
   return r.stdout.trim();
 }
 
+/**
+ * Files a self-improvement branch must not change: the benchmark it is scored
+ * against and the safety gates. A loop that can edit its own test or loosen
+ * its own approval check can "pass" anything.
+ */
+export const PROTECTED_PATHS: readonly string[] = [
+  'src/bench/cases.yaml',
+  'test/benchTune.test.ts',
+  'src/approval.ts',
+  'src/core/policy.ts',
+  'src/core/configTrust.ts',
+  'src/core/untrusted.ts',
+  'src/schema/capabilities.ts',
+  'test/setup.ts',
+];
+
+export function protectedTouched(changed: readonly string[]): string[] {
+  return changed.filter((f) => PROTECTED_PATHS.includes(f));
+}
+
 export function registerGraphCommands(program: Command): void {
   const graph = program.command('graph')
     .description('SessionGraph analysis of agentctl usage and harness behavior, and graph-engineered improvements (JSON output)');
@@ -115,17 +135,49 @@ export function registerGraphCommands(program: Command): void {
         `Likely files: ${p.targets.join('; ')}.`,
         'Constraints: keep the change minimal and focused on this proposal; add or update tests for it;',
         'run `npm run check` and make it pass; do not commit, push or touch unrelated files.',
+        `Never modify these protected files (the benchmark and safety gates): ${PROTECTED_PATHS.join(', ')}.`,
       ].join('\n');
       const job = startJob({ kind: 'orchestrate', goal, approve: true, timeoutSeconds: 900 }, { caller: 'graph', cwd: worktree });
       emit('apply', 0, {
         proposal: p.id, branch, worktree, job_id: job.id,
         next: [
           `agentctl jobs wait ${job.id} --timeout 600`,
-          `review and test the diff in ${worktree}`,
+          `agentctl graph check-branch ${worktree}   (protected files untouched, npm run check, bench)`,
+          `review the diff in ${worktree}`,
           'rebuild, re-run a comparable workload, then: agentctl graph analyze --out <after-dir>',
           `agentctl graph compare ${dir} <after-dir> --proposal ${p.id}`,
         ],
       });
+    })());
+
+  graph.command('check-branch')
+    .argument('<worktree>', 'worktree of a graph-apply branch')
+    .option('--base <ref>', 'branch the change is measured against', 'main')
+    .description('gate a code proposal: no protected file changed, `npm run check` passes, bench has no hard failures')
+    .action((worktree: string, o: { base: string }) => guard('check-branch', async () => {
+      const git = (...args: string[]) => run('git', ['-C', worktree, ...args], { timeoutMs: 60_000 });
+      const committed = await git('diff', '--name-only', `${o.base}...HEAD`);
+      const working = await git('status', '--porcelain', '--untracked-files=all');
+      if (committed.exitCode !== 0 || working.exitCode !== 0) throw new Error(`git failed in ${worktree}: ${committed.stderr || working.stderr}`);
+      const changed = [...new Set([
+        ...committed.stdout.split('\n'),
+        ...working.stdout.split('\n').map((l) => l.slice(3).split(' -> ').pop() ?? ''),
+      ].map((f) => f.trim()).filter(Boolean))];
+      const touched = protectedTouched(changed);
+      const gates: Array<{ gate: string; pass: boolean; detail: string }> = [
+        { gate: 'protected files', pass: touched.length === 0, detail: touched.length ? `changed: ${touched.join(', ')}` : `${changed.length} files changed, none protected` },
+      ];
+      if (touched.length === 0) {
+        const check = await run('npm', ['run', 'check'], { cwd: worktree, timeoutMs: 600_000 });
+        gates.push({ gate: 'npm run check', pass: check.exitCode === 0, detail: check.exitCode === 0 ? 'ok' : (check.stdout + check.stderr).trim().split('\n').slice(-5).join(' | ') });
+        const build = check.exitCode === 0 ? await run('npm', ['run', 'build'], { cwd: worktree, timeoutMs: 600_000 }) : null;
+        const bench = build?.exitCode === 0
+          ? await run(process.execPath, [join(worktree, 'dist', 'cli.js'), 'bench', '--format', 'json'], { cwd: worktree, timeoutMs: 120_000 })
+          : null;
+        gates.push({ gate: 'bench', pass: bench?.exitCode === 0, detail: bench ? bench.stdout.trim().slice(0, 300) : 'skipped (check or build failed)' });
+      }
+      const pass = gates.every((g) => g.pass);
+      emit('check-branch', pass ? 0 : 1, { verdict: pass ? 'ready for human review' : 'reject', gates });
     })());
 
   graph.command('compare')

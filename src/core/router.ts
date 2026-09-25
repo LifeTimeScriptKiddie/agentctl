@@ -301,7 +301,24 @@ function hasCap(a: RouterAgent, cap: keyof AdapterCapabilities): boolean {
  * signals, applies capability guards, and returns a ranked decision. No I/O,
  * no model call — the `--llm` tiebreak (if any) is layered on by the caller.
  */
-export function route(task: string, agents: RouterAgent[]): RouteDecision {
+/** Ids of the task-type signals, for validating `routing.prefer` overrides. */
+export const SIGNAL_IDS: readonly string[] = SIGNALS.map((s) => s.id);
+
+/** Built-in lane order and required capability per signal (read-only view for `agentctl tune`). */
+export const SIGNAL_DEFAULTS: ReadonlyArray<{ id: string; prefer: readonly string[]; requires?: keyof AdapterCapabilities }> =
+  SIGNALS.map((s) => ({ id: s.id, prefer: [...s.prefer], ...(s.requires ? { requires: s.requires } : {}) }));
+
+export interface RouteOptions {
+  /**
+   * Per-signal lane order from preferences.yaml `routing.prefer`, replacing the
+   * built-in list for that signal. Capability guards still apply, so an
+   * override can reorder lanes but never route work to a lane that lacks the
+   * signal's required capability.
+   */
+  prefer?: Readonly<Record<string, readonly string[]>>;
+}
+
+export function route(task: string, agents: RouterAgent[], opts: RouteOptions = {}): RouteDecision {
   const byName = new Map(agents.map((a) => [a.name, a]));
   const scores = new Map<string, RankedAgent>();
 
@@ -318,7 +335,7 @@ export function route(task: string, agents: RouterAgent[]): RouteDecision {
   for (const sig of SIGNALS) {
     if (!sig.re.test(task)) continue;
     matched.push(sig.id);
-    sig.prefer.forEach((name, i) => {
+    (opts.prefer?.[sig.id] ?? sig.prefer).forEach((name, i) => {
       const a = byName.get(name);
       if (!a) return;
       if (sig.requires && !hasCap(a, sig.requires)) return; // hard guard
@@ -329,7 +346,7 @@ export function route(task: string, agents: RouterAgent[]): RouteDecision {
   // Explicit job roles outrank incidental words such as "code" or "report".
   // Capabilities below still constrain which lanes may actually execute.
   const role = ['planning', 'deep-review', 'cyber', 'creative'].find((id) => matched.includes(id));
-  const primary = SIGNALS.find((sig) => sig.id === role)?.prefer[0];
+  const primary = role ? (opts.prefer?.[role] ?? SIGNALS.find((sig) => sig.id === role)?.prefer)?.[0] : undefined;
   if (primary) bump(primary, 30, `${role} priority`);
 
   // eligible = scored ∪ general agents; comet/dry_run only if explicitly scored

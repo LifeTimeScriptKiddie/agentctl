@@ -207,6 +207,8 @@ export function planAutoSetup(
       orchestratorBackup: backup,
       agents,
       tier,
+      // Re-running setup must not discard tuned routing overrides.
+      routing: loadPreferences()?.routing ?? { prefer: {} },
     },
     summary,
     probes,
@@ -349,6 +351,7 @@ export async function runInteractiveSetup(
       orchestratorBackup,
       agents,
       tier,
+      routing: loadPreferences()?.routing ?? { prefer: {} },
     };
 
     const summary = [

@@ -1,0 +1,78 @@
+# agentctl benchmark cases. Read-only to `agentctl tune` and to graph-apply
+# workers: the self-improvement loops are scored against this file, so they
+# must never edit it (a loop that can rewrite its own test can pass anything).
+#
+# routing: free and deterministic (no model calls). `mustHave` / `notAgents`
+#   are HARD invariants: a tuned config or code change that breaks one is
+#   rejected. `expect` is SOFT: today's intended lane, reported but not gated,
+#   so tuning may legitimately move it.
+# live: real calls through `delegate` (routing + preferences), checked by
+#   `contains` (all, case-insensitive) or `regex`. Costs quota; opt in with --live.
+routing:
+  - id: write-code
+    task: fix the failing test in src/core/router.ts
+    mustHave: [canModifyRepo]
+    expect: codex_write
+  - id: write-docs-typo
+    task: fix the typo in docs/USAGE.md
+    mustHave: [canModifyRepo]
+    expect: codex_write
+  - id: shell-docker
+    task: run the docker build and report the errors
+    mustHave: [canRunShell]
+  - id: docker-image-not-art
+    task: run the docker image locally and check the logs
+    mustHave: [canRunShell]
+    notAgents: [agy_image]
+  - id: web-search
+    task: search the web for the latest Node.js LTS release
+    mustHave: [canAccessNetwork]
+    expect: agy
+  - id: research-papers
+    task: summarize recent papers on retrieval augmented generation
+    mustHave: [canAccessNetwork]
+    expect: agy
+  - id: news-not-write
+    task: latest product update news for the Cursor editor
+    mustHave: [canAccessNetwork]
+    notAgents: [codex_write]
+  - id: image
+    task: generate a hero image of a lighthouse at dusk
+    mustHave: [canAccessNetwork]
+    expect: agy_image
+  - id: explain-read-only
+    task: explain how the router scores agents
+    notAgents: [codex_write, agy, agy_image, comet]
+    expect: cursor
+  - id: howto-read-only
+    task: how do I update the README for a new flag?
+    notAgents: [codex_write]
+  - id: tradeoffs-read-only
+    task: compare Kafka and SQS trade-offs for our event bus
+    notAgents: [codex_write, agy_image]
+  - id: deep-review
+    task: deep review of the approval module for security bugs
+    notAgents: [codex_write, agy, agy_image, comet]
+    expect: claude
+  - id: cyber-locked
+    task: threat model the MCP server and its job runner
+    notAgents: [agy, agy_image, comet, codex_write]
+    expect: cursor
+  - id: planning
+    task: plan the migration of team memory to Postgres
+    notAgents: [agy, agy_image, comet, codex_write]
+    expect: codex
+
+live:
+  - id: arithmetic
+    task: What is 17 * 23? Reply with just the number.
+    contains: ['391']
+  - id: echo
+    task: Reply with the single word PONG and nothing else.
+    regex: '^\W*PONG\W*$'
+  - id: read-repo-file
+    task: Read package.json in the current directory and reply with only the value of its "name" field.
+    contains: ['agentctl']
+  - id: web-lookup
+    task: Search the web for the official Node.js website and reply with only its URL.
+    contains: ['nodejs.org']

@@ -2,6 +2,7 @@ import { PlanSchema, type Plan, type PlanStep } from '../schema/plan.js';
 import type { LoopGraph } from './orchestrateLoop.js';
 import { extractJson } from '../util/json.js';
 import { route, defaultWorkerModel, type RouterAgent } from './router.js';
+import { loadPreferences, routingPrefer } from './preferences.js';
 import { readPlannerRoutingRules } from '../assets.js';
 import { suggestEffort, escalateWorker } from './effortEscalation.js';
 import type { AdapterCapabilities } from '../schema/capabilities.js';
@@ -79,7 +80,7 @@ export function routeStepAgent(step: PlanStep, agents: RouterAgent[]): StepRoute
     };
   }
 
-  const decision = route(`${step.type} ${step.instruction}`, pool);
+  const decision = route(`${step.type} ${step.instruction}`, pool, { prefer: routingPrefer(loadPreferences()) });
   const agent = decision.agent;
   const model = decision.model ?? defaultWorkerModel(agent);
   return {
