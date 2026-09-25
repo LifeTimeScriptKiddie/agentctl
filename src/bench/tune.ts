@@ -169,6 +169,8 @@ export interface TuneLogEntry {
   action: 'apply' | 'rollback';
   changes: TuneChange[];
   backup: string | null;
+  /** routing.prefer as this tune wrote it; rollback refuses if it changed since */
+  wrote?: Record<string, string[]>;
   bench?: { before: { passed: number; total: number }; after: { passed: number; total: number } };
 }
 
@@ -218,7 +220,7 @@ export function tune(opts: {
     const next: Preferences = { ...prefs, updatedAt: now.toISOString(), routing: { ...prefs.routing, prefer: candidate } };
     savePreferences(next, home);
     const entry: TuneLogEntry = {
-      at: now.toISOString(), action: 'apply', changes, backup,
+      at: now.toISOString(), action: 'apply', changes, backup, wrote: candidate,
       bench: { before: { passed: before.passed, total: before.total }, after: { passed: after.passed, total: after.total } },
     };
     appendFileSync(tuneLogPath(home), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
@@ -228,7 +230,7 @@ export function tune(opts: {
 }
 
 /** Restore preferences.yaml from the most recent applied tune that has not been rolled back. */
-export function rollbackTune(home: string = agentctlHome(), now: Date = new Date()): TuneLogEntry {
+export function rollbackTune(home: string = agentctlHome(), now: Date = new Date(), force = false): TuneLogEntry {
   const log = readJsonLines(tuneLogPath(home)) as unknown as TuneLogEntry[];
   let pending = 0;
   for (let i = log.length - 1; i >= 0; i -= 1) {
@@ -236,6 +238,10 @@ export function rollbackTune(home: string = agentctlHome(), now: Date = new Date
     if (e.action === 'rollback') { pending += 1; continue; }
     if (pending > 0) { pending -= 1; continue; }
     if (!e.backup || !existsSync(e.backup)) throw new Error(`backup for the ${e.at} tune is missing: ${e.backup ?? '(none)'}`);
+    const live = routingPrefer(loadPreferences(home));
+    if (!force && e.wrote && JSON.stringify(live) !== JSON.stringify(e.wrote)) {
+      throw new Error(`routing.prefer changed since the ${e.at} tune; restoring ${e.backup} would discard that edit (re-run with --force to do it anyway)`);
+    }
     copyFileSync(e.backup, preferencesPath(home));
     const entry: TuneLogEntry = { at: now.toISOString(), action: 'rollback', changes: e.changes, backup: e.backup };
     appendFileSync(tuneLogPath(home), `${JSON.stringify(entry)}\n`, { mode: 0o600 });

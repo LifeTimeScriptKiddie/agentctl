@@ -6,6 +6,7 @@ import { agentDelegate } from '../api.js';
 import { parseSince } from '../graph/command.js';
 import { benchRoster, loadCases, runLiveBench, runRoutingBench } from './bench.js';
 import { rollbackTune, tune } from './tune.js';
+import { loadLimits, pruneExpired, updateLimits } from '../core/limitStore.js';
 
 type Format = 'text' | 'json';
 
@@ -48,15 +49,37 @@ export function registerBenchCommands(program: Command): void {
       out('bench', o.format, failed ? 1 : 0, { routing, live }, lines.join('\n'));
     }));
 
+  program.command('limits')
+    .description('show cached usage caps; --clear [lane] forgets them (e.g. after a mis-detected limit)')
+    .option('--clear [lane]', 'clear every cap, or only this lane / quota account')
+    .option('--format <format>', 'text | json', 'text')
+    .action((o: { clear?: string | boolean; format: Format }) => guard('limits', () => o.format, () => {
+      const now = new Date();
+      if (o.clear !== undefined) {
+        const lane = typeof o.clear === 'string' ? o.clear : null;
+        let removed: string[] = [];
+        updateLimits((m) => {
+          removed = Object.keys(m).filter((k) => !lane || k.startsWith(`${lane}:`));
+          return Object.fromEntries(Object.entries(m).filter(([k]) => !removed.includes(k)));
+        });
+        out('limits', o.format, 0, { removed }, removed.length ? `cleared ${removed.join(', ')}` : 'nothing to clear');
+        return;
+      }
+      const active = Object.entries(pruneExpired(loadLimits(), now));
+      out('limits', o.format, 0, Object.fromEntries(active),
+        active.length ? active.map(([k, v]) => `${k}  until ${v.until}  (via ${v.via})`).join('\n') : 'no active usage caps');
+    }));
+
   program.command('tune')
     .description('config-only loop: propose routing.prefer reorders from outcome evidence, gated on the benchmark')
     .option('--apply', 'write the change to preferences.yaml (backed up; undo with --rollback)', false)
     .option('--rollback', 'restore preferences.yaml from before the last applied tune', false)
+    .option('--force', 'with --rollback: restore even if routing.prefer was edited since', false)
     .option('--since <window>', 'evidence window (7d, 24h, ISO date)', '30d')
     .option('--format <format>', 'text | json', 'text')
-    .action((o: { apply: boolean; rollback: boolean; since: string; format: Format }) => guard('tune', () => o.format, () => {
+    .action((o: { apply: boolean; rollback: boolean; force: boolean; since: string; format: Format }) => guard('tune', () => o.format, () => {
       if (o.rollback) {
-        const r = rollbackTune();
+        const r = rollbackTune(undefined, undefined, o.force);
         out('tune', o.format, 0, r, `rolled back the tune from ${r.changes.map((c) => c.signal).join(', ')} (restored ${r.backup})`);
         return;
       }

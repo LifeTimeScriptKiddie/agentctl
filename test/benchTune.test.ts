@@ -123,6 +123,19 @@ describe('tune', () => {
     expect(() => rollbackTune(home)).toThrow(/nothing to roll back/);
   });
 
+  it('rollback refuses to discard a manual routing edit made after the tune', () => {
+    savePreferences(prefs(), home);
+    seedRejections('agy', 5);
+    seedCalls('cursor', 9, 1);
+    tune({ cases: cases.routing, roster, apply: true, home });
+    const edited = loadPreferences(home)!;
+    savePreferences({ ...edited, routing: { prefer: { search: ['comet'] } } }, home);
+    expect(() => rollbackTune(home)).toThrow(/changed since/);
+    expect(routingPrefer(loadPreferences(home)).search).toEqual(['comet']);
+    rollbackTune(home, new Date(), true);
+    expect(routingPrefer(loadPreferences(home))).toEqual({});
+  });
+
   it('refuses to apply a candidate that breaks a hard benchmark case', () => {
     savePreferences(prefs(), home);
     seedRejections('agy', 5);
