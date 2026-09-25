@@ -273,7 +273,7 @@ export function registerMemoryCommands(memory: Command): void {
     s => s.resumeBriefing(o.workspace, o.provider, Number(o.maxBytes), parseKindList(o.kinds)),
     o,
   ));
-  const postgres = memory.command('postgres').description('PostgreSQL memory plane (scaffold: migrations + status; store adapter not wired in 0.2.x)');
+  const postgres = memory.command('postgres').description('PostgreSQL team store: status and migrations (SHARED_PTR_MEMORY_BACKEND=postgres + SHARED_PTR_MEMORY_DATABASE_URL)');
   postgres.command('status')
     .description('Show backend env, migration files, and whether the pg driver is installed')
     .action(async () => {

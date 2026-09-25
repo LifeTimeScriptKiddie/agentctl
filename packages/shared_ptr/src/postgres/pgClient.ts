@@ -13,9 +13,13 @@ export interface PgClient extends PgQueryable {
   release(): void;
 }
 
-async function loadPgModule(): Promise<{ Client: new (opts: { connectionString: string }) => PgClient; Pool: new (opts: { connectionString: string }) => PgPool } | null> {
+/** The pg driver (one loader for the store and migrations). */
+export async function loadPgModule(): Promise<{ Client: new (opts: { connectionString: string }) => PgClient; Pool: new (opts: { connectionString: string }) => PgPool } | null> {
   try {
-    const mod = await new Function('return import("pg")')() as {
+    // pg is a dependency of shared_ptr; the variable specifier keeps TypeScript
+    // from requiring @types/pg (the shape below is all we use).
+    const specifier = 'pg';
+    const mod = await import(specifier) as {
       Client?: new (opts: { connectionString: string }) => PgClient;
       Pool?: new (opts: { connectionString: string }) => PgPool;
       default?: {
@@ -31,7 +35,7 @@ async function loadPgModule(): Promise<{ Client: new (opts: { connectionString: 
   }
 }
 
-/** Optional driver — install `pg` on the memory VM. */
+/** Connection pool for the configured database, or null if the driver is unavailable. */
 export async function loadPgPool(): Promise<PgPool | null> {
   try {
     const bundle = await loadPgModule();

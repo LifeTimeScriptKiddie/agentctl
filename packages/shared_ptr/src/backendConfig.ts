@@ -1,7 +1,7 @@
 import { setting } from './env.js';
 export type MemoryBackend = 'sqlite' | 'postgres';
 
-/** Active memory plane. Default sqlite; postgres is scaffold-only until the store adapter lands. */
+/** Active store: sqlite (one machine) by default; postgres for a team (tested against real Postgres 16). */
 export function resolveMemoryBackend(): MemoryBackend {
   const raw = setting('MEMORY_BACKEND')?.trim().toLowerCase();
   if (raw === 'postgres' || raw === 'pg') return 'postgres';

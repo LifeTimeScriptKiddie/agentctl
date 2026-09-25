@@ -18,13 +18,15 @@
     "scripts/laya_evidence.py"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs"
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "test:postgres": "sh scripts/test-postgres.sh"
   },
   "dependencies": {
     "@agentctl/kit": "0.1.0",
     "@shared_ptr/contract": "1.0.0",
     "commander": "^12.1.0",
     "execa": "^9.5.0",
+    "pg": "^8.23.0",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },

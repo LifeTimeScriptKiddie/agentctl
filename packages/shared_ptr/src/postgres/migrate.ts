@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPostgresConfig, resolveMemoryBackend } from '../backendConfig.js';
 import { setting } from '../env.js';
+import { loadPgModule } from './pgClient.js';
 
 export interface MigrationFile {
   id: string;
@@ -38,25 +39,10 @@ interface PgClient {
   end(): Promise<void>;
 }
 
-/** Optional driver — install `pg` on the memory VM only; not bundled in agentctl 0.2.x. */
+/** The pg Client class (pg ships with shared_ptr). */
 async function loadPgClient(): Promise<(new (opts: { connectionString: string }) => PgClient) | null> {
   const mod = await loadPgModule();
-  return mod?.Client ?? null;
-}
-
-async function loadPgModule(): Promise<{
-  Client: new (opts: { connectionString: string }) => PgClient;
-} | null> {
-  try {
-    const mod = await new Function('return import("pg")')() as {
-      Client?: new (opts: { connectionString: string }) => PgClient;
-      default?: { Client: new (opts: { connectionString: string }) => PgClient };
-    };
-    const bundle = mod.default ?? mod;
-    return bundle.Client ? { Client: bundle.Client } : null;
-  } catch {
-    return null;
-  }
+  return (mod?.Client as unknown as new (opts: { connectionString: string }) => PgClient) ?? null;
 }
 
 /** Apply numbered SQL migrations when `pg` is installed on the host. */
@@ -73,7 +59,7 @@ export async function runPostgresMigrations(opts: { dryRun?: boolean } = {}): Pr
       dryRun: false,
       applied: [],
       pending: files.map((f) => f.id),
-      error: 'Install the `pg` package on the memory VM (`npm install pg` in agentctl deploy) to apply migrations.',
+      error: 'The pg driver failed to load; reinstall shared_ptr (pg is one of its dependencies).',
     };
   }
 
