@@ -4,6 +4,54 @@ Team memory for AI agents: a local store (SQLite, optional Postgres), a gatekeep
 HTTP server (`/v1`), resume briefings, a team knowledge base, and findings/evidence
 records. It was split out of agentctl on 2026-09-25.
 
+## Use it from your agent
+
+The same six tools are available in every agent: `sptr_search`, `sptr_briefing`, `sptr_review`,
+`sptr_propose`, `sptr_checkpoint_get` and `sptr_checkpoint_set`.
+
+- **Agents propose; only humans accept.** No agent tool can accept a memory. People accept with
+  `shared_ptr accept`, or with `/shared_ptr accept` in Pi.
+- **Memory text is data, not instructions.** Every piece of memory text returned to a model is
+  quoted as untrusted.
+- **Each agent only sees what it's allowed to.** Reads are filtered for the calling agent.
+
+Team setup: one gatekeeper stores data in Postgres, and each person has their own token.
+
+```sh
+# on the server host
+export SHARED_PTR_MEMORY_BACKEND=postgres SHARED_PTR_MEMORY_DATABASE_URL=postgres://…
+shared_ptr postgres migrate
+shared_ptr serve token add --user alice --groups team --clearance internal   # once per person
+shared_ptr serve --host 0.0.0.0 --port 8741                                   # put TLS in front
+```
+
+On each developer machine, set these environment variables:
+
+```sh
+export SHARED_PTR_SERVER=https://memory.example.team SHARED_PTR_TOKEN=… SHARED_PTR_WORKSPACE=my-team
+```
+
+Then register shared_ptr with your agent:
+
+| Agent | Register |
+|---|---|
+| Claude Code | `claude mcp add shared_ptr -- shared_ptr mcp --caller claude` |
+| Codex | in `~/.codex/config.toml`: `[mcp_servers.shared_ptr]` with `command = "shared_ptr"` and `args = ["mcp", "--caller", "codex"]` |
+| Cursor | in `~/.cursor/mcp.json`: `"shared_ptr": { "command": "shared_ptr", "args": ["mcp", "--caller", "cursor"] }` |
+| Pi | `ln -sf <shared_ptr>/dist/piExtension.js ~/.pi/extensions/shared_ptr.js` |
+
+Without `SHARED_PTR_SERVER`, the tools use this machine's store instead (personal use).
+
+Humans use the same commands against the team server:
+
+```sh
+shared_ptr review --workspace my-team
+shared_ptr accept <id> --workspace my-team --revision 1
+shared_ptr search "rollback" --workspace my-team
+```
+
+Local-only commands (`kb`, `graph`, `laya`, …) refuse to run when a server is set.
+
 ## How agentctl uses it
 
 agentctl never imports this package. It reaches shared_ptr in one of two ways:
