@@ -18,7 +18,7 @@
     "scripts/laya_evidence.py"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs && node -e \"require('node:fs').chmodSync('dist/cli.js',0o755)\"",
     "test:postgres": "sh scripts/test-postgres.sh"
   },
   "dependencies": {
