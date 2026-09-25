@@ -39,6 +39,14 @@ import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import type { AgentStatus } from './status.js';
 import { resolveDefaultOrchestrator, resolveOrchestratorModel, resolveWorkerModel } from './core/orchestrateRoster.js';
 import { isAgentEnabled, loadPreferences, preferredModel, routingPrefer } from './core/preferences.js';
+import { callerExcludes, type CallerAgent } from './core/caller.js';
+
+/** Explicit excludes, else the lanes of the agent the CLI detected it runs inside (AGENTCTL_CALLER). */
+function excludesFor(explicit: string[] | undefined): string[] {
+  if (explicit) return explicit;
+  const caller = process.env.AGENTCTL_CALLER?.split(',').map((x) => x.trim()) ?? [];
+  return caller.flatMap((c) => callerExcludes(['codex', 'claude', 'cursor', 'pi'].includes(c) ? c as CallerAgent : null));
+}
 import { visibleAgentNames } from './core/orchestrateRuntime.js';
 
 export type { AskResult, RouteDecision, OrchestrationResult, StepOutcome, AgentStatus };
@@ -418,7 +426,7 @@ export async function agentRoute(
   registry: AdapterRegistry,
   opts: RouteOptions,
 ): Promise<RouteCommandResult> {
-  const agents = await routerAgents(registry, opts.excludeAgents);
+  const agents = await routerAgents(registry, excludesFor(opts.excludeAgents));
   const warnings: string[] = [];
   const timeoutSeconds = opts.timeoutSeconds ?? 120;
 
@@ -574,7 +582,7 @@ export async function agentOrchestrate(
 ): Promise<OrchestrateCommandResult> {
   const warnings: string[] = [];
   // The calling agent (--caller) is never its own lead; see resolveLeadFor.
-  const lead = resolveLeadFor(registry, opts.orchestrator, opts.orchestratorModel, new Set(opts.excludeAgents ?? []));
+  const lead = resolveLeadFor(registry, opts.orchestrator, opts.orchestratorModel, new Set(excludesFor(opts.excludeAgents)));
   const orchName = lead.agent;
   if (!registry.has(orchName)) {
     return {
@@ -630,7 +638,7 @@ export async function agentOrchestrate(
       },
       ...(opts.hooks ? { hooks: opts.hooks } : {}),
       ...(opts.signal ? { signal: opts.signal, shouldAbort: () => opts.signal!.aborted } : {}),
-      ...(opts.excludeAgents?.length ? { excludeAgents: opts.excludeAgents } : {}),
+      ...(excludesFor(opts.excludeAgents).length ? { excludeAgents: excludesFor(opts.excludeAgents) } : {}),
       ...(engine ? { engine } : {}),
       ...(opts.context ? { context: opts.context } : {}),
       ...(opts.budgetUsd != null ? { budgetUsd: opts.budgetUsd } : {}),
@@ -694,7 +702,7 @@ export async function agentRunTasks(
       timeoutSeconds: opts.timeoutSeconds ?? 300,
       approve: opts.approve ?? false,
       ...(opts.context ? { context: opts.context } : {}),
-      ...(opts.excludeAgents?.length ? { excludeAgents: opts.excludeAgents } : {}),
+      ...(excludesFor(opts.excludeAgents).length ? { excludeAgents: excludesFor(opts.excludeAgents) } : {}),
       ...(opts.hooks ? { hooks: opts.hooks } : {}),
       ...(opts.onStep ? { onStep: opts.onStep } : {}),
       ...(opts.signal ? { signal: opts.signal, shouldAbort: () => opts.signal!.aborted } : {}),

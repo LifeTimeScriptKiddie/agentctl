@@ -45,6 +45,35 @@ function maybeNudgeSetup(): void {
   );
 }
 
+/** Commands that start agent work; guarded against self-calls and dead sandboxes. */
+const DISPATCH = new Set(['ask', 'delegate', 'orchestrate', 'run', 'chat']);
+
+/**
+ * Before dispatching: an agent that shells out to agentctl must not start a
+ * second copy of itself, and a network-less sandbox must fail fast instead of
+ * hanging until the timeout. Also records the caller so routing skips it.
+ */
+async function guardDispatch(actionCommand: Command): Promise<void> {
+  if (!DISPATCH.has(actionCommand.name()) || actionCommand.parent?.name() !== 'agentctl') return;
+  const { detectCallerContext, callerExcludes } = await import('./core/caller.js');
+  const ctx = await detectCallerContext();
+  const opts = actionCommand.opts() as { to?: string; allowSelf?: boolean };
+  const fail = (msg: string): never => {
+    process.stderr.write(`agentctl: ${msg}\n`);
+    process.exit(2);
+  };
+  if (ctx.sandboxNoNetwork) {
+    fail('running inside a sandbox with network disabled (CODEX_SANDBOX_NETWORK_DISABLED=1), so no agent can be reached. '
+      + 'From Codex, use the agentctl MCP tools instead (the MCP server runs outside the sandbox), or run this command outside the sandbox.');
+  }
+  if (ctx.agent && opts.to && callerExcludes(ctx.agent).includes(opts.to) && !opts.allowSelf) {
+    fail(`you are already running inside ${ctx.agent} (detected via ${ctx.via}). \`--to ${opts.to}\` would start a second ${ctx.agent} session `
+      + 'on the same quota with none of this conversation\'s context. Do the work in this session or pick another lane; '
+      + 'pass --allow-self if you really want a separate run (e.g. a different model as an independent opinion).');
+  }
+  if (ctx.agent && !process.env.AGENTCTL_CALLER) process.env.AGENTCTL_CALLER = ctx.agent;
+}
+
 /** Commands that must never stop to ask questions (servers, scripts, setup itself). */
 const NO_ONBOARDING = new Set(['setup', 'mcp', 'features', 'limits', 'help', 'serve']);
 
@@ -117,6 +146,7 @@ export function buildProgram(): Command {
   program.hook('preAction', async (_thisCommand, actionCommand) => {
     if (actionCommand.name() === 'setup') return;
     await maybeOnboard(actionCommand);
+    await guardDispatch(actionCommand);
   });
 
   program
@@ -134,6 +164,7 @@ export function buildProgram(): Command {
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
+    .option('--allow-self', 'allow --to the agent you are running inside (a second session on the same quota)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (promptArg: string | undefined, opts: { to: string; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; approveContext: boolean; format: string }) => {
       const prompt = (promptArg ?? (await readStdin())).trim();
@@ -269,6 +300,7 @@ export function buildProgram(): Command {
     .option('--timeout <seconds>', 'per-agent timeout in seconds', '120')
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
+    .option('--allow-self', 'allow --to the agent you are running inside (a second session on the same quota)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (taskArg: string | undefined, opts: {
       to?: string; dryRoute: boolean; verbose: boolean; explain: boolean; llm: boolean;

@@ -2,7 +2,9 @@ import type { Command } from 'commander';
 import { buildJsonEnvelope } from '../format/output.js';
 import { loadRegistry } from '../core/loadRegistry.js';
 import { FEATURES, featureEnabled, loadPreferences, routingPrefer, savePreferences } from '../core/preferences.js';
-import { agentDelegate } from '../api.js';
+import { agentAsk, agentDelegate } from '../api.js';
+import { runDoctor, formatDoctor } from '../doctor.js';
+import { detectCallerContext } from '../core/caller.js';
 import { parseSince } from '../graph/command.js';
 import { benchRoster, loadCases, runLiveBench, runRoutingBench } from './bench.js';
 import { rollbackTune, tune } from './tune.js';
@@ -47,6 +49,27 @@ export function registerBenchCommands(program: Command): void {
           ...live.cases.map((c) => `  ${c.passed ? '✓' : '✗'} ${c.id} → ${c.agent ?? 'none'} (${Math.round(c.durationMs / 1000)}s)${c.passed ? '' : `: ${c.detail}`}`)] : []),
       ];
       out('bench', o.format, failed ? 1 : 0, { routing, live }, lines.join('\n'));
+    }));
+
+  program.command('doctor')
+    .description('check setup, each tool, recent failures, sandbox/caller and MCP installs; prints the next step for each problem')
+    .option('--live', 'send one tiny prompt per enabled tool to prove its login (spends a little quota)', false)
+    .option('--format <format>', 'text | json', 'text')
+    .action((o: { live: boolean; format: Format }) => guard('doctor', () => o.format, async () => {
+      const registry = loadRegistry();
+      const caller = await detectCallerContext();
+      const checks = await runDoctor({
+        registry, caller,
+        ...(o.live && !caller.sandboxNoNetwork ? {
+          live: async (lane: string) => {
+            const r = await agentAsk(registry, { to: lane, prompt: 'Reply with the single word OK.', timeoutSeconds: 90 });
+            const first = r.results[0];
+            return { ok: Boolean(first?.ok), detail: first?.text || r.error || 'no answer' };
+          },
+        } : {}),
+      });
+      const failed = checks.some((c) => c.status === 'fail');
+      out('doctor', o.format, failed ? 1 : 0, { checks }, formatDoctor(checks));
     }));
 
   program.command('features')
