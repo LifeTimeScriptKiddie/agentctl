@@ -8,7 +8,7 @@ import { mkdtempSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CONTRACT_VERSION, ROUTES, type RoutePath } from '@shared_ptr/contract';
+import { CONTRACT_VERSION, ROUTES, routePath, type RoutePath } from '@shared_ptr/contract';
 import { createMemoryServerForTest } from '../packages/shared_ptr/src/serve.js';
 import { addServeToken } from '../packages/shared_ptr/src/serveTokens.js';
 
@@ -21,6 +21,7 @@ let server: Server;
 let base = '';
 let headers: Record<string, string> = {};
 let reviewerHeaders: Record<string, string> = {};
+let outsiderHeaders: Record<string, string> = {};
 
 beforeAll(async () => {
   vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-contract-')));
@@ -30,6 +31,7 @@ beforeAll(async () => {
   const { token } = addServeToken({ userId: 'contract-user', groups: ['reviewers'], clearance: 'confidential' });
   headers = { authorization: `Bearer ${token}` };
   // a second reviewer: the server forbids accepting your own proposal
+  outsiderHeaders = { authorization: `Bearer ${addServeToken({ userId: 'contract-outsider', groups: ['other-team'], clearance: 'confidential' }).token}` };
   reviewerHeaders = { authorization: `Bearer ${addServeToken({ userId: 'contract-reviewer', groups: ['reviewers'], clearance: 'confidential' }).token}` };
   server = createMemoryServerForTest();
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -46,7 +48,7 @@ afterAll(async () => {
 async function call<P extends RoutePath>(path: P, body: Record<string, unknown>, as: Record<string, string> = headers): Promise<{ status: number; json: unknown }> {
   const route = ROUTES[path];
   route.request.parse(body); // the request we send is itself contract-valid
-  const url = new URL(`${base}${path}`);
+  const url = new URL(`${base}${routePath(path)}`);
   let res: Response;
   if (route.method === 'GET') {
     for (const [k, v] of Object.entries(body)) url.searchParams.set(k, String(v));
@@ -105,6 +107,39 @@ describe('shared_ptr contract v1 against the live server', () => {
       workspace: ws, label: 'scan log', uri: 'file:///tmp/scan.log', source: 'contract-test', classification: 'internal',
     }));
     expectContract('/v1/evidence/list', await call('/v1/evidence/list', { workspace: ws }));
+  });
+
+  it('/v1/checkpoint set and get; briefing includes its accepted decision', async () => {
+    const set = await call('/v1/checkpoint:set', {
+      workspace: ws, revision: null, goal: 'Pilot shared_ptr with one team', state: 'contract green',
+      nextAction: 'invite the pilot team', decisionRefs: [memoryId], source: 'contract-test', allowedGroups: ['reviewers'],
+    });
+    expectContract('/v1/checkpoint:set', set);
+    const got = await call('/v1/checkpoint', { workspace: ws });
+    expectContract('/v1/checkpoint', got);
+    expect((got.json as { checkpoint: { goal: string } | null }).checkpoint?.goal).toBe('Pilot shared_ptr with one team');
+    const brief = await call('/v1/briefing', { workspace: ws, provider: 'claude' });
+    expectContract('/v1/briefing', brief);
+    const packet = (brief.json as { packet: { checkpoint: unknown; decisions: Array<{ id: string }> } }).packet;
+    expect(packet.checkpoint).not.toBeNull();
+    expect(packet.decisions.map((d) => d.id)).toContain(memoryId);
+  });
+
+  it('a user outside the checkpoint groups gets no checkpoint and no linked decisions', async () => {
+    const got = await call('/v1/checkpoint', { workspace: ws }, outsiderHeaders);
+    expectContract('/v1/checkpoint', got);
+    expect((got.json as { checkpoint: unknown }).checkpoint).toBeNull();
+    const brief = await call('/v1/briefing', { workspace: ws, provider: 'claude' }, outsiderHeaders);
+    expectContract('/v1/briefing', brief);
+    const packet = (brief.json as { packet: { checkpoint: unknown; decisions: unknown[]; omittedDecisionRefs: unknown[] } }).packet;
+    expect(packet.checkpoint).toBeNull();
+    expect(packet.decisions).toEqual([]);
+    expect(packet.omittedDecisionRefs).toEqual([]);
+  });
+
+  it('/v1/briefing refuses the operator-only local provider', async () => {
+    const r = await call('/v1/briefing', { workspace: ws, provider: 'local' });
+    expect(r.status).toBe(403);
   });
 
   it('/v1/finding/create, /v1/finding/list and /v1/finding/show', async () => {

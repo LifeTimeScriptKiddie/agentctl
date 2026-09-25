@@ -353,6 +353,42 @@ export const FindingShowResponse = z.object({
   finding: Finding,
 }).passthrough();
 
+/** GET /v1/briefing (query): the resume packet for one agent. `local` is operator-only and refused. */
+export const BriefingRequest = z.object({
+  workspace: z.string().trim().min(1).max(200),
+  provider: z.string().trim().min(1).optional(),
+  max_bytes: z.coerce.number().int().min(256).max(24_000).optional(),
+});
+
+/** Checkpoint as returned to a reader who passed its ACL. */
+const CheckpointOut = Checkpoint;
+
+/** GET /v1/checkpoint (query). */
+export const CheckpointGetRequest = z.object({ workspace: z.string().trim().min(1).max(200) });
+export const CheckpointGetResponse = z.object({
+  request_id: z.string(),
+  auth_applied: z.literal(true),
+  checkpoint: CheckpointOut.nullable(),
+}).passthrough();
+
+/** POST /v1/checkpoint: provisional task state (not an approved memory). store.ts checkpointInputSchema. */
+export const CheckpointSetRequest = z.object({
+  workspace: z.string().trim().min(1).max(200),
+  revision: z.number().int().nonnegative().nullable(),
+  goal: z.string().trim().min(1).max(20_000),
+  state: z.string().trim().min(1).max(20_000),
+  blockers: z.array(z.string().trim().min(1).max(2000)).max(32).default([]),
+  nextAction: z.string().trim().min(1).max(20_000),
+  decisionRefs: z.array(z.string().uuid()).max(32).default([]),
+  source: z.string().trim().min(1).max(2000),
+  allowedGroups: z.array(z.string().trim().min(1).max(200)).max(32).optional(),
+});
+export const CheckpointSetResponse = z.object({
+  request_id: z.string(),
+  auth_applied: z.literal(true),
+  checkpoint: CheckpointOut,
+}).passthrough();
+
 /** GET /v1/meta: the version handshake a client checks before relying on the rest. */
 export const MetaResponse = z.object({
   service: z.literal('shared_ptr'),
@@ -371,7 +407,15 @@ export const ROUTES = {
   '/v1/finding/create': { method: 'POST', request: FindingCreateRequest, response: FindingCreateResponse },
   '/v1/finding/list': { method: 'GET', request: FindingListRequest, response: FindingListResponse },
   '/v1/finding/show': { method: 'GET', request: FindingShowRequest, response: FindingShowResponse },
+  '/v1/briefing': { method: 'GET', request: BriefingRequest, response: z.lazy(() => BriefingResponse) },
+  '/v1/checkpoint': { method: 'GET', request: CheckpointGetRequest, response: CheckpointGetResponse },
+  '/v1/checkpoint:set': { method: 'POST', request: CheckpointSetRequest, response: CheckpointSetResponse },
 } as const;
+
+/** Wire path for a ROUTES key (`/v1/checkpoint:set` is POST /v1/checkpoint). */
+export function routePath(key: RoutePath): string {
+  return key.split(':')[0]!;
+}
 
 export type RoutePath = keyof typeof ROUTES;
 export type ContextBundle = z.output<typeof ContextBundle>;
@@ -439,3 +483,14 @@ export const ResumeBriefing = z.object({
   maxBytes: z.number().optional(),
 }).passthrough();
 export type ResumeBriefing = z.output<typeof ResumeBriefing>;
+
+/** GET /v1/briefing response: the resume packet, ACL-applied by the server. */
+export const BriefingResponse = ResumeBriefing.and(z.object({
+  request_id: z.string(),
+  auth_applied: z.literal(true),
+}).passthrough());
+export type BriefingRequest = z.input<typeof BriefingRequest>;
+export type BriefingResponse = z.output<typeof BriefingResponse>;
+export type CheckpointGetResponse = z.output<typeof CheckpointGetResponse>;
+export type CheckpointSetRequest = z.input<typeof CheckpointSetRequest>;
+export type CheckpointSetResponse = z.output<typeof CheckpointSetResponse>;

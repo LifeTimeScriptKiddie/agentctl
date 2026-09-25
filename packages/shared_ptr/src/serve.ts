@@ -1,4 +1,4 @@
-import { CONTRACT_VERSION } from '@shared_ptr/contract';
+import { BriefingRequest, CheckpointSetRequest, CONTRACT_VERSION } from '@shared_ptr/contract';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -446,6 +446,53 @@ export async function handleMemoryHttpRequest(
     return;
   }
 
+  if (method === 'GET' && url.pathname === '/v1/checkpoint') {
+    const requestId = randomUUID();
+    const workspace = url.searchParams.get('workspace')?.trim();
+    if (!workspace) {
+      json(res, 400, { error: 'workspace query parameter required' });
+      return;
+    }
+    // ACL-checked read (security review M2): only the owner or a member group sees it.
+    const checkpoint = await withStore(auth, store => store.getCheckpoint(workspace, auth));
+    json(res, 200, { request_id: requestId, auth_applied: true, checkpoint: (await Promise.resolve(checkpoint)) ?? null });
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === '/v1/briefing') {
+    const requestId = randomUUID();
+    const parsed = BriefingRequest.safeParse(Object.fromEntries(url.searchParams));
+    if (!parsed.success) {
+      validationFailed(res, requestId, parsed.error);
+      return;
+    }
+    const { workspace, provider = 'cursor', max_bytes: maxBytes = 8000 } = parsed.data;
+    if (provider === 'local') {
+      json(res, 403, { error: 'local_provider_is_operator_only' });
+      return;
+    }
+    try {
+      const out = await withStore(auth, async (store) => {
+        const briefing = await Promise.resolve(store.resumeBriefing(workspace, provider, maxBytes));
+        // resumeBriefing reads the checkpoint without ACL; a caller who may not read
+        // it must not learn its decisions or refs either.
+        const readable = await Promise.resolve(store.getCheckpoint(workspace, auth));
+        if (!readable) {
+          briefing.packet.checkpoint = null;
+          briefing.packet.decisions = [];
+          briefing.packet.omittedDecisionRefs = [];
+          briefing.packet.unresolvedDecisionRefs = [];
+          briefing.packet.accessDeniedDecisionRefs = [];
+        }
+        return briefing;
+      });
+      json(res, 200, { request_id: requestId, auth_applied: true, ...out });
+    } catch (e) {
+      internalError(res, '/v1/briefing', requestId, e, 400);
+    }
+    return;
+  }
+
   if (method !== 'POST') {
     json(res, 405, { error: 'method_not_allowed' });
     return;
@@ -808,6 +855,24 @@ export async function handleMemoryHttpRequest(
       json(res, httpStatus, { request_id: requestId, auth_applied: true, ...outcome });
     } catch (e) {
       internalError(res, '/v1/memory/write', requestId, e);
+    }
+    return;
+  }
+
+  if (url.pathname === '/v1/checkpoint') {
+    const parsed = CheckpointSetRequest.safeParse(body);
+    if (!parsed.success) {
+      validationFailed(res, requestId, parsed.error);
+      return;
+    }
+    try {
+      // checkpointAcl (in the store) makes the caller the owner of a new
+      // checkpoint and refuses updates by anyone who could not read it.
+      const checkpoint = await withStore(auth, store => store.setCheckpoint(parsed.data));
+      auditEvent({ route: '/v1/checkpoint', request_id: requestId, user_id: auth.userId, workspace: parsed.data.workspace });
+      json(res, 200, { request_id: requestId, auth_applied: true, checkpoint: await Promise.resolve(checkpoint) });
+    } catch (e) {
+      internalError(res, '/v1/checkpoint', requestId, e, 400);
     }
     return;
   }
