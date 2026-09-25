@@ -7,6 +7,7 @@ import {
 import { agentctlHome } from './agentHome.js';
 import { ensurePrivateDir, writePrivateFile } from './privateFs.js';
 import { redactDeep } from './redact.js';
+import { chatTracePath, chatTracesDir } from './chatTrace.js';
 
 /** Root for persisted chat sessions: ~/.agentctl/sessions (override via AGENTCTL_HOME). */
 export function sessionsDir(): string {
@@ -68,7 +69,12 @@ export function saveSession(rec: SessionRecord, now: number, opts?: { ifUnchange
       throw new SessionWriteConflict(onDisk.updatedAt);
     }
   }
-  const withStamp = { ...rec, transcript: redactDeep(rec.transcript), updatedAt: now };
+  const withStamp = {
+    ...rec, transcript: redactDeep(rec.transcript), updatedAt: now,
+    ...(rec.chat ? { chat: { ...rec.chat, tasks: rec.chat.tasks.map(task => ({
+      ...task, instruction: redactDeep(task.instruction), result: redactDeep(task.result),
+    })) } } : {}),
+  };
   writePrivateFile(path, JSON.stringify(withStamp, null, 2));
 }
 
@@ -126,11 +132,13 @@ export function setNative(rec: SessionRecord, agent: string, sessionId: string):
   return { ...rec, native: { ...rec.native, [agent]: sessionId } };
 }
 
-/** Delete a session by id. Returns true if a file was removed. */
+/** Delete a session by id, with its chat trace and default trace report. Returns true if the session file was removed. */
 export function deleteSession(id: string): boolean {
   const path = sessionPath(id);
   if (!existsSync(path)) return false;
   rmSync(path);
+  rmSync(chatTracePath(id), { force: true });
+  rmSync(join(chatTracesDir(), `${id}-report`), { force: true, recursive: true });
   return true;
 }
 

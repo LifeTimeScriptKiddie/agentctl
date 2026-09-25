@@ -221,6 +221,7 @@ function renderOrchestration(result: OrchestrateCommandResult, io: IO): void {
   if (orchestration.replans > 0) bits.push(`${orchestration.replans} replan(s)`);
   if (bits.length) io.out(color.dim(`\n(${bits.join(' · ')})`));
 
+  if (orchestration.error) io.err(color.red(`\n${orchestration.error}`));
   if (orchestration.status !== 'done') {
     const hint = orchestration.status === 'blocked' ? ' — a task needs --approve'
       : loop ? ''

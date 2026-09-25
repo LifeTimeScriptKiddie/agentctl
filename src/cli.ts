@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
+import { resolve, dirname, basename, join } from 'node:path';
 import { registerUsageCommand } from './usage/command.js';
 import { registerMemoryCommands } from './memory/command.js';
 import { registerConfigCommands } from './config/command.js';
@@ -14,6 +16,10 @@ import { resolveDefaultOrchestrator, resolveBackupOrchestrator } from './core/or
 import { loadPreferences } from './core/preferences.js';
 import { looksLikeEphemeralAgentctlHome } from './core/agentHome.js';
 import { startRepl } from './repl.js';
+import { runSessiongraphCli } from './memory/sessiongraphBridge.js';
+import { directorySessionScope } from './core/sessionFlow.js';
+import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
+import type { ChatMode } from './schema/session.js';
 import type { OutputFormat } from './format/output.js';
 
 const packageJson = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -257,15 +263,24 @@ export function buildProgram(): Command {
 
   program
     .command('chat')
-    .description('interactive multi-agent REPL (switch agents, fan out, keep context)')
+    .description('conversational lead with selective delegation and saved task handoffs')
     .option('--agent <name>', 'agent to start with')
+    .option('--mode <mode>', 'lead (default) | direct | orchestrate; saved mode resumes unless overridden')
+    .option('--ephemeral', 'do not save the conversation or task results', false)
+    .option('--briefing-workspace <id>', 'load scoped team memory for the lead and each worker')
+    .option('--gateway-url <url>', 'optional memory gateway (otherwise local briefing)')
     .option('--session <name>', 'persist/resume a named session (durable memory)')
     .option('--session-scope <id>', 'project scope for resume (pairs with memory workspace)')
     .option('--resume', 'resume the most recent session', false)
     .option('--plain', 'classic scroll-only chat (no header dashboard)', false)
     .option('--approve', 'allow orchestrated steps on shell/repo-write/publish lanes', false)
     .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
-    .action(async (opts: { agent?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean; approve: boolean; approveContext: boolean }) => {
+    .action(async (opts: { agent?: string; mode?: string; ephemeral: boolean; briefingWorkspace?: string; gatewayUrl?: string; session?: string; sessionScope?: string; resume: boolean; plain: boolean; approve: boolean; approveContext: boolean }) => {
+      if ((opts.mode && !['lead', 'direct', 'orchestrate'].includes(opts.mode)) || (opts.ephemeral && (opts.session || opts.resume))) {
+        stdio.err('Choose --mode lead|direct|orchestrate; --ephemeral cannot be combined with --session or --resume.');
+        process.exitCode = 2;
+        return;
+      }
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
         stdio.err(
           'agentctl chat requires an interactive terminal (stdin and stdout must be TTYs).\n' +
@@ -279,10 +294,12 @@ export function buildProgram(): Command {
       }
       let sess;
       try {
+        const chosenScope = opts.sessionScope ?? resolveBriefingWorkspace(opts.briefingWorkspace);
         sess = resolveSession({
-          session: opts.session,
+          session: opts.ephemeral ? undefined : opts.session ?? randomUUID().slice(0, 8),
           resume: opts.resume,
-          scope: opts.sessionScope ?? undefined,
+          scope: chosenScope ?? directorySessionScope(process.cwd()),
+          implicitScope: !chosenScope,
         });
       } catch (e) {
         stdio.err(e instanceof Error ? e.message : String(e));
@@ -303,8 +320,29 @@ export function buildProgram(): Command {
           tui: !opts.plain,
           approve: opts.approve,
           approveContext: opts.approveContext,
+          mode: opts.mode as ChatMode | undefined,
+          briefingWorkspace: opts.briefingWorkspace,
+          gatewayUrl: opts.gatewayUrl,
         },
       );
+    });
+
+  program.command('chat-report')
+    .description('analyze a content-free chat flow trace locally with SessionGraph (no model calls)')
+    .argument('<trace>', 'JSONL path shown by /flow in chat')
+    .option('--sessiongraph-root <path>', 'SessionGraph checkout (or AGENTCTL_SESSIONGRAPH_ROOT)')
+    .option('--out <path>', 'report directory (defaults alongside the trace)')
+    .action(async (trace: string, opts: { sessiongraphRoot?: string; out?: string }) => {
+      try {
+        const path = resolve(trace);
+        const out = resolve(opts.out ?? join(dirname(path), `${basename(path, '.jsonl')}-report`));
+        const result = await runSessiongraphCli(['analyze', path, '--out', out], opts.sessiongraphRoot);
+        process.exitCode = result.exitCode;
+        if (result.stdout) stdio.out(result.stdout);
+        if (result.stderr) stdio.err(result.stderr);
+      } catch (e) {
+        stdio.err(e instanceof Error ? e.message : String(e)); process.exitCode = 1;
+      }
     });
 
   program

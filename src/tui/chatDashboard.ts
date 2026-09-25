@@ -300,6 +300,7 @@ export function formatFlowPath(hops: readonly FlowHop[], width = 80): string[] {
 export interface ChatDashboardOpts {
   sessionName?: string | null;
   orchMode: boolean;
+  modeLabel?: string;
   orchLabel: string;
   hops: readonly FlowHop[];
   route?: FlowRouteTracker;
@@ -312,7 +313,7 @@ export function renderChatFooter(opts: ChatDashboardOpts): string[] {
   const width = Math.max(40, Math.min(opts.width ?? 80, 120));
   const meta = [
     opts.sessionName ?? 'ephemeral',
-    opts.orchMode ? 'orch' : 'direct',
+    opts.modeLabel ?? (opts.orchMode ? 'orch' : 'direct'),
     formatUsageCompact(opts.totals),
   ].join(' · ');
   const flow = opts.route

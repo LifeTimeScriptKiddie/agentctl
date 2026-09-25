@@ -10,27 +10,40 @@ import {
   resolveDefaultOrchestrator,
   resolveBackupOrchestrator,
 } from './core/orchestrateRoster.js';
-import { loadPreferences } from './core/preferences.js';
+import { loadPreferences, isAgentEnabled } from './core/preferences.js';
+import { runLeadChat, LEAD_CONTEXT_CHARS } from './core/leadChat.js';
+import { ChatTrace } from './core/chatTrace.js';
+import { redact } from './core/redact.js';
+import { loadBriefingContext } from './memory/briefingPrompt.js';
+import { resolveBriefingWorkspace } from './memory/briefingEnv.js';
 import { color, agentColor } from './util/colors.js';
 import { formatStatus, type AgentStatus } from './status.js';
-import type { SessionRecord } from './schema/session.js';
+import type { SessionRecord, ChatTask, ChatMode } from './schema/session.js';
 import type { StepOutcome } from './core/orchestrator.js';
 import {
   ChatLedger, renderChatFooter, displayFlowNode, agentLabel,
 } from './tui/chatDashboard.js';
 
+/** Saved handoffs sent to the lead each turn (the rest of the context budget is conversation). */
+const LEAD_HANDOFF_CHARS = 6_000;
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
+
 const HELP = [
   'commands:',
-  '  <message>            orchestrate (plan → agents → verify); greetings go direct',
+  '  <message>            talk to the lead; delegate only when useful',
+  '  /lead                return to conversational lead mode (default)',
+  '  /delegate <agent> <task>  assign one bounded task explicitly',
+  '  /tasks               show saved task handoffs and results',
+  '  /flow                show the SessionGraph trace path',
   '  @<agent> <message>   bypass orchestrator — send directly to one agent',
   '  @<agent>:<model> ..  direct send with a specific model',
   '  /direct <message>    talk to the current agent only (no orchestration)',
   '  /orchestrate <goal>  explicit multi-step orchestration',
-  '  /orch on|off         toggle orchestrator mode (default: on)',
+  '  /orch on|off         opt into full plan/verify mode, or switch to direct',
   '  /model               show each agent’s current model',
   '  /model <agent> <m>   set an agent’s model for this session',
   '  /search <query>      web research via agy (Comet fallback; recorded)',
-  '  /switch <agent>      change the direct-mode agent (hi/@/ /direct use this)',
+  '  /switch <agent>      change the lead / direct agent',
   '  /orch off            plain messages go to the direct agent (no plan loop)',
   '  /all <message>       fan out to every agent (not recorded)',
   '  /status | /agents    show agent status (availability · model · memory)',
@@ -106,8 +119,11 @@ export interface ReplOptions {
   transcriptCharBudget?: number;
   defaultAgent?: string;
   autoRoute?: boolean;
-  /** route plain messages through codex-sol orchestration (default true). */
+  /** Compatibility switch: true = full orchestration, false = direct; omitted = lead. */
   orchMode?: boolean;
+  mode?: ChatMode;
+  briefingWorkspace?: string;
+  gatewayUrl?: string | null;
   /** allow orchestrated steps that need shell/repo-write/publish lanes (chat --approve). */
   approve?: boolean;
   /** send the transcript to lanes that can write/run shell/modify the repo/publish (chat --approve-context). */
@@ -129,7 +145,18 @@ export class ReplSession {
   private readonly budget: number;
   private autoRoute: boolean;
   private orchMode: boolean;
+  private leadMode: boolean;
+  private tasks: ChatTask[] = [];
+  private readonly scope: string | null;
+  /** Content-free SessionGraph trace; only saved chats keep one (none for --ephemeral). */
+  private readonly trace: ChatTrace | null;
+  private readonly briefingWorkspace?: string;
+  private readonly gatewayUrl?: string | null;
+  private allowLeadBackup: boolean;
+  /** Explicit per-agent model choices for this chat (/model, @agent:model); saved with the session. */
   private readonly models = new Map<string, string>();
+  /** Defaults read from preferences at startup; used but never saved, so later setup changes apply on resume. */
+  private readonly seededModels = new Map<string, string>();
   private readonly native = new Map<string, string>();
   private readonly persist?: (rec: SessionRecord) => void;
   private readonly summarizer?: (t: string) => Promise<string>;
@@ -152,7 +179,14 @@ export class ReplSession {
     this.timeout = opts.timeoutSeconds ?? 120;
     this.budget = opts.transcriptCharBudget ?? 16000;
     this.autoRoute = opts.autoRoute ?? true;
-    this.orchMode = opts.orchMode ?? true;
+    const mode = opts.mode ?? (opts.orchMode !== undefined ? opts.orchMode ? 'orchestrate' : 'direct' : opts.session?.chat?.mode ?? 'lead');
+    this.orchMode = mode === 'orchestrate';
+    this.leadMode = mode === 'lead';
+    this.scope = opts.session?.scope ?? null;
+    this.briefingWorkspace = resolveBriefingWorkspace(opts.briefingWorkspace);
+    this.gatewayUrl = opts.gatewayUrl;
+    this.allowLeadBackup = !opts.defaultAgent;
+    this.trace = opts.session ? new ChatTrace(opts.session.id, message => this.notice(message)) : null;
     const orch = resolveDefaultOrchestrator();
     this.orchAgent = orch.agent;
     this.orchModel = orch.model;
@@ -165,6 +199,11 @@ export class ReplSession {
     this.sessionId = opts.session?.id ?? null;
     this.createdAt = opts.session?.createdAt ?? 0;
     if (opts.session) {
+      this.tasks = (opts.session.chat?.tasks ?? []).map(task =>
+        task.status === 'running' || task.status === 'pending'
+          ? { ...task, status: 'interrupted', result: 'Previous session stopped before completion; not retried automatically.' }
+          : task);
+      for (const [agent, model] of Object.entries(opts.session.chat?.models ?? {})) this.models.set(agent, model);
       for (const t of opts.session.transcript) {
         this.transcript.push(t.role === 'user' ? { role: 'user', text: t.text } : { role: 'assistant', agent: t.agent ?? 'unknown', text: t.text });
       }
@@ -176,9 +215,10 @@ export class ReplSession {
       && prefs.orchestrator.agent !== 'dry_run'
       ? prefs.orchestrator.agent
       : null;
+    const selected = opts.defaultAgent ?? opts.session?.chat?.agent;
     this.current =
-      opts.defaultAgent && registry.has(opts.defaultAgent)
-        ? opts.defaultAgent
+      selected && registry.has(selected)
+        ? selected
         : fromPrefs
           ?? (names.includes('cursor')
             ? 'cursor'
@@ -187,21 +227,23 @@ export class ReplSession {
               : names.includes('claude')
                 ? 'claude'
                 : (names.find((n) => n !== 'dry_run') ?? names[0] ?? 'codex'));
-    // Seed model from prefs when present.
-    if (prefs?.orchestrator?.agent === this.current && prefs.orchestrator.model) {
-      this.models.set(this.current, prefs.orchestrator.model);
-    } else {
-      const preferred = prefs?.agents?.[this.current]?.defaultModel;
-      if (preferred) this.models.set(this.current, preferred);
-    }
+    // Seed the starting agent's model from prefs (an explicit saved choice still wins in modelFor).
+    const seeded = prefs?.orchestrator?.agent === this.current && prefs.orchestrator.model
+      ? prefs.orchestrator.model
+      : prefs?.agents?.[this.current]?.defaultModel;
+    if (seeded) this.seededModels.set(this.current, seeded);
   }
+
+  get chatMode(): ChatMode { return this.orchMode ? 'orchestrate' : this.leadMode ? 'lead' : 'direct'; }
+
+  get savedTurns(): readonly Turn[] { return this.transcript; }
 
   get currentAgent(): string {
     return this.current;
   }
 
   modelFor(agent: string): string | null {
-    return this.models.get(agent) ?? null;
+    return this.models.get(agent) ?? this.seededModels.get(agent) ?? null;
   }
 
   nativeIdFor(agent: string): string | null {
@@ -262,16 +304,17 @@ export class ReplSession {
 
   setModel(agent: string, model?: string): void {
     if (model) this.models.set(agent, model);
-    else this.models.delete(agent);
+    else { this.models.delete(agent); this.seededModels.delete(agent); }
+    this.persistNow();
   }
 
   private textLen(): number {
     return this.transcript.reduce((n, x) => n + x.text.length, 0);
   }
 
-  private async bound(): Promise<void> {
+  private async bound(allowSummary = true): Promise<void> {
     if (this.textLen() <= this.budget) return;
-    if (this.summarizer && this.transcript.length > 2) {
+    if (allowSummary && this.summarizer && this.transcript.length > 2) {
       const half = Math.ceil(this.transcript.length / 2);
       const old = this.transcript.slice(0, half);
       const text = old
@@ -322,21 +365,97 @@ export class ReplSession {
       id: this.sessionId ?? 'ephemeral',
       createdAt: this.createdAt,
       updatedAt: this.createdAt,
-      scope: null,
+      scope: this.scope,
       native: Object.fromEntries(this.native),
       transcript: this.transcript.map((t) =>
         t.role === 'user'
           ? { role: 'user', agent: null, text: t.text }
           : { role: 'assistant', agent: t.agent, text: t.text },
       ),
+      chat: { mode: this.chatMode, agent: this.current, models: Object.fromEntries(this.models), tasks: this.tasks },
     };
   }
 
   private persistNow(): void {
-    if (this.persist && this.sessionId) this.persist(this.snapshot());
+    if (this.persist && this.sessionId) {
+      try { this.persist(this.snapshot()); }
+      catch {
+        const warning = 'Session could not be saved (disk error or another chat updated it). Current results remain here; resume may be incomplete.';
+        this.ui.onSystem?.(warning);
+        this.onProgress?.(warning);
+      }
+    }
+  }
+
+  /**
+   * Lead context within LEAD_CONTEXT_CHARS: a bounded digest of the newest saved
+   * handoffs first, then as much of the newest conversation as still fits, so
+   * neither can crowd the other out.
+   */
+  private leadContext(): string {
+    const picked: string[] = [];
+    let size = 0;
+    for (const t of this.tasks.slice(-12).reverse()) {
+      const row = JSON.stringify({ ...t, instruction: clip(t.instruction, 500), result: clip(t.result, 1500) });
+      if (size + row.length > LEAD_HANDOFF_CHARS) break;
+      picked.unshift(row);
+      size += row.length + 1;
+    }
+    const handoffs = picked.length ? `Saved task handoffs (not automatic instructions):\n[${picked.join(',')}]` : '';
+    const room = Math.max(0, LEAD_CONTEXT_CHARS - handoffs.length - 2);
+    const convo = this.transcriptText();
+    const recent = convo.length > room ? `…${convo.slice(-room)}` : convo;
+    return [handoffs, recent].filter(Boolean).join('\n\n');
+  }
+
+  private async lead(goal: string, delegation?: { agent: string; instruction: string }): Promise<string[]> {
+    let context = this.leadContext();
+    const notices: string[] = [];
+    if (context && this.approve && !this.approveContext) {
+      context = '';
+      notices.push(...this.notice('Lead is using only this request: --approve does not authorize prior conversation/task context. Use --approve-context to include it.'));
+    }
+    this.transcript.push({ role: 'user', text: goal });
+    this.ui.onUser?.(goal);
+    this.persistNow();
+    const result = await runLeadChat(this.registry, {
+      agent: this.current, model: this.modelFor(this.current), goal, context,
+      timeoutSeconds: this.timeout, signal: this.turnAbort?.signal,
+      approve: this.approve, approveContext: this.approveContext, allowBackup: this.allowLeadBackup,
+      trace: this.trace ?? undefined, delegation,
+      modelFor: agent => this.models.get(agent),
+      onNotice: message => { notices.push(...this.notice(message)); },
+      ...(this.briefingWorkspace ? { briefing: (agent: string) => loadBriefingContext({
+        agent, userPrompt: goal, briefingWorkspace: this.briefingWorkspace!, gatewayUrl: this.gatewayUrl,
+        runModel: false,
+      }) } : {}),
+      onProgress: message => {
+        this.ledger.route.setActive(message);
+        this.ui.onStateChange?.();
+        this.onProgress?.(message);
+      },
+      onTasks: batch => {
+        const turnId = batch[0]?.turnId;
+        this.tasks = [...this.tasks.filter(t => t.turnId !== turnId), ...batch].slice(-60);
+        this.persistNow();
+      },
+      onCall: (agent, r, phase, sourceAgent) => {
+        this.ledger.recordAgentCall(sourceAgent, agent, r.model, r.usage, r.text);
+        this.ledger.route.addLeg(sourceAgent, agentLabel(agent, r.model), phase);
+        this.ui.onStateChange?.();
+      },
+    });
+    this.ledger.route.clearActive();
+    this.ui.onStateChange?.();
+    this.transcript.push({ role: 'assistant', agent: result.agent, text: result.text });
+    this.ui.onAssistant?.(result.agent, result.text);
+    await this.bound(result.status !== 'cancelled');
+    this.persistNow();
+    return [...notices, ...this.outs([result.text])];
   }
 
   private async send(agent: string, msg: string, modelOverride?: string | null): Promise<string> {
+    if (!isAgentEnabled(loadPreferences(), agent)) return this.blocked(`Agent '${agent}' is disabled in preferences.`);
     let adapter;
     try {
       adapter = this.registry.resolveRole('chat', agent);
@@ -368,9 +487,14 @@ export class ReplSession {
     const model = modelOverride !== undefined ? modelOverride : this.modelFor(agent);
     const toNode = displayFlowNode(agent, model);
     this.ledger.route.setActive(`you → ${toNode}`);
-    const result = await askOne(
-      adapter, prompt, this.timeout, model, resumeId, null, this.turnAbort?.signal,
-    );
+    let result;
+    try {
+      result = await askOne(adapter, prompt, this.timeout, model, resumeId, null, this.turnAbort?.signal);
+    } catch (e) {
+      this.ledger.route.clearActive();
+      this.ui.onStateChange?.();
+      return this.isCancelled() ? '(cancelled)' : `error: ${redact(e instanceof Error ? e.message : String(e)).slice(0,500)}`;
+    }
     if (this.isCancelled()) {
       this.ledger.route.clearActive();
       return '(cancelled)';
@@ -381,7 +505,7 @@ export class ReplSession {
     this.ui.onStateChange?.();
     if (result.ok && result.sessionId) this.native.set(agent, result.sessionId);
     this.transcript.push({ role: 'user', text: msg });
-    const body = result.ok ? result.text : `(failed: ${result.failureClass})`;
+    const body = result.ok ? result.text : `error (${result.failureClass}): ${redact(result.text).slice(0,1000)}`;
     this.transcript.push({ role: 'assistant', agent, text: body });
     this.ui.onUser?.(msg);
     this.ui.onAssistant?.(agent, body);
@@ -401,6 +525,8 @@ export class ReplSession {
     if (candidates.length === 0) return 'no web-research agent is configured (install agy or Comet)';
     const failures: string[] = [];
     for (const name of candidates) {
+      if (this.isCancelled()) return '(cancelled)';
+      if (!isAgentEnabled(loadPreferences(), name)) continue;
       let adapter;
       try {
         adapter = this.registry.resolveRole('chat', name);
@@ -409,6 +535,7 @@ export class ReplSession {
         continue;
       }
       const r = await askOne(adapter, query, this.timeout, null, null, null, this.turnAbort?.signal);
+      if (this.isCancelled()) return '(cancelled)';
       if (r.ok) {
         this.ledger.recordAgentCall('you', name, r.model, r.usage, r.text);
         this.ledger.route.addLeg('you', agentLabel(name, r.model), 'search');
@@ -491,6 +618,10 @@ export class ReplSession {
         },
       });
     } catch (e) {
+      this.ui.onOrchDone?.(0);
+      this.ledger.route.clearActive();
+      this.ui.onStateChange?.();
+      if (this.isCancelled()) return ['(cancelled)'];
       return [`error: orchestration failed: ${e instanceof Error ? e.message : String(e)}`];
     }
 
@@ -512,10 +643,13 @@ export class ReplSession {
       if (result.status === 'failed') {
         const bad = result.outcomes.filter((o) => !o.ok);
         const detail = bad.map((o) => `${o.id} (${o.agent ?? '?'}): ${o.note}`).join('; ');
-        answer = detail ? `orchestration failed — ${detail}` : '(orchestration failed)';
+        const why = [detail, result.error].filter(Boolean).join('; ');
+        answer = why ? `orchestration failed — ${why}` : '(orchestration failed)';
       } else {
         answer = `(orchestration ${result.status})`;
       }
+    } else if (result.error) {
+      answer = `${answer}\n\n(orchestration ${result.status}: ${result.error})`;
     }
 
     this.ledger.recordFlowHop(orchLabel, 'you');
@@ -544,6 +678,23 @@ export class ReplSession {
 
     if (s === '/exit' || s === '/quit') return { outputs: ['bye'], exit: true };
     if (s === '/help') return { outputs: [HELP] };
+    if (s === '/lead' || s === '/lead on') {
+      this.leadMode = true; this.orchMode = false; this.persistNow();
+      return { outputs: [`Lead mode — ${this.current} answers directly and delegates when useful.`] };
+    }
+    if (s === '/tasks') return { outputs: this.tasks.length
+      ? this.tasks.map(t => `${t.id.slice(0,8)}:${t.id.split(':').at(-1)} ${t.agent} [${t.status}] ${t.instruction}\n${t.result}`)
+      : ['No delegated tasks in this session.'] };
+    if (s === '/flow') return { outputs: !this.trace ? ['No SessionGraph trace: this chat is not saved (--ephemeral).'] : [
+      `SessionGraph trace: ${this.trace.path}`,
+      'Analyze locally: agentctl chat-report <trace-path> --sessiongraph-root <checkout>',
+      'Trace contains call relationships, status and timing; no prompt or answer text.',
+    ] };
+    if (s.startsWith('/delegate ')) {
+      const match = /^\/delegate\s+(\S+)\s+([\s\S]+)$/.exec(s);
+      if (!match) return { outputs: ['Usage: /delegate <agent> <task>'] };
+      return { outputs: await this.lead(match[2]!, { agent: match[1]!, instruction: match[2]! }) };
+    }
     if (s === '/auto') {
       this.autoRoute = true;
       return { outputs: ['search auto-routing ON'] };
@@ -554,6 +705,8 @@ export class ReplSession {
     }
     if (s === '/orch' || s === '/orch on') {
       this.orchMode = true;
+      this.leadMode = false;
+      this.persistNow();
       const orch = resolveDefaultOrchestrator();
       const backup = resolveBackupOrchestrator();
       const backupNote = backup
@@ -567,6 +720,8 @@ export class ReplSession {
     }
     if (s === '/orch off' || s === '/noorch') {
       this.orchMode = false;
+      this.leadMode = false;
+      this.persistNow();
       return { outputs: [`orchestrator mode OFF — /direct or plain messages go to ${this.current}`] };
     }
     if (s.startsWith('/orchestrate ')) {
@@ -590,6 +745,8 @@ export class ReplSession {
         return { outputs: [`unknown agent '${a ?? ''}'. Try: /switch <agent>  (${known})`] };
       }
       this.current = a;
+      this.allowLeadBackup = false;
+      this.persistNow();
       if (this.orchMode) {
         return {
           outputs: [
@@ -598,7 +755,7 @@ export class ReplSession {
           ],
         };
       }
-      return { outputs: [`direct agent → ${a}`] };
+      return { outputs: [`${this.leadMode ? 'lead' : 'direct agent'} → ${a}`] };
     }
     if (s === '/model' || s.startsWith('/model ')) {
       const [, agent, model] = s.split(/\s+/);
@@ -632,6 +789,7 @@ export class ReplSession {
         this.transcript.length = 0;
         this.transcript.push(...kept);
         this.native.delete(a);
+        this.tasks = this.tasks.filter(task => task.agent !== a);
         this.persistNow();
         this.ui.onSystem?.(`reset ${a}`);
         return { outputs: this.uiMode ? [] : [`reset ${a}`] };
@@ -639,6 +797,7 @@ export class ReplSession {
       this.transcript.length = 0;
       this.ledger.reset();
       this.native.clear();
+      this.tasks = [];
       this.persistNow();
       this.ui.onClear?.();
       const note = 'New chat — transcript cleared. Direct agent: '
@@ -678,11 +837,14 @@ export class ReplSession {
       const [agent, model] = token.split(':');
       if (!agent || !this.registry.has(agent)) return { outputs: [`unknown agent '${agent ?? ''}'`] };
       if (model) this.setModel(agent, model);
-      this.current = agent;
+      // A one-off @agent send must not replace the lead; /switch does that.
+      if (!this.leadMode) this.current = agent;
       const text = await this.send(agent, msg);
       return { outputs: this.outs([text]) };
     }
     if (s.startsWith('/')) return { outputs: [`unknown command '${s}'. Try /help`] };
+
+    if (this.leadMode) return { outputs: await this.lead(s) };
 
     if (this.autoRoute && isSearchIntent(s)) {
       const target = this.registry.has('agy') ? 'agy' : 'comet';
@@ -714,7 +876,7 @@ export class ReplSession {
   }
 }
 
-export interface ReplStartOptions extends Pick<ReplOptions, 'session' | 'persist' | 'orchMode' | 'tui' | 'approve' | 'approveContext'> {}
+export interface ReplStartOptions extends Pick<ReplOptions, 'session' | 'persist' | 'orchMode' | 'mode' | 'briefingWorkspace' | 'gatewayUrl' | 'tui' | 'approve' | 'approveContext'> {}
 
 export async function startRepl(
   registry: AdapterRegistry,
@@ -769,6 +931,7 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
     for (const l of renderChatFooter({
       sessionName: session.sessionName,
       orchMode: session.orchestratorMode,
+      modeLabel: session.chatMode,
       orchLabel,
       hops: session.ledger.flowHops,
       route: session.ledger.route,
@@ -785,7 +948,7 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
 
   const banner = session.sessionName
     ? `agentctl chat — session '${session.sessionName}' (memory on) — /help, /exit`
-    : 'agentctl chat — orchestrator on by default — /help, /exit to quit';
+    : 'agentctl chat — conversational lead — /help, /exit to quit';
   io.out(banner);
   for (const l of formatStatus(await session.status(), session.sessionName)) io.out(l);
 
@@ -802,7 +965,7 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
         const a = session.currentAgent;
         const m = session.modelFor(a);
         const label = m ? `${a}${color.dim(`(${m})`)}` : a;
-        rl.setPrompt(`${agentColor(a)(label)}> `);
+        rl.setPrompt(`${session.chatMode === 'lead' ? 'lead ' : ''}${agentColor(a)(label)}> `);
       }
       rl.prompt();
     };
@@ -818,6 +981,7 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
         return;
       }
       rl.pause();
+      session.beginTurn();
       setWorkingPrompt();
 
       void (async () => {
@@ -835,6 +999,7 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
         } catch (e) {
           io.err(`error: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
+          session.endTurn();
           gate.end();
           if (!closed && !exiting) {
             rl.resume();
@@ -846,7 +1011,12 @@ async function startReadlineRepl(session: ReplSession, io: IO): Promise<void> {
     });
     printFooter();
     prompt();
+    rl.on('SIGINT', () => {
+      if (session.requestCancel()) io.out('(cancelling…)');
+      else rl.close();
+    });
     rl.on('close', () => {
+      session.requestCancel();
       closed = true;
       resolve();
     });
