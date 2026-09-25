@@ -1,9 +1,11 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { sharedPtrHome } from '@shared_ptr/contract/local';
+import { setting } from './env.js';
 import type { Memory } from './store.js';
 import type { MemoryProvider } from './layaEvidence.js';
 import {
@@ -12,6 +14,7 @@ import {
   selectEvidence,
 } from './layaEvidence.js';
 import { jevEvidenceEnabled, selectJevEvidence } from './jevEvidence.js';
+import { GraphSpecSchema, runGraph, validateGraph, type GraphSpec, type Runtime } from './graphEngine.js';
 
 const stepSchema = z.object({
   id: z.string(),
@@ -67,6 +70,8 @@ export interface ContextRetrievalResult {
   trace: GraphTraceStep[];
   graph: string;
   graphVersion: number;
+  /** which graph ran: the bundled default or the operator/`improve` override */
+  graphSource?: 'bundled' | 'override' | 'pipeline';
 }
 
 let cachedSpec: z.infer<typeof pipelineSchema> | undefined;
@@ -122,6 +127,7 @@ function builtFallback() {
 
 export function resetTurnGraphCache(): void {
   cachedSpec = undefined;
+  cachedGraph = undefined;
 }
 
 /**
@@ -155,155 +161,198 @@ function resolveGates(input: ContextRetrievalInput): { jev: boolean; laya: boole
   return { jev, laya };
 }
 
-/** Runs the context_retrieval pipeline (search/handoff backend path). */
+/** Mutable state one context_retrieval run threads through its nodes. */
+interface RetrievalState {
+  input: ContextRetrievalInput;
+  deps: ContextRetrievalDeps;
+  gates: { jev: boolean; laya: boolean };
+  readable: Memory[];
+  evidenceStatus: ContextRetrievalResult['evidenceStatus'];
+  terminal: ContextRetrievalResult['terminal'];
+}
+
+const queryTerms = (q: string) => [...new Set(q.match(/[\p{L}\p{N}_]+/gu) ?? [])].slice(0, 32);
+
+/** The node actions, shared by the graph engine and the legacy pipeline runner. */
+export const RETRIEVAL_RUNTIME: Runtime<RetrievalState> = {
+  conditions: {
+    jev_disabled: (s) => !s.gates.jev,
+    laya_disabled: (s) => !s.gates.laya,
+    has_candidates: (s) => s.readable.length > 0,
+  },
+  handlers: {
+    validate_workspace_provider_kinds: (s) => {
+      const terms = queryTerms(s.input.query);
+      if (!terms.length) {
+        s.terminal = 'abstain_empty_query';
+        return { outcome: 'abstain_empty_query' };
+      }
+      return { outcome: 'scope_valid', detail: { termCount: terms.length } };
+    },
+    fts_hybrid_fetch: async (s) => {
+      const match = queryTerms(s.input.query).map((t) => `"${t}"`).join(' OR ');
+      s.readable = await Promise.resolve(s.deps.ftsFetch(s.input, match));
+      return { outcome: 'candidates_fetched', detail: { count: s.readable.length } };
+    },
+    auth_and_provider_filter: (s) => {
+      s.readable = s.deps.filterAcl(s.readable, s.input.provider);
+      return { outcome: 'acl_filtered', detail: { count: s.readable.length } };
+    },
+    jev_evidence_gate: async (s) => {
+      if (!s.readable.length) return { outcome: 'skipped_empty' };
+      // Jev is hosted off-host; confidential memories never leave the machine.
+      const shareable = s.readable.filter((m) => m.classification !== 'confidential');
+      const withheld = s.readable.length - shareable.length;
+      if (!shareable.length) return { outcome: 'skipped_confidential_only', detail: { withheld } };
+      const judgment = await selectJevEvidence(
+        s.input.query,
+        shareable.slice(0, 6).map((m) => ({ id: m.id, text: m.text, source: m.source })),
+      );
+      if (judgment.unavailable || !judgment.ok) {
+        s.evidenceStatus = 'jev_unavailable_keyword_fallback';
+        return { outcome: 'jev_unavailable', detail: { error: judgment.error?.slice(0, 200), error_code: judgment.errorCode ?? 'evidence_error' } };
+      }
+      s.evidenceStatus = 'jev_verified_or_abstained';
+      if (!judgment.choice) {
+        s.terminal = 'abstain_jev';
+        s.readable = [];
+        return { outcome: 'jev_abstain', detail: { confidence: judgment.confidence, withheld } };
+      }
+      s.readable = s.readable.filter((m) => m.id === judgment.choice);
+      return { outcome: 'jev_selected', detail: { choice: judgment.choice, confidence: judgment.confidence, model: judgment.model, withheld } };
+    },
+    laya_evidence_gate: async (s) => {
+      if (!s.readable.length) return { outcome: 'skipped_empty' };
+      const judgment = await selectEvidence(
+        s.input.query,
+        s.readable.slice(0, 6).map((m) => ({ id: m.id, text: m.text, source: m.source })),
+      );
+      if (judgment.unavailable || !judgment.ok) {
+        s.evidenceStatus = 'laya_unavailable_keyword_fallback';
+        return { outcome: 'laya_unavailable', detail: { error: judgment.error?.slice(0, 200), error_code: judgment.errorCode ?? 'evidence_error' } };
+      }
+      s.evidenceStatus = 'laya_verified_or_abstained';
+      if (!judgment.choice) {
+        s.terminal = 'abstain_laya';
+        s.readable = [];
+        return { outcome: 'laya_abstain', detail: { confidence: judgment.confidence } };
+      }
+      s.readable = s.readable.filter((m) => m.id === judgment.choice);
+      return { outcome: 'laya_selected', detail: { choice: judgment.choice, confidence: judgment.confidence } };
+    },
+    apply_limit: (s) => {
+      s.readable = s.readable.slice(0, s.input.limit);
+      return { outcome: 'results', detail: { count: s.readable.length } };
+    },
+  },
+};
+
+/** Nodes every path to `results` must pass: optimizations may never bypass the ACL filter. */
+export const RETRIEVAL_PINNED = ['filter_acl'];
+
+let cachedGraph: { spec: GraphSpec; source: string } | undefined;
+
+/**
+ * The executable context_retrieval graph: the operator/`improve` override when
+ * it validates, else the bundled default. An invalid override is refused (with
+ * a warning), never run.
+ */
+export function loadContextRetrievalGraph(): { spec: GraphSpec; source: string } {
+  if (cachedGraph) return cachedGraph;
+  const tryLoad = (path: string): GraphSpec | string => {
+    const doc = parseYaml(readFileSync(path, 'utf8')) as { graphs?: Record<string, unknown> };
+    const parsed = GraphSpecSchema.safeParse(doc.graphs?.context_retrieval);
+    if (!parsed.success) return `not a valid graph: ${parsed.error.issues[0]?.message}`;
+    const errors = validateGraph(parsed.data, RETRIEVAL_RUNTIME, { pinned: RETRIEVAL_PINNED, mustPassFor: ['results'] });
+    return errors.length ? errors.join('; ') : parsed.data;
+  };
+  const override = turnGraphConfigPath();
+  if (existsSync(override)) {
+    const r = tryLoad(override);
+    if (typeof r !== 'string') return (cachedGraph = { spec: r, source: override });
+    process.stderr.write(`shared_ptr: ignoring ${override}: ${r}\n`);
+  }
+  const r = tryLoad(bundledDefaultPath());
+  if (typeof r === 'string') throw new Error(`bundled context_retrieval graph is invalid: ${r}`);
+  return (cachedGraph = { spec: r, source: 'bundled' });
+}
+
+/** Legacy linear runner (SHARED_PTR_GRAPH_EXECUTOR=pipeline), kept one release as a fallback. */
+async function runAsPipeline(state: RetrievalState): Promise<GraphTraceStep[]> {
+  const trace: GraphTraceStep[] = [];
+  for (const step of loadContextRetrievalPipeline()) {
+    const t0 = performance.now();
+    if (step.skip_when && RETRIEVAL_RUNTIME.conditions[step.skip_when]?.(state, '')) {
+      traceStep(trace, step.id, step.action, 'skipped', t0, { reason: step.skip_when });
+      continue;
+    }
+    const handler = RETRIEVAL_RUNTIME.handlers[step.action];
+    if (!handler) {
+      traceStep(trace, step.id, step.action, 'unknown_action', t0);
+      throw new Error(`Unknown graph action: ${step.action}`);
+    }
+    const r = await handler(state);
+    traceStep(trace, step.id, step.action, r.outcome, t0, r.detail);
+    if (r.outcome === 'abstain_empty_query') break;
+  }
+  return trace;
+}
+
+/** Runs context_retrieval (search/handoff/turn backend path) through the graph engine. */
 export async function runContextRetrievalGraph(
   deps: ContextRetrievalDeps,
   input: ContextRetrievalInput,
 ): Promise<ContextRetrievalResult> {
-  const pipeline = loadContextRetrievalPipeline();
-  const trace: GraphTraceStep[] = [];
-  const gates = resolveGates(input);
-  let evidenceStatus: ContextRetrievalResult['evidenceStatus'] =
-    'keyword_matches_not_semantically_verified';
-  let readable: Memory[] = [];
-  let terminal: ContextRetrievalResult['terminal'] = 'results';
-
-  for (const step of pipeline) {
-    const t0 = performance.now();
-    if (step.skip_when === 'jev_disabled' && !gates.jev) {
-      traceStep(trace, step.id, step.action, 'skipped', t0, { reason: 'jev_disabled' });
-      continue;
-    }
-    if (step.skip_when === 'laya_disabled' && !gates.laya) {
-      traceStep(trace, step.id, step.action, 'skipped', t0, { reason: 'laya_disabled' });
-      continue;
-    }
-    switch (step.action) {
-      case 'validate_workspace_provider_kinds': {
-        const terms = [...new Set(input.query.match(/[\p{L}\p{N}_]+/gu) ?? [])].slice(0, 32);
-        if (!terms.length) {
-          traceStep(trace, step.id, step.action, 'abstain_empty_query', t0);
-          return {
-            memories: [],
-            terminal: 'abstain_empty_query',
-            evidenceStatus,
-            trace,
-            graph: 'context_retrieval',
-            graphVersion: cachedSpec?.version ?? 1,
-          };
-        }
-        traceStep(trace, step.id, step.action, 'scope_valid', t0, { termCount: terms.length });
-        break;
-      }
-      case 'fts_hybrid_fetch': {
-        const terms = [...new Set(input.query.match(/[\p{L}\p{N}_]+/gu) ?? [])].slice(0, 32);
-        const match = terms.map(t => `"${t}"`).join(' OR ');
-        const rows = await Promise.resolve(deps.ftsFetch(input, match));
-        readable = rows;
-        traceStep(trace, step.id, step.action, 'candidates_fetched', t0, { count: rows.length });
-        break;
-      }
-      case 'auth_and_provider_filter': {
-        readable = deps.filterAcl(readable, input.provider);
-        traceStep(trace, step.id, step.action, 'acl_filtered', t0, { count: readable.length });
-        break;
-      }
-      case 'jev_evidence_gate': {
-        if (!readable.length) {
-          traceStep(trace, step.id, step.action, 'skipped_empty', t0);
-          break;
-        }
-        // Jev is hosted off-host; confidential memories never leave the machine.
-        const shareable = readable.filter(m => m.classification !== 'confidential');
-        const withheld = readable.length - shareable.length;
-        if (!shareable.length) {
-          traceStep(trace, step.id, step.action, 'skipped_confidential_only', t0, { withheld });
-          break;
-        }
-        const shortlist = shareable.slice(0, 6);
-        const judgment = await selectJevEvidence(
-          input.query,
-          shortlist.map(m => ({ id: m.id, text: m.text, source: m.source })),
-        );
-        if (judgment.unavailable || !judgment.ok) {
-          evidenceStatus = 'jev_unavailable_keyword_fallback';
-          traceStep(trace, step.id, step.action, 'jev_unavailable', t0, {
-            error: judgment.error?.slice(0, 200),
-            error_code: judgment.errorCode ?? 'evidence_error',
-          });
-          break;
-        }
-        evidenceStatus = 'jev_verified_or_abstained';
-        if (!judgment.choice) {
-          terminal = 'abstain_jev';
-          readable = [];
-          traceStep(trace, step.id, step.action, 'jev_abstain', t0, {
-            confidence: judgment.confidence,
-            withheld,
-          });
-          break;
-        }
-        readable = readable.filter(m => m.id === judgment.choice);
-        traceStep(trace, step.id, step.action, 'jev_selected', t0, {
-          choice: judgment.choice,
-          confidence: judgment.confidence,
-          model: judgment.model,
-          withheld,
-        });
-        break;
-      }
-      case 'laya_evidence_gate': {
-        if (!readable.length) {
-          traceStep(trace, step.id, step.action, 'skipped_empty', t0);
-          break;
-        }
-        const shortlist = readable.slice(0, 6);
-        const judgment = await selectEvidence(
-          input.query,
-          shortlist.map(m => ({ id: m.id, text: m.text, source: m.source })),
-        );
-        if (judgment.unavailable || !judgment.ok) {
-          evidenceStatus = 'laya_unavailable_keyword_fallback';
-          traceStep(trace, step.id, step.action, 'laya_unavailable', t0, {
-            error: judgment.error?.slice(0, 200),
-            error_code: judgment.errorCode ?? 'evidence_error',
-          });
-          break;
-        }
-        evidenceStatus = 'laya_verified_or_abstained';
-        if (!judgment.choice) {
-          terminal = 'abstain_laya';
-          readable = [];
-          traceStep(trace, step.id, step.action, 'laya_abstain', t0, {
-            confidence: judgment.confidence,
-          });
-          break;
-        }
-        readable = readable.filter(m => m.id === judgment.choice);
-        traceStep(trace, step.id, step.action, 'laya_selected', t0, {
-          choice: judgment.choice,
-          confidence: judgment.confidence,
-        });
-        break;
-      }
-      case 'apply_limit': {
-        readable = readable.slice(0, input.limit);
-        traceStep(trace, step.id, step.action, 'results', t0, { count: readable.length });
-        break;
-      }
-      default:
-        traceStep(trace, step.id, step.action, 'unknown_action', t0);
-        throw new Error(`Unknown graph action: ${step.action}`);
-    }
+  const state: RetrievalState = {
+    input, deps, gates: resolveGates(input), readable: [],
+    evidenceStatus: 'keyword_matches_not_semantically_verified', terminal: 'results',
+  };
+  let trace: GraphTraceStep[];
+  let graphSource: ContextRetrievalResult['graphSource'];
+  if (setting('GRAPH_EXECUTOR') === 'pipeline') {
+    trace = await runAsPipeline(state);
+    graphSource = 'pipeline';
+  } else {
+    const graph = loadContextRetrievalGraph();
+    const run = await runGraph(graph.spec, RETRIEVAL_RUNTIME, state);
+    trace = run.trace.map((t) => ({ ...t, ms: Math.round(t.ms) }));
+    graphSource = graph.source === 'bundled' ? 'bundled' : 'override';
   }
-
   return {
-    memories: readable,
-    terminal,
-    evidenceStatus,
+    memories: state.terminal === 'results' ? state.readable : [],
+    terminal: state.terminal,
+    evidenceStatus: state.evidenceStatus,
     trace,
     graph: 'context_retrieval',
     graphVersion: cachedSpec?.version ?? 1,
+    graphSource,
+  };
+}
+
+/**
+ * One stored graph run for SessionGraph analysis: content-free by design
+ * (node, action, outcome and timing only; no query text, memory ids or error
+ * text, which live in trace detail). Off with SHARED_PTR_GRAPH_RUN_LOG=0.
+ */
+export interface GraphRunRecord {
+  id: string;
+  at: number;
+  workspace: string;
+  graph: string;
+  source: string;
+  terminal: string;
+  evidenceStatus: string;
+  totalMs: number;
+  steps: Array<{ node: string; action: string; outcome: string; ms: number }>;
+}
+
+export function graphRunRecord(workspace: string, r: ContextRetrievalResult): GraphRunRecord | null {
+  if (setting('GRAPH_RUN_LOG') === '0') return null;
+  const steps = r.trace.map((t) => ({ node: t.node, action: t.action, outcome: t.outcome, ms: t.ms }));
+  return {
+    id: randomUUID(), at: Date.now(), workspace, graph: r.graph, source: r.graphSource ?? 'bundled',
+    terminal: r.terminal, evidenceStatus: r.evidenceStatus,
+    totalMs: steps.reduce((a, t) => a + t.ms, 0), steps,
   };
 }
 

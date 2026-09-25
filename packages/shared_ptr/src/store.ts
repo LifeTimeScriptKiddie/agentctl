@@ -25,6 +25,8 @@ import {
 import {
   normalizeEvidenceGate,
   runContextRetrievalGraph,
+  graphRunRecord,
+  type GraphRunRecord,
   type ContextRetrievalInput,
   type EvidenceGateInput,
 } from './turnGraph.js';
@@ -221,7 +223,7 @@ export class MemoryStore {
       if (path !== ':memory:') chmodSync(path, 0o600);
       db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
       const version = Number(db.prepare('PRAGMA user_version').get()?.user_version);
-      if (version > 5) throw new Error('Memory schema is newer than this agentctl version.');
+      if (version > 6) throw new Error('Memory schema is newer than this shared_ptr version.');
       db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS memories (
           id TEXT PRIMARY KEY, workspace TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -324,6 +326,16 @@ export class MemoryStore {
           CREATE INDEX IF NOT EXISTS idx_findings_workspace_status ON findings (workspace, status);
         `);
         db.exec('PRAGMA user_version=5;');
+      }
+      if (version < 6) {
+        // content-free workflow runs for SessionGraph (`shared_ptr improve`)
+        db.exec(`CREATE TABLE IF NOT EXISTS graph_runs (
+          id TEXT PRIMARY KEY, at INTEGER NOT NULL, workspace TEXT NOT NULL, graph TEXT NOT NULL,
+          source TEXT NOT NULL, terminal TEXT NOT NULL, evidence_status TEXT NOT NULL,
+          total_ms REAL NOT NULL, steps TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_graph_runs_at ON graph_runs (at);`);
+        db.exec('PRAGMA user_version=6;');
       }
       db.exec('COMMIT;');
       return new MemoryStore(db, auth);
@@ -655,13 +667,35 @@ export class MemoryStore {
       ...input,
       fetchLimit: Math.max(input.limit * 4, jev || laya ? 12 : input.limit),
     };
-    return runContextRetrievalGraph(
+    const result = await runContextRetrievalGraph(
       {
         ftsFetch: (inp, match) => this.ftsFetch(inp, match),
         filterAcl: (rows, prov) => this.filterAclRows(rows, prov),
       },
       full,
     );
+    this.recordGraphRun(graphRunRecord(input.workspace, result));
+    return result;
+  }
+
+  /** Best-effort: a failed trace write never fails the search. */
+  private recordGraphRun(run: GraphRunRecord | null): void {
+    if (!run) return;
+    try {
+      this.db.prepare(`INSERT INTO graph_runs (id, at, workspace, graph, source, terminal, evidence_status, total_ms, steps)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(run.id, run.at, run.workspace, run.graph, run.source, run.terminal,
+        run.evidenceStatus, run.totalMs, JSON.stringify(run.steps));
+    } catch { /* read-only store or old schema: skip */ }
+  }
+
+  /** Stored graph runs since `sinceMs` (oldest first), for SessionGraph export. */
+  listGraphRuns(sinceMs = 0, limit = 10_000): GraphRunRecord[] {
+    return (this.db.prepare('SELECT * FROM graph_runs WHERE at >= ? ORDER BY at LIMIT ?').all(sinceMs, limit) as Array<Record<string, unknown>>)
+      .map((r) => ({
+        id: String(r.id), at: Number(r.at), workspace: String(r.workspace), graph: String(r.graph), source: String(r.source),
+        terminal: String(r.terminal), evidenceStatus: String(r.evidence_status), totalMs: Number(r.total_ms),
+        steps: JSON.parse(String(r.steps)),
+      }));
   }
 
   async search(

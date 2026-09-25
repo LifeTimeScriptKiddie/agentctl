@@ -129,7 +129,7 @@ describe('sqlite proposedBy and self-accept', () => {
     store.close();
 
     const check = new DatabaseSync(path);
-    expect(Number(check.prepare('PRAGMA user_version').get()?.user_version)).toBe(5);
+    expect(Number(check.prepare('PRAGMA user_version').get()?.user_version)).toBe(6);
     const memoryCols = new Set(
       (check.prepare(`SELECT name FROM pragma_table_info('memories')`).all() as Array<{ name: string }>)
         .map(c => c.name),

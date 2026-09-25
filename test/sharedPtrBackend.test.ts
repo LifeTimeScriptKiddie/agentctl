@@ -140,3 +140,24 @@ describe.skipIf(!PG_URL)('postgres: concurrent checkpoint updates through the ga
     expect(now?.revision).toBe(first.revision + 1);
   });
 });
+
+describe.each(STORES)('%s store: graph runs are recorded for SessionGraph, content-free', (store) => {
+  it('each search leaves a run with its node path, and no query text', async () => {
+    useStore(store);
+    vi.stubEnv('AGENTCTL_USER_ID', 'alice');
+    vi.stubEnv('AGENTCTL_GROUPS', 'team');
+    vi.stubEnv('SHARED_PTR_SERVER', '');
+    vi.stubEnv('AGENTCTL_GATEWAY_URL', '');
+    const { openMemoryStore } = await import('../packages/shared_ptr/src/openMemoryStore.js');
+    const s = await openMemoryStore(undefined, { auth: { userId: 'alice', groups: ['team'], clearance: 'confidential' } });
+    const since = Date.now();
+    await s.search(`runs-${store}`, 'unmistakable-secret-query-text', 'claude');
+    const runs = await Promise.resolve(s.listGraphRuns(since));
+    await Promise.resolve(s.close());
+    const run = runs.find((r) => r.workspace === `runs-${store}`)!;
+    expect(run.graph).toBe('context_retrieval');
+    expect(run.source).toBe('bundled');
+    expect(run.steps.map((x) => x.node)).toEqual(expect.arrayContaining(['resolve_scope', 'retrieve_candidates', 'filter_acl', 'limit_results']));
+    expect(JSON.stringify(runs)).not.toContain('unmistakable-secret-query-text');
+  });
+});
