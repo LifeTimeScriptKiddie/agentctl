@@ -27,9 +27,10 @@ describe('memory backend config', () => {
 
   it('openMemoryStore uses postgres when backend set', async () => {
     vi.stubEnv('AGENTCTL_MEMORY_BACKEND', 'postgres');
-    vi.stubEnv('AGENTCTL_MEMORY_DATABASE_URL', 'postgres://local/test');
+    // a closed local port: selecting postgres means it really tries to connect there
+    vi.stubEnv('AGENTCTL_MEMORY_DATABASE_URL', 'postgres://sptr@127.0.0.1:1/test');
     vi.stubEnv('AGENTCTL_HOME', mkdtempSync(join(tmpdir(), 'agentctl-pg-scaffold-')));
-    await expect(openMemoryStore()).rejects.toThrow(/Install the `pg` package/);
+    await expect(openMemoryStore()).rejects.toThrow(/ECONNREFUSED|connect/);
   });
 
   it('openMemoryStore uses sqlite when backend unset', async () => {
