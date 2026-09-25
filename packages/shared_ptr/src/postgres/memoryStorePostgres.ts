@@ -20,6 +20,8 @@ import {
 import {
   normalizeEvidenceGate,
   runContextRetrievalGraph,
+  graphRunRecord,
+  type GraphRunRecord,
   type ContextRetrievalInput,
   type EvidenceGateInput,
 } from '../turnGraph.js';
@@ -402,15 +404,38 @@ export class PostgresMemoryStore {
       ...input,
       fetchLimit: Math.max(input.limit * 4, jev || laya ? 12 : input.limit),
     };
-    return this.withClient(async (client) =>
-      runContextRetrievalGraph(
+    return this.withClient(async (client) => {
+      const result = await runContextRetrievalGraph(
         {
           ftsFetch: (inp, match) => this.ftsFetch(client, inp, match),
           filterAcl: (rows, prov) => this.filterAclRows(rows, prov),
         },
         full,
-      ),
-    );
+      );
+      const run = graphRunRecord(input.workspace, result);
+      if (run) {
+        // best-effort: a failed trace write never fails the search
+        await client.query(
+          `INSERT INTO graph_runs (id, at, workspace, graph, source, terminal, evidence_status, total_ms, steps)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [run.id, run.at, run.workspace, run.graph, run.source, run.terminal, run.evidenceStatus, run.totalMs,
+            JSON.stringify(run.steps)],
+        ).catch(() => undefined);
+      }
+      return result;
+    });
+  }
+
+  /** Stored graph runs since `sinceMs` (oldest first), for SessionGraph export. */
+  async listGraphRuns(sinceMs = 0, limit = 10_000): Promise<GraphRunRecord[]> {
+    return this.withClient(async (client) => {
+      const { rows } = await client.query('SELECT * FROM graph_runs WHERE at >= $1 ORDER BY at LIMIT $2', [sinceMs, limit]);
+      return rows.map((r) => ({
+        id: String(r.id), at: Number(r.at), workspace: String(r.workspace), graph: String(r.graph), source: String(r.source),
+        terminal: String(r.terminal), evidenceStatus: String(r.evidence_status), totalMs: Number(r.total_ms),
+        steps: typeof r.steps === 'string' ? JSON.parse(r.steps) : r.steps as GraphRunRecord['steps'],
+      }));
+    });
   }
 
   async searchWithGraph(

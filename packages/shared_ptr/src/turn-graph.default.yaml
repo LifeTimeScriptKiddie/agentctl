@@ -1,61 +1,42 @@
 version: 1
-# Declarative control-flow for agentctl backend paths.
-# Enforced by turnGraph.ts / memoryWriteGraph.ts — executable steps live under `pipelines:`.
+# shared_ptr workflow graphs. graphs.context_retrieval is executed by graphEngine.ts (validated at load:
+# no cycles, no unknown actions, filter_acl on every path to `results`). `pipelines:` is the legacy
+# linear form, used only with SHARED_PTR_GRAPH_EXECUTOR=pipeline for one release.
 
 graphs:
   context_retrieval:
-    description: ACL-trimmed memory fetch for search/handoff (no LLM).
+    description: ACL-trimmed memory fetch for search/handoff/turn (no LLM). Executed by graphEngine.ts.
     entry: resolve_scope
     terminal_outcomes:
       - results
       - abstain_empty_query
-      - abstain_no_evidence
+      - abstain_jev
       - abstain_laya
     nodes:
       resolve_scope:
         action: validate_workspace_provider_kinds
       retrieve_candidates:
         action: fts_hybrid_fetch
-        requires: [scope_valid]
-      filter_acl:
+      filter_acl:                      # pinned: every path to `results` must pass it
         action: auth_and_provider_filter
-        requires: [candidates_fetched]
-      optional_laya:
+      optional_jev:                    # hosted gate; confidential memories never leave the host
+        action: jev_evidence_gate
+        skip_when: jev_disabled
+      optional_laya:                   # local gate; runs only when jev is off
         action: laya_evidence_gate
-        requires: [acl_filtered]
         skip_when: laya_disabled
-        on_unavailable: edge_to filter_acl_unverified
       limit_results:
         action: apply_limit
-        requires: [acl_filtered]
     edges:
-      - from: resolve_scope
-        to: retrieve_candidates
-        when: scope_valid
-      - from: resolve_scope
-        to: abstain_empty_query
-        when: query_empty
-      - from: retrieve_candidates
-        to: filter_acl
-      - from: filter_acl
-        to: optional_laya
-        when: laya_enabled_and_nonempty
-      - from: filter_acl
-        to: limit_results
-        when: laya_disabled_or_empty
-      - from: optional_laya
-        to: abstain_laya
-        when: laya_abstain
-      - from: optional_laya
-        to: limit_results
-        when: laya_selected
-      - from: optional_laya
-        to: filter_acl_unverified
-        when: laya_unavailable
-      - from: filter_acl_unverified
-        to: limit_results
-      - from: limit_results
-        to: results
+      - { from: resolve_scope, to: abstain_empty_query, when: abstain_empty_query }
+      - { from: resolve_scope, to: retrieve_candidates }
+      - { from: retrieve_candidates, to: filter_acl }
+      - { from: filter_acl, to: optional_jev }
+      - { from: optional_jev, to: abstain_jev, when: jev_abstain }
+      - { from: optional_jev, to: optional_laya }
+      - { from: optional_laya, to: abstain_laya, when: laya_abstain }
+      - { from: optional_laya, to: limit_results }
+      - { from: limit_results, to: results }
 
   v1_turn:
     description: POST /v1/turn — context bundle + optional model_generate on serve host.
