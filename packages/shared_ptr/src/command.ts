@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { openMemoryStore, type OpenMemoryStore } from './openMemoryStore.js';
 import { runMemoryPilot } from './pilot.js';
@@ -273,6 +274,55 @@ export function registerMemoryCommands(memory: Command): void {
     s => s.resumeBriefing(o.workspace, o.provider, Number(o.maxBytes), parseKindList(o.kinds)),
     o,
   ));
+  const improveCmd = memory.command('improve')
+    .description('on request: propose workflow-graph edits from recorded runs, gated by the benchmark and SessionGraph')
+    .option('--since <days>', 'runs from the last N days', '7')
+    .option('--out <dir>', 'report directory (default: <home>/reports/improve/<timestamp>)')
+    .option('--min-runs <n>', 'minimum runs before any rule fires', '20')
+    .option('--allow-behavior-change', 'let proposals that change results become ready', false)
+    .option('--no-sessiongraph', 'skip SessionGraph (then nothing can be ready to apply)')
+    .action(async (o: { since: string; out?: string; minRuns: string; allowBehaviorChange: boolean; sessiongraph: boolean }) => {
+      try {
+        const { improve } = await import('./improve/improve.js');
+        const { sharedPtrHome } = await import('@shared_ptr/contract/local');
+        const store = await openMemoryStore(undefined, { auth: null });
+        let runs;
+        try {
+          runs = await Promise.resolve(store.listGraphRuns(Date.now() - Number(o.since) * 86_400_000));
+        } finally {
+          await Promise.resolve(store.close());
+        }
+        const outDir = o.out ?? join(sharedPtrHome(), 'reports', 'improve', new Date().toISOString().replace(/[:.]/g, '-'));
+        const report = await improve({
+          runs, outDir, allowBehaviorChange: o.allowBehaviorChange, minRuns: Number(o.minRuns),
+          ...(o.sessiongraph ? {} : { sessiongraph: null }),
+        });
+        console.log(JSON.stringify({
+          runs: report.runs, outDir: report.outDir, usageAnalysis: report.usageAnalysis,
+          proposals: report.proposals.map((p) => ({ id: p.id, verdict: p.verdict, reasons: p.reasons, efficiency: p.efficiency, changesResults: p.changesResults })),
+          next: report.proposals.some((p) => p.verdict === 'ready') ? `shared_ptr improve apply ${report.outDir} <id>` : undefined,
+        }, null, 2));
+      } catch (e) {
+        console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        process.exitCode = 1;
+      }
+    });
+  improveCmd.command('apply').argument('<dir>').argument('<proposal-id>')
+    .description('apply a ready proposal (backs up any current override)')
+    .action(async (dir: string, id: string) => {
+      try {
+        const { applyProposal } = await import('./improve/improve.js');
+        console.log(JSON.stringify(applyProposal(dir, id), null, 2));
+      } catch (e) { console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) })); process.exitCode = 1; }
+    });
+  improveCmd.command('rollback').option('--force', 'restore even if the override was edited since', false)
+    .description('undo the last applied proposal')
+    .action(async (o: { force: boolean }) => {
+      try {
+        const { rollbackImprove } = await import('./improve/improve.js');
+        console.log(JSON.stringify(rollbackImprove(o.force), null, 2));
+      } catch (e) { console.error(JSON.stringify({ error: e instanceof Error ? e.message : String(e) })); process.exitCode = 1; }
+    });
   const postgres = memory.command('postgres').description('PostgreSQL team store: status and migrations (SHARED_PTR_MEMORY_BACKEND=postgres + SHARED_PTR_MEMORY_DATABASE_URL)');
   postgres.command('status')
     .description('Show backend env, migration files, and whether the pg driver is installed')
