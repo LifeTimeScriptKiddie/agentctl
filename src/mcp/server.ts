@@ -56,6 +56,16 @@ function jobId(id: string): string {
   return id;
 }
 
+/** What a calling model reads about one tool: its title, description and input schema with field descriptions. */
+export interface RegisteredToolText { name: string; title: string; description: string; schema: unknown }
+
+const TOOL_TEXT = new WeakMap<McpServer, RegisteredToolText[]>();
+
+/** Every tool text a server registered, in registration order (for the harness fingerprint). */
+export function registeredToolText(server: McpServer): RegisteredToolText[] {
+  return TOOL_TEXT.get(server) ?? [];
+}
+
 export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer {
   const caller = opts.caller ?? [];
   const maxWait = Math.max(0, opts.maxWaitSeconds ?? 50);
@@ -88,8 +98,12 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   const traceSession = opts.trace === false ? null : newMcpSessionId();
   let seq = 0;
   const register = server.registerTool.bind(server);
-  server.registerTool = ((name: string, config: unknown, cb: (...a: unknown[]) => Promise<ToolResult>) =>
-    register(name, config as never, (async (...a: unknown[]) => {
+  const tools: RegisteredToolText[] = [];
+  TOOL_TEXT.set(server, tools);
+  server.registerTool = ((name: string, config: unknown, cb: (...a: unknown[]) => Promise<ToolResult>) => {
+    const c = config as { title?: string; description?: string; inputSchema?: Record<string, z.ZodType> };
+    tools.push({ name, title: c.title ?? '', description: c.description ?? '', schema: z.toJSONSchema(z.object(c.inputSchema ?? {})) });
+    return register(name, config as never, (async (...a: unknown[]) => {
       const started = Date.now();
       const result = await cb(...a);
       if (traceSession) {
@@ -105,10 +119,17 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
           ...(typeof parsed.status === 'string' ? { status: parsed.status } : {}),
           ...(typeof args.to === 'string' ? { to: args.to } : {}),
           ...(issues.length ? { issues } : {}),
+          ...(name === 'agentctl_run_tasks' ? { warned: warningCodes(parsed) } : {}),
         });
       }
       return result;
-    }) as never)) as typeof server.registerTool;
+    }) as never);
+  }) as typeof server.registerTool;
+
+  /** Codes of the spec_warnings a result carried (what the caller was actually told). */
+  const warningCodes = (parsed: Record<string, unknown>): string[] => (Array.isArray(parsed.spec_warnings)
+    ? parsed.spec_warnings.flatMap((w) => (w && typeof (w as { code?: unknown }).code === 'string' ? [(w as { code: string }).code] : []))
+    : []);
 
   /** Content-free lint codes of a request (prompt side of the trace). */
   const specIssues = (tool: string, args: Record<string, unknown>): string[] => {

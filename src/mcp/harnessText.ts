@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { buildLeadPrompt, buildWorkerPrompt, type LoopTask } from '../core/orchestrateLoop.js';
-import { RUN_TASKS_ACTIVE_HINTS, guidanceFor } from '../graph/specRules.js';
+import { RUN_TASKS_ACTIVE_HINTS, SPEC_RULES, guidanceFor } from '../graph/specRules.js';
+import { createAgentctlMcpServer, registeredToolText } from './server.js';
 
 /**
  * The harness agentctl hands to models, in one place: what calling agents read
@@ -38,7 +39,50 @@ export const RUN_TASKS_DESCRIPTION: string =
   + 'Results include spec_warnings for request problems that make tasks fail.'
   + (RUN_TASKS_ACTIVE_HINTS.length ? ` Rules: ${RUN_TASKS_ACTIVE_HINTS.map(guidanceFor).join(' ')}` : '');
 
-let cached: string | null = null;
+/** JSON with sorted keys, so the fingerprint never depends on property order. */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+const shortHash = (text: string) => `h${createHash('sha256').update(text).digest('hex').slice(0, 10)}`;
+
+/**
+ * The full text of every harness source, keyed by source id (src/graph/harness.ts
+ * HARNESS_SOURCES). Tool text comes from the MCP server's own registrations
+ * (descriptions and input schemas with field descriptions), built with the
+ * canonical options, so no tool text can be left out of the fingerprint.
+ */
+export function harnessSourceTexts(): Record<string, string> {
+  const tools = registeredToolText(createAgentctlMcpServer({ trace: false, maxWaitSeconds: 50 }))
+    .sort((x, y) => x.name.localeCompare(y.name));
+  const skeleton = { goal: '', agents: [], outcomes: [], notes: [], maxRounds: 3, maxTasks: 4, concurrency: 3 };
+  const task = { id: 't', instruction: '', acceptance: 'a', agent: 'a', type: 'reason', needs: [], dependsOn: [] } as unknown as LoopTask;
+  return {
+    'mcp.instructions': [mcpInstructions(false), mcpInstructions(true)].join('\u0000'),
+    'tool.run_tasks': stableStringify(tools.filter((t) => t.name === 'agentctl_run_tasks')),
+    'tool.other': stableStringify(tools.filter((t) => t.name !== 'agentctl_run_tasks')),
+    'feedback.spec_warnings': Object.values(SPEC_RULES).map((r) => `${r.code}: ${r.guidance}`).sort().join('\n'),
+    'prompt.lead': [buildLeadPrompt({ ...skeleton, round: 1 }), buildLeadPrompt({ ...skeleton, round: 3 })].join('\u0000'),
+    'prompt.worker': buildWorkerPrompt(task, []),
+  };
+}
+
+let cachedSources: Record<string, string> | null = null;
+
+/** Fingerprint per harness source (`h` + 10 hex chars each). */
+export function harnessSourceHashes(): Record<string, string> {
+  cachedSources ??= Object.fromEntries(Object.entries(harnessSourceTexts()).map(([id, text]) => [id, shortHash(text)]));
+  return cachedSources;
+}
+
+/** Global fingerprint: the hash of the per-source hashes, so it changes whenever any source changes. */
+export function harnessFingerprintOf(sources: Record<string, string>): string {
+  return shortHash(Object.keys(sources).sort().map((id) => `${id}=${sources[id]}`).join('\n'));
+}
 
 /**
  * Short fingerprint of every harness text a model can read from agentctl
@@ -46,14 +90,5 @@ let cached: string | null = null;
  * traces recorded under different harness versions are never pooled blindly.
  */
 export function harnessVersion(): string {
-  if (cached) return cached;
-  const skeleton = { goal: '', agents: [], outcomes: [], notes: [], maxRounds: 3, maxTasks: 4, concurrency: 3 };
-  const task = { id: 't', instruction: '', acceptance: 'a', agent: 'a', type: 'reason', needs: [], dependsOn: [] } as unknown as LoopTask;
-  const texts = [
-    mcpInstructions(false), mcpInstructions(true), RUN_TASKS_DESCRIPTION,
-    buildLeadPrompt({ ...skeleton, round: 1 }), buildLeadPrompt({ ...skeleton, round: 3 }),
-    buildWorkerPrompt(task, []),
-  ];
-  cached = `h${createHash('sha256').update(texts.join('\u0000')).digest('hex').slice(0, 10)}`;
-  return cached;
+  return harnessFingerprintOf(harnessSourceHashes());
 }

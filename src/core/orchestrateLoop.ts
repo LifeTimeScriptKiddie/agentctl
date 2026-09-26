@@ -3,6 +3,7 @@ import { PlanStepSchema, type PlanStep } from '../schema/plan.js';
 import type { AdapterCapabilities } from '../schema/capabilities.js';
 import { extractJson } from '../util/json.js';
 import { quoteUntrusted } from './untrusted.js';
+import { classifyRejection } from '../graph/specRules.js';
 import { stepFingerprint, type ApproveStep, type OrchestrationResult, type StepOutcome } from './orchestrator.js';
 
 /**
@@ -100,19 +101,31 @@ export interface LoopOptions {
 
 /**
  * What the lead did with the lead prompt in one round, without its text:
- * answered, delegated a valid batch, sent an unparseable envelope, or sent a
- * batch the roster check refused (`problem` is that refusal message, which
- * names only task ids, lanes and models — never instructions).
+ * answered, answered with nothing, delegated a valid batch, sent an envelope
+ * that did not parse, sent a batch the roster check refused, or delegated
+ * when delegation was closed. `code` classifies the problem (never its text,
+ * which can echo what the lead wrote).
  */
 export interface LeadDecisionRecord {
   round: number;
   phase: 'lead' | 'final';
   lastRound: boolean;
-  kind: 'answer' | 'delegate' | 'invalid' | 'rejected' | 'closed';
+  kind: 'answer' | 'empty' | 'delegate' | 'invalid' | 'rejected' | 'closed';
   tasks: number;
   pinnedModels: number;
   withAcceptance: number;
-  problem?: string;
+  /** invalid: too_many_tasks | multiple_envelopes | bad_envelope; rejected: a classifyRejection code. */
+  code?: string;
+}
+
+/** Content-free code for why a lead reply could not be used. */
+export function leadProblemCode(kind: string, problem: string): string {
+  if (kind === 'invalid') {
+    if (/too many tasks/.test(problem)) return 'too_many_tasks';
+    if (/more than one delegation envelope/.test(problem)) return 'multiple_envelopes';
+    return 'bad_envelope';
+  }
+  return classifyRejection(problem);
 }
 
 export interface LoopOutcome extends StepOutcome {
@@ -426,6 +439,19 @@ function createGraphRun(goal: string, deps: GraphDeps, opts: LoopOptions, worker
   return { tasks, ordered, addCost, finish, runBatch, aborted, concurrency };
 }
 
+function decisionRecord(
+  decision: LeadDecision, round: number, phase: LeadDecisionRecord['phase'], lastRound: boolean,
+  kind: LeadDecisionRecord['kind'], problem?: string,
+): LeadDecisionRecord {
+  const tasks = decision.kind === 'delegate' ? decision.tasks : [];
+  return {
+    round, phase, lastRound, kind, tasks: tasks.length,
+    pinnedModels: tasks.filter((t) => t.model != null).length,
+    withAcceptance: tasks.filter((t) => !!t.acceptance?.trim()).length,
+    ...(problem ? { code: leadProblemCode(kind, problem) } : {}),
+  };
+}
+
 /** Run the lead loop over a task graph. Throws only when the very first lead call fails. */
 export async function runLoopOrchestration(
   goal: string,
@@ -458,14 +484,10 @@ export async function runLoopOrchestration(
       break;
     }
     const decision = parseLeadDecision(r.text, maxTasks);
-    const decided = (kind: LeadDecisionRecord['kind'], problem?: string) => opts.onDecision?.({
-      round, phase: 'lead', lastRound: round === maxRounds, kind,
-      tasks: decision.kind === 'delegate' ? decision.tasks.length : 0,
-      pinnedModels: decision.kind === 'delegate' ? decision.tasks.filter((t) => t.model != null).length : 0,
-      withAcceptance: decision.kind === 'delegate' ? decision.tasks.filter((t) => !!t.acceptance?.trim()).length : 0,
-      ...(problem ? { problem } : {}),
-    });
-    if (decision.kind === 'answer') { decided('answer'); answer = decision.text; break; }
+    const decided = (kind: LeadDecisionRecord['kind'], problem?: string) => opts.onDecision?.(
+      decisionRecord(decision, round, 'lead', round === maxRounds, kind, problem),
+    );
+    if (decision.kind === 'answer') { decided(decision.text ? 'answer' : 'empty'); answer = decision.text; break; }
     if (decision.kind === 'invalid') { decided('invalid', decision.error); notes.push(`round ${round}: ${decision.error}; no tasks ran`); continue; }
     if (round === maxRounds) { decided('closed'); notes.push(`round ${round}: delegation is closed in the last round; no tasks ran`); break; }
     const problem = validateBatch(decision.tasks, deps.agents, new Set(run.tasks.map((t) => t.id)));
@@ -483,10 +505,9 @@ export async function runLoopOrchestration(
     if (run.aborted()) return finish('cancelled', null);
     const decision = r.ok ? parseLeadDecision(r.text, maxTasks) : null;
     if (decision) {
-      opts.onDecision?.({
-        round: maxRounds, phase: 'final', lastRound: true, kind: decision.kind === 'answer' ? 'answer' : 'closed',
-        tasks: decision.kind === 'delegate' ? decision.tasks.length : 0, pinnedModels: 0, withAcceptance: 0,
-      });
+      const kind = decision.kind === 'answer' ? (decision.text ? 'answer' : 'empty')
+        : decision.kind === 'delegate' ? 'closed' : 'invalid';
+      opts.onDecision?.(decisionRecord(decision, maxRounds, 'final', true, kind, decision.kind === 'invalid' ? decision.error : undefined));
     }
     if (decision?.kind === 'answer' && decision.text) answer = decision.text;
   }

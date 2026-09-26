@@ -68,7 +68,7 @@ function nodeText(e: GenericEvent): { text: string; cls: string } {
     case 'tool_result':
       return {
         text: label(e.is_error ? `✗ ${String(a.failureClass ?? a.status ?? 'error')}` : '✓ result', cost,
-          typeof a.decision === 'string' ? `lead: ${a.decision}${typeof a.tasks === 'number' ? ` ${a.tasks} task(s)` : ''}${typeof a.rejection === 'string' ? ` (${a.rejection})` : ''}` : null),
+          typeof a.decision === 'string' ? `lead: ${a.decision}${typeof a.tasks === 'number' ? ` ${a.tasks} task(s)` : ''}${typeof a.code === 'string' ? ` (${a.code})` : ''}` : null),
         cls: e.is_error ? 'kErr' : 'kOk',
       };
     case 'step':
@@ -199,13 +199,19 @@ export function overviewMermaid(pb: PromptBehaviorAnalysis | undefined): string 
   return `${lines.join('\n')}\n`;
 }
 
-function htmlEscape(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** HTML text and attribute escaping (Mermaid labels use `esc` instead). */
+export function htmlEscape(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** Self-contained page: overview plus one session's workflow. */
-export function graphHtml(opts: { title: string; overview: string; focus?: { id: string; why: string; mermaid: string }; notes?: string[] }): string {
-  const block = (src: string) => `<pre class="mermaid">${htmlEscape(src)}</pre>`;
+/** A Mermaid diagram block for pageHtml (rendered in the browser, source shown if Mermaid cannot load). */
+export const mermaidBlock = (src: string) => `<pre class="mermaid">${htmlEscape(src)}</pre>`;
+
+/**
+ * The page shell every graph picture shares: color tokens with dark mode, the
+ * card layout, and the Mermaid loader. `afterRender` runs once diagrams are laid out.
+ */
+export function pageHtml(opts: { title: string; body: string; css?: string; script?: string; afterRender?: string }): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -213,8 +219,8 @@ export function graphHtml(opts: { title: string; overview: string; focus?: { id:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${htmlEscape(opts.title)}</title>
 <style>
-  :root { --bg: #f8fafc; --fg: #0f172a; --muted: #475569; --card: #ffffff; --line: #e2e8f0; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #0b1220; --fg: #e2e8f0; --muted: #94a3b8; --card: #111a2e; --line: #1e293b; } }
+  :root { --bg: #f8fafc; --fg: #0f172a; --muted: #475569; --card: #ffffff; --line: #e2e8f0; --accent: #7c3aed; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0b1220; --fg: #e2e8f0; --muted: #94a3b8; --card: #111a2e; --line: #1e293b; --accent: #a78bfa; } }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
   main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 28px 0 8px; }
@@ -222,20 +228,15 @@ export function graphHtml(opts: { title: string; overview: string; focus?: { id:
   section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; }
   pre.mermaid { margin: 0; background: #ffffff; border-radius: 6px; padding: 8px; }
   code { font-size: 13px; }
+${opts.css ?? ''}
 </style>
 </head>
 <body>
 <main>
-<h1>${htmlEscape(opts.title)}</h1>
-<p>Content-free: nodes carry ids, sizes, lint codes and failure classes, never prompt or answer text. Blue = asked (prompt), grey = agentctl calls, green/red = outcomes, amber = spec issues. Dashed edges are retries or implicated issues.</p>
-<h2>Callers → outcomes → why</h2>
-<section>${block(opts.overview)}</section>
-${opts.focus ? `<h2>Workflow: <code>${htmlEscape(opts.focus.id)}</code></h2>
-<p>${htmlEscape(opts.focus.why)}</p>
-<section>${block(opts.focus.mermaid)}</section>` : ''}
-${opts.notes?.length ? `<h2>Notes</h2><ul>${opts.notes.map((n) => `<li>${htmlEscape(n)}</li>`).join('')}</ul>` : ''}
+${opts.body}
 </main>
 <script type="module">
+${opts.script ?? ''}
   try {
     const { default: mermaid } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
     mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict', flowchart: { htmlLabels: true, useMaxWidth: false } });
@@ -243,8 +244,24 @@ ${opts.notes?.length ? `<h2>Notes</h2><ul>${opts.notes.map((n) => `<li>${htmlEsc
   } catch (e) {
     document.querySelectorAll('pre.mermaid').forEach((el) => { el.style.whiteSpace = 'pre'; el.style.color = '#0f172a'; });
   }
+${opts.afterRender ?? ''}
 </script>
 </body>
 </html>
 `;
+}
+
+/** Self-contained page: overview plus one session's workflow. */
+export function graphHtml(opts: { title: string; overview: string; focus?: { id: string; why: string; mermaid: string }; notes?: string[] }): string {
+  return pageHtml({
+    title: opts.title,
+    body: `<h1>${htmlEscape(opts.title)}</h1>
+<p>Content-free: nodes carry ids, sizes, lint codes and failure classes, never prompt or answer text. Blue = asked (prompt), grey = agentctl calls, green/red = outcomes, amber = spec issues. Dashed edges are retries or implicated issues.</p>
+<h2>Callers → outcomes → why</h2>
+<section>${mermaidBlock(opts.overview)}</section>
+${opts.focus ? `<h2>Workflow: <code>${htmlEscape(opts.focus.id)}</code></h2>
+<p>${htmlEscape(opts.focus.why)}</p>
+<section>${mermaidBlock(opts.focus.mermaid)}</section>` : ''}
+${opts.notes?.length ? `<h2>Notes</h2><ul>${opts.notes.map((n) => `<li>${htmlEscape(n)}</li>`).join('')}</ul>` : ''}`,
+  });
 }

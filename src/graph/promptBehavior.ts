@@ -94,12 +94,16 @@ export function behaviorOf(record: JobRecord, events: JobEvent[], taskIds: strin
 
 export function joinJob(id: string): JobPromptBehavior | null {
   const record = getJob(id);
-  if (!record) return null;
+  return record ? joinLoadedJob(record, readJobEvents(id).events) : null;
+}
+
+/** Join a job already loaded, so every output of one analysis reads the same snapshot of its events. */
+export function joinLoadedJob(record: JobRecord, events: JobEvent[]): JobPromptBehavior {
   let input: Record<string, unknown> = {};
-  try { input = (readJobInput(id) ?? {}) as Record<string, unknown>; } catch { /* missing input: behavior only */ }
+  try { input = (readJobInput(record.id) ?? {}) as Record<string, unknown>; } catch { /* missing input: behavior only */ }
   const prompt = promptOf({ kind: record.kind, ...input });
   const taskIds = prompt.graph?.tasks.map((t) => t.id) ?? [];
-  return { id, kind: record.kind, caller: record.caller ?? 'cli', prompt, ...behaviorOf(record, readJobEvents(id).events, taskIds) };
+  return { id: record.id, kind: record.kind, caller: record.caller ?? 'cli', prompt, ...behaviorOf(record, events, taskIds) };
 }
 
 export interface GraphStats {

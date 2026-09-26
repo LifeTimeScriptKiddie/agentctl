@@ -230,7 +230,7 @@ describe('export: requested DAG next to executed DAG', () => {
     expect(first.arguments).toEqual({
       issues: ['no_acceptance'],
       // harness verdicts observed at this call (see test/graphHarness.test.ts)
-      harness: { pass_context: 'followed', delegate_for_one: 'followed', self_contained: 'followed', parallel_tasks: 'followed', model_only_hard: 'followed', roster_lanes: 'followed' },
+      harness: { pass_context: 'followed', delegate_for_one: 'followed', self_contained: 'followed', parallel_tasks: 'followed', model_only_hard: 'followed' }, // no job: refusal unknown, so no roster verdict
     });
   });
 });

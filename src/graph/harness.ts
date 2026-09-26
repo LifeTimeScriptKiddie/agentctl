@@ -1,7 +1,8 @@
 import type { JobEvent, JobRecord } from '../jobs/store.js';
 import type { McpCallRecord } from '../mcp/trace.js';
 import type { JobOutcome } from './promptBehavior.js';
-import { classifyRejection, guidanceFor, isWarned } from './specRules.js';
+import { guidanceFor, isWarned } from './specRules.js';
+import { leadProblemCode } from '../core/orchestrateLoop.js';
 
 /**
  * Harness digestion: how the models agentctl talks to take in the harness it
@@ -37,6 +38,7 @@ export interface HarnessSource {
 export const HARNESS_SOURCES: Record<string, HarnessSource> = Object.fromEntries(([
   ['mcp.instructions', 'MCP server instructions', 'caller', 'once per client session, at connect', 'src/mcp/harnessText.ts → mcpInstructions'],
   ['tool.run_tasks', 'agentctl_run_tasks description and schema', 'caller', 'with the tool list, every session', 'src/mcp/harnessText.ts → RUN_TASKS_DESCRIPTION; src/mcp/server.ts → taskShape'],
+  ['tool.other', 'Other agentctl tool descriptions and schemas', 'caller', 'with the tool list, every session', 'src/mcp/server.ts → registerTool calls'],
   ['feedback.spec_warnings', 'spec_warnings in run_tasks results', 'caller', 'in the result of a request with spec issues', 'src/graph/specRules.ts → SPEC_RULES guidance'],
   ['prompt.lead', 'Lead prompt (orchestrate loop)', 'lead', 'every lead round', 'src/core/orchestrateLoop.ts → buildLeadPrompt'],
   ['prompt.worker', 'Worker prompt', 'worker', 'every worker dispatch in a task graph', 'src/core/orchestrateLoop.ts → buildWorkerPrompt'],
@@ -81,6 +83,8 @@ export const HARNESS_DIRECTIVES: HarnessDirective[] = ([
   // Lead prompt
   ['lead.envelope_only', 'prompt.lead', 'JSON envelope only', 'To delegate, reply with ONLY this JSON (no prose, no code fences)', 'must',
     'a delegation reply parses as delegate.v1'],
+  ['lead.max_tasks', 'prompt.lead', 'task limit per round', 'At most N tasks per round.', 'must',
+    'a delegation reply is not refused for too many tasks'],
   ['lead.roster_names', 'prompt.lead', 'roster lanes only', '"agent":"<roster name>" from the worker roster; set "model" only to the lane\'s stronger model', 'must',
     'the batch passes the roster check (lane, availability, capability, model, effort)'],
   ['lead.new_ids', 'prompt.lead', 'new ids each round', 'Use new ids every round.', 'must', 'no task id is reused'],
@@ -137,9 +141,21 @@ const ABANDON_AFTER_MS = 30 * 60_000;
 
 const verdict = (followed: boolean): Verdict => (followed ? 'followed' : 'not_followed');
 
+/**
+ * Warning codes the caller actually received with this result. Traces record
+ * them (`warned`); older traces fall back to warnable lint codes on calls that
+ * were not refused, since a refused call returns no warnings.
+ */
+export function warnedCodes(c: McpCallRecord): string[] {
+  if (c.tool !== 'agentctl_run_tasks') return [];
+  return c.warned ?? (c.ok ? (c.issues ?? []).filter(isWarned) : []);
+}
+
 /** Caller-side verdicts from one MCP client session (tool-call sequence with lint codes). */
 export function observeMcpSession(
-  session: string, calls: McpCallRecord[], now = Date.now(), rejectionOf: (jobId: string) => string | null = () => null,
+  session: string, calls: McpCallRecord[], now = Date.now(),
+  /** Refusal code of a job, null when it was not refused, undefined when the job is unknown (outside the window). */
+  rejectionOf: (jobId: string) => string | null | undefined = () => undefined,
 ): HarnessObservation[] {
   const out: HarnessObservation[] = [];
   calls.forEach((c, i) => {
@@ -156,9 +172,9 @@ export function observeMcpSession(
       obs('self_contained', !issues.has('thin_instruction') && !issues.has('refers_outside'));
       obs('parallel_tasks', !issues.has('serial_chain'));
       obs('model_only_hard', !issues.has('strong_model_pinned'));
-      const refused = c.job_id ? rejectionOf(c.job_id) : null;
-      obs('roster_lanes', !(refused && ROSTER_CODES.has(refused)));
-      const warned = [...issues].filter(isWarned);
+      const refused = c.job_id ? rejectionOf(c.job_id) : undefined;
+      if (refused !== undefined) obs('roster_lanes', !(refused && ROSTER_CODES.has(refused)));
+      const warned = warnedCodes(c);
       const next = calls.slice(i + 1).find((x) => x.tool === 'agentctl_run_tasks');
       if (warned.length && next) {
         const nextIssues = new Set(next.issues ?? []);
@@ -199,14 +215,18 @@ export function observeJob(record: JobRecord, events: JobEvent[]): HarnessObserv
       const at = lead;
       const obs = (id: string, followed: boolean) => out.push({ ...base, directive: id, node: at.node, model: at.model, verdict: verdict(followed) });
       const kind = String(e.kind);
-      const code = kind === 'rejected' ? classifyRejection(typeof e.problem === 'string' ? e.problem : '') : null;
-      if (kind === 'delegate' || kind === 'invalid' || kind === 'rejected') obs('lead.envelope_only', kind !== 'invalid');
+      // New events carry a code; older ones carried the problem text, classified here and never copied out.
+      const code = typeof e.code === 'string' ? e.code
+        : typeof e.problem === 'string' && (kind === 'invalid' || kind === 'rejected') ? leadProblemCode(kind, e.problem) : null;
+      const sentEnvelope = kind === 'delegate' || kind === 'rejected' || kind === 'closed' || kind === 'invalid';
+      if (sentEnvelope) obs('lead.envelope_only', !(kind === 'invalid' && code !== 'too_many_tasks'));
+      if (sentEnvelope && !(kind === 'invalid' && code !== 'too_many_tasks')) obs('lead.max_tasks', code !== 'too_many_tasks');
       if (kind === 'delegate' || kind === 'rejected') {
         obs('lead.roster_names', !(code && ROSTER_CODES.has(code)));
         obs('lead.new_ids', code !== 'duplicate_id');
         obs('lead.valid_deps', !(code && DEP_CODES.has(code)));
       }
-      if (e.lastRound === true && (kind === 'answer' || kind === 'closed')) obs('lead.no_delegate_last', kind === 'answer');
+      if (e.lastRound === true && kind !== 'delegate' && kind !== 'rejected') obs('lead.no_delegate_last', kind === 'answer');
       const tasks = typeof e.tasks === 'number' ? e.tasks : 0;
       if (kind === 'delegate' && tasks > 0) {
         obs('lead.model_only_needed', !(typeof e.pinnedModels === 'number' && e.pinnedModels > 0));
@@ -323,7 +343,7 @@ export function deliveryCounts(mcp: Array<{ calls: McpCallRecord[] }>, jobs: Arr
   for (const s of mcp) {
     for (const c of s.calls) {
       if (c.caller) callers.add(`caller:${c.caller}`);
-      if (c.tool === 'agentctl_run_tasks' && (c.issues ?? []).some(isWarned)) warnedCalls++;
+      if (warnedCodes(c).length) warnedCalls++;
     }
   }
   for (const j of jobs) {
@@ -374,6 +394,7 @@ export function analyzeHarness(
   const delivered: Record<string, [number, string[]]> = {
     'mcp.instructions': [delivery.mcpSessions, delivery.callers],
     'tool.run_tasks': [delivery.mcpSessions, delivery.callers],
+    'tool.other': [delivery.mcpSessions, delivery.callers],
     'feedback.spec_warnings': [delivery.warnedCalls, delivery.callers],
     'prompt.lead': [delivery.leadCalls, delivery.leads],
     'prompt.worker': [delivery.workerCalls, delivery.workers],

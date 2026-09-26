@@ -7,7 +7,7 @@ import { buildJsonEnvelope } from '../format/output.js';
 import { run } from '../util/exec.js';
 import { startJob } from '../jobs/runner.js';
 import { exportGraphs } from './export.js';
-import { analyzeGraphs, resolveAnalyzer, type GraphAnalysis } from './analyze.js';
+import { analyzeGraphs, harnessOnly, resolveAnalyzer, type GraphAnalysis } from './analyze.js';
 import { compareAnalyses, improveFromAnalysis, type Proposal } from './improve.js';
 
 function emit(command: string, exitCode: number, result?: unknown, error?: string): void {
@@ -108,10 +108,10 @@ export function registerGraphCommands(program: Command): void {
     .option('--since <window>', 'window for a fresh analysis', '7d')
     .description('how models take in the harness: per-directive verdicts per reader, failed runs traced back (harness.html)')
     .action((dirArg: string | undefined, o: { since?: string }) => guard('harness', async () => {
+      // Without a directory only export + digestion run (no SessionGraph analyzer subprocesses).
       const dir = dirArg ?? defaultOut();
-      const analysis = dirArg ? loadAnalysis(dir) : await analyzeGraphs(dir, { sinceMs: parseSince(o.since) });
-      if (!analysis.harness) throw new Error(`no harness digestion in ${dir}; re-run \`agentctl graph analyze\` with this build`);
-      const h = analysis.harness;
+      const h = dirArg ? loadAnalysis(dir).harness : harnessOnly(dir, { sinceMs: parseSince(o.since) }).digestion;
+      if (!h) throw new Error(`no harness digestion in ${dir}; re-run \`agentctl graph analyze\` with this build`);
       emit('harness', 0, {
         dir, page: join(dir, 'harness.html'), versions: h.versions, observations: h.observations,
         readers: h.readers,

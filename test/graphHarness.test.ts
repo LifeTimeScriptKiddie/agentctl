@@ -11,9 +11,10 @@ import {
 } from '../src/graph/harness.js';
 import { harnessBackMermaid, harnessFlowMermaid, harnessHtml } from '../src/graph/harnessRender.js';
 import { exportGraphs, jobToGeneric, annotateHarness } from '../src/graph/export.js';
-import { workflowMermaid } from '../src/graph/render.js';
-import { analyzeGraphs } from '../src/graph/analyze.js';
-import { harnessVersion } from '../src/mcp/harnessText.js';
+import { graphHtml, workflowMermaid } from '../src/graph/render.js';
+import { analyzeGraphs, harnessOnly } from '../src/graph/analyze.js';
+import { harnessFingerprintOf, harnessSourceHashes, harnessSourceTexts, harnessVersion } from '../src/mcp/harnessText.js';
+import { SPEC_RULES } from '../src/graph/specRules.js';
 
 let home: string;
 beforeEach(() => {
@@ -96,7 +97,7 @@ describe('lead and worker digestion (job events)', () => {
   it('turns lead decisions and worker results into verdicts on the right nodes', () => {
     const job = loopJob();
     const obs = observeJob(getJob(job.id)!, readJobEvents(job.id).events);
-    expect(verdicts(obs, 'lead.envelope_only')).toEqual(['not_followed', 'followed']);
+    expect(verdicts(obs, 'lead.envelope_only')).toEqual(['not_followed', 'followed', 'followed']); // closed = a valid envelope, sent too late
     expect(verdicts(obs, 'lead.model_only_needed')).toEqual(['not_followed']);
     expect(verdicts(obs, 'lead.acceptance')).toEqual(['not_followed']);
     expect(verdicts(obs, 'lead.no_delegate_last')).toEqual(['not_followed']);
@@ -141,8 +142,113 @@ describe('lead and worker digestion (job events)', () => {
     expect(decisions.map((d) => [d.round, d.phase, d.kind, d.lastRound])).toEqual([
       [1, 'lead', 'rejected', false], [2, 'lead', 'delegate', false], [3, 'lead', 'closed', true], [3, 'final', 'answer', true],
     ]);
-    expect(decisions[0]!.problem).toContain('not on the worker roster');
+    expect(decisions[0]!.code).toBe('not_on_roster');
+    expect(decisions.every((d) => !('problem' in d))).toBe(true); // codes only: the lead's text never leaves the loop
     expect(decisions[1]).toMatchObject({ tasks: 1, withAcceptance: 1, pinnedModels: 0 });
+  });
+});
+
+describe('review fixes', () => {
+  const lane = (name: string): LoopAgent => ({
+    name, capabilities: { canReadFiles: true, canWriteFiles: false, canRunShell: false, canAccessNetwork: false, canUseBrowser: false, canModifyRepo: false, canPublish: false },
+    available: true, models: [], effortLevels: [], workerModel: null, workerEffort: null, strongModel: null,
+  });
+  const ok = (text: string): LoopCallResult => ({ ok: true, text, failureClass: 'none', costUsd: null, model: null });
+  const env = (n: number) => JSON.stringify({ agentctl: 'delegate.v1', tasks: Array.from({ length: n }, (_, i) => ({ id: `t${i}`, agent: 'codex', instruction: 'x' })) });
+  const decide = async (replies: string[], maxRounds = 1) => {
+    const decisions: LeadDecisionRecord[] = [];
+    await runLoopOrchestration('goal', { agents: [lane('codex')], lead: async () => ok(replies.shift()!), dispatch: async () => ok('d') },
+      { maxRounds, onDecision: (d) => decisions.push(d) });
+    return decisions;
+  };
+
+  it('1: only warnings actually returned are judged, and refused calls deliver none', () => {
+    const calls = [
+      call(1, 'agentctl_run_tasks', { ok: false, job_id: null, issues: ['thin_instruction'] }), // refused: no warnings returned
+      call(2, 'agentctl_run_tasks', { job_id: 'j2', issues: ['serial_chain', 'no_acceptance'], warned: ['serial_chain'] }),
+      call(3, 'agentctl_run_tasks', { job_id: 'j3', issues: ['serial_chain', 'thin_instruction'], warned: ['serial_chain', 'thin_instruction'] }),
+    ];
+    const heed = observeMcpSession('mcp_abcdefgh', calls).filter((o) => o.directive === 'heed_warning');
+    expect(heed.map((o) => [o.detail, o.verdict])).toEqual([['serial_chain', 'not_followed']]);
+    expect(deliveryCounts([{ calls }], []).warnedCalls).toBe(2);
+  });
+
+  it('2: a job outside the window is unknown and gets no roster verdict', () => {
+    const calls = [call(1, 'agentctl_run_tasks', { job_id: 'job_old' }), call(2, 'agentctl_run_tasks', { job_id: 'job_new' })];
+    const obs = observeMcpSession('mcp_abcdefgh', calls, T0, (id) => (id === 'job_new' ? 'bad_model' : undefined));
+    expect(obs.filter((o) => o.directive === 'roster_lanes').map((o) => [o.run, o.verdict])).toEqual([['job_new', 'not_followed']]);
+  });
+
+  it('3: final-phase replies are recorded faithfully (invalid, empty, closed)', async () => {
+    // maxRounds 1: the first reply is the last round, then one final call.
+    expect((await decide([env(1), '{"agentctl": "delegate.v1", "tasks": "no"}'])).map((d) => [d.phase, d.kind, d.code]))
+      .toEqual([['lead', 'closed', undefined], ['final', 'invalid', 'bad_envelope']]);
+    expect((await decide(['   '])).map((d) => [d.phase, d.kind])).toEqual([['lead', 'empty']]);
+    const job = createJob({ kind: 'orchestrate', input: { kind: 'orchestrate', goal: 'g' }, summary: 'g' });
+    appendJobEvent(job.id, { type: 'orchestrator_result', phase: 'final', agent: 'claude', model: 'm', ok: true } as never);
+    appendJobEvent(job.id, { type: 'lead_decision', round: 1, phase: 'final', lastRound: true, kind: 'empty', tasks: 0, pinnedModels: 0, withAcceptance: 0 } as never);
+    expect(verdicts(observeJob(getJob(job.id)!, readJobEvents(job.id).events), 'lead.no_delegate_last')).toEqual(['not_followed']);
+  });
+
+  it('4+6: too many tasks is its own rule, and only codes are stored', async () => {
+    const decisions = await decide([env(6), 'answer'], 2);
+    expect(decisions[0]).toMatchObject({ kind: 'invalid', code: 'too_many_tasks' });
+    const job = createJob({ kind: 'orchestrate', input: { kind: 'orchestrate', goal: 'g' }, summary: 'g' });
+    appendJobEvent(job.id, { type: 'orchestrator_result', phase: 'lead', agent: 'claude', model: 'm', ok: true } as never);
+    appendJobEvent(job.id, { type: 'lead_decision', ...decisions[0]! } as never);
+    const obs = observeJob(getJob(job.id)!, readJobEvents(job.id).events);
+    expect(verdicts(obs, 'lead.envelope_only')).toEqual(['followed']);
+    expect(verdicts(obs, 'lead.max_tasks')).toEqual(['not_followed']);
+    expect(JSON.stringify(readJobEvents(job.id).events)).not.toContain('at most');
+  });
+
+  it('5: the fingerprint covers every tool text, every warning fix and both prompts, per source', async () => {
+    const { createAgentctlMcpServer } = await import('../src/mcp/server.js');
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+    const [c, sv] = InMemoryTransport.createLinkedPair();
+    await createAgentctlMcpServer({ trace: false, maxWaitSeconds: 50 }).connect(sv);
+    const client = new Client({ name: 't', version: '1' });
+    await client.connect(c);
+    const { tools } = await client.listTools();
+    const texts = harnessSourceTexts();
+    const all = Object.values(texts).join('\n');
+    for (const t of tools) {
+      expect(all).toContain(JSON.stringify(t.description).slice(1, -1));
+      for (const p of Object.values((t.inputSchema.properties ?? {}) as Record<string, { description?: string }>)) {
+        if (p.description) expect(all).toContain(JSON.stringify(p.description).slice(1, -1));
+      }
+    }
+    expect(texts['feedback.spec_warnings']).toContain(SPEC_RULES.no_acceptance!.guidance);
+    expect(Object.keys(harnessSourceHashes()).sort()).toEqual(Object.keys(HARNESS_SOURCES).sort());
+    expect(harnessVersion()).toBe(harnessFingerprintOf(harnessSourceHashes()));
+    expect(harnessFingerprintOf({ ...harnessSourceHashes(), 'tool.other': 'hchanged000' })).not.toBe(harnessVersion());
+    await client.close();
+  });
+
+  it('8: graph harness without a dir exports and digests only (no SessionGraph analyzer)', () => {
+    const job = createJob({ kind: 'tasks', input: { kind: 'tasks', tasks: [{ id: 'a', instruction: 'x' }] }, summary: '1', caller: 'claude' });
+    appendJobEvent(job.id, { type: 'failed', exitCode: 2, error: "task a: 'ghost' is not on the worker roster" } as never);
+    updateJob(job.id, { status: 'failed', exitCode: 2, error: "task a: 'ghost' is not on the worker roster" });
+    const out = join(home, 'h');
+    const r = harnessOnly(out);
+    expect(r.digestion.back.map((b) => b.reason)).toEqual(['not_on_roster']);
+    expect(existsSync(join(out, 'harness.html'))).toBe(true);
+    expect(existsSync(join(out, 'harness.json'))).toBe(true);
+    expect(existsSync(join(out, 'analysis.json'))).toBe(false);
+    expect(existsSync(join(out, 'sessions'))).toBe(false);
+  });
+
+  it('9: both pages share one shell and escape attributes', () => {
+    const d = analyzeHarness([], deliveryCounts([], []), new Map());
+    const pages = [harnessHtml({ title: 'a"b', digestion: d, flow: 'flowchart LR', back: 'flowchart RL' }),
+      graphHtml({ title: 'a"b', overview: 'flowchart LR' })];
+    for (const page of pages) {
+      expect(page.match(/mermaid\.esm\.min\.mjs/g)).toHaveLength(1);
+      expect(page).toContain('<title>');
+      expect(page).not.toContain('a"b<');
+    }
+    expect(pages[0]).toContain("show('flow')");
   });
 });
 

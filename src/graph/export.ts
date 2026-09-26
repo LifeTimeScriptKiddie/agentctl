@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import { writePrivateFile, ensurePrivateDir } from '../core/privateFs.js';
 import { getJob, listJobs, readJobEvents, type JobEvent, type JobRecord } from '../jobs/store.js';
 import { listMcpSessions, readMcpSession, type McpCallRecord } from '../mcp/trace.js';
-import { joinJob, type JobPromptBehavior } from './promptBehavior.js';
-import { classifyRejection } from './specRules.js';
+import { joinLoadedJob, type JobPromptBehavior } from './promptBehavior.js';
+import { leadProblemCode } from '../core/orchestrateLoop.js';
 import { observeJob, observeMcpSession, type HarnessObservation } from './harness.js';
 
 /**
@@ -127,8 +127,11 @@ export function jobToGeneric(record: JobRecord, events: JobEvent[], prompt?: Job
         // Not a node: what the lead did with its prompt, folded into the lead result it came from.
         const leadResult = [...out].reverse().find((x) => x.kind === 'tool_result' && /^orchestrator:(lead|final)$/.test(x.name ?? ''));
         if (leadResult) {
-          const code = e.kind === 'rejected' ? classifyRejection(typeof e.problem === 'string' ? e.problem : '') : null;
-          leadResult.arguments = { ...leadResult.arguments, decision: e.kind ?? null, ...(code ? { rejection: code } : {}),
+          // Only the code: legacy events carried the problem text, which is classified and never copied.
+          const kind = String(e.kind ?? '');
+          const code = typeof e.code === 'string' ? e.code
+            : typeof e.problem === 'string' && (kind === 'invalid' || kind === 'rejected') ? leadProblemCode(kind, e.problem) : null;
+          leadResult.arguments = { ...leadResult.arguments, decision: e.kind ?? null, ...(code ? { code } : {}),
             ...(typeof e.tasks === 'number' && e.tasks > 0 ? { tasks: e.tasks } : {}) };
         }
         return;
@@ -308,29 +311,60 @@ export interface ExportSummary {
   mcpSessions: string[];
 }
 
-/** Write one generic JSONL file per job and per MCP session created since `sinceMs`. */
-export function exportGraphs(outDir: string, opts: { sinceMs?: number; limit?: number } = {}): ExportSummary {
+export interface LoadedJob { record: JobRecord; events: JobEvent[]; joined: JobPromptBehavior }
+export interface LoadedMcpSession { session: string; calls: McpCallRecord[] }
+
+/** Everything one export read, so later steps reuse the same snapshot instead of re-reading the stores. */
+export interface ExportResult {
+  summary: ExportSummary;
+  jobs: LoadedJob[];
+  mcp: LoadedMcpSession[];
+  observations: HarnessObservation[];
+}
+
+/**
+ * Write one generic JSONL file per job and per MCP session created since
+ * `sinceMs`. Each job is read and joined once; jobs go first so MCP sessions
+ * can see which of their jobs were refused (a job outside the window is
+ * unknown, and gets no roster verdict).
+ */
+export function exportAll(outDir: string, opts: { sinceMs?: number; limit?: number } = {}): ExportResult {
   const since = opts.sinceMs ?? 0;
   mkdirSync(outDir, { recursive: true });
   ensurePrivateDir(join(outDir, 'jobs'));
   ensurePrivateDir(join(outDir, 'mcp'));
-  const jobs: string[] = [];
-  for (const record of listJobs(opts.limit ?? 500)) {
-    if (Date.parse(record.createdAt) < since) continue;
-    const fresh = getJob(record.id) ?? record;
-    const events = readJobEvents(record.id).events;
-    const lines = annotateHarness(jobToGeneric(fresh, events, joinJob(record.id)?.prompt), observeJob(fresh, events));
-    writePrivateFile(join(outDir, 'jobs', `${record.id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-    jobs.push(record.id);
+  const jobs: LoadedJob[] = [];
+  const observations: HarnessObservation[] = [];
+  for (const listed of listJobs(opts.limit ?? 500)) {
+    if (Date.parse(listed.createdAt) < since) continue;
+    const record = getJob(listed.id) ?? listed;
+    const events = readJobEvents(listed.id).events;
+    const joined = joinLoadedJob(record, events);
+    const seen = observeJob(record, events);
+    observations.push(...seen);
+    writePrivateFile(join(outDir, 'jobs', `${record.id}.jsonl`),
+      annotateHarness(jobToGeneric(record, events, joined.prompt), seen).map((l) => JSON.stringify(l)).join('\n') + '\n');
+    jobs.push({ record, events, joined });
   }
-  const mcpSessions: string[] = [];
+  const byId = new Map(jobs.map((j) => [j.record.id, j.joined] as const));
+  const rejectionOf = (id: string) => (byId.has(id) ? byId.get(id)!.rejection : undefined);
+  const mcp: LoadedMcpSession[] = [];
   for (const session of listMcpSessions()) {
     const calls = readMcpSession(session).filter((c) => Date.parse(c.at) >= since);
     if (calls.length === 0) continue;
+    const seen = observeMcpSession(session, calls, Date.now(), rejectionOf);
+    observations.push(...seen);
     writePrivateFile(join(outDir, 'mcp', `${session}.jsonl`),
-      annotateHarness(mcpSessionToGeneric(session, calls), observeMcpSession(session, calls))
-        .map((l) => JSON.stringify(l)).join('\n') + '\n');
-    mcpSessions.push(session);
+      annotateHarness(mcpSessionToGeneric(session, calls), seen).map((l) => JSON.stringify(l)).join('\n') + '\n');
+    mcp.push({ session, calls });
   }
-  return { dir: outDir, jobs, mcpSessions };
+  return {
+    summary: { dir: outDir, jobs: jobs.map((j) => j.record.id), mcpSessions: mcp.map((m) => m.session) },
+    jobs, mcp, observations,
+  };
+}
+
+/** Write the JSONL export only (see exportAll). */
+export function exportGraphs(outDir: string, opts: { sinceMs?: number; limit?: number } = {}): ExportSummary {
+  return exportAll(outDir, opts).summary;
 }

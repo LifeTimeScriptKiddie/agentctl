@@ -5,11 +5,11 @@ import { run } from '../util/exec.js';
 import { writePrivateFile, ensurePrivateDir } from '../core/privateFs.js';
 import { readJobEvents, getJob } from '../jobs/store.js';
 import { readMcpSession } from '../mcp/trace.js';
-import { exportGraphs, type ExportSummary } from './export.js';
-import { analyzePromptBehavior, joinJob, type JobPromptBehavior, type PromptBehaviorAnalysis } from './promptBehavior.js';
+import { exportAll, type ExportResult, type ExportSummary } from './export.js';
+import { analyzePromptBehavior, type JobPromptBehavior, type PromptBehaviorAnalysis } from './promptBehavior.js';
 import { guidanceFor } from './specRules.js';
 import { graphHtml, overviewMermaid, workflowMermaid } from './render.js';
-import { analyzeHarness, deliveryCounts, failureReason, observeJob, observeMcpSession, type HarnessDigestion, type HarnessObservation } from './harness.js';
+import { analyzeHarness, deliveryCounts, failureReason, type HarnessDigestion, type HarnessObservation } from './harness.js';
 import { harnessBackMermaid, harnessFlowMermaid, harnessHtml, harnessSummaryLines } from './harnessRender.js';
 import type { GenericEvent } from './export.js';
 
@@ -81,24 +81,24 @@ export interface GraphAnalysis {
   harness?: HarnessDigestion;
 }
 
-/** Harness observations for every exported session, and the digestion built from them. */
-export function digestHarness(exported: ExportSummary, joined: JobPromptBehavior[], sinceMs = 0): { observations: HarnessObservation[]; digestion: HarnessDigestion } {
-  const jobs = exported.jobs.flatMap((id) => {
-    const record = getJob(id);
-    return record ? [{ record, events: readJobEvents(id).events }] : [];
-  });
-  const mcp = exported.mcpSessions.map((session) => ({
-    session, calls: readMcpSession(session).filter((c) => Date.parse(c.at) >= sinceMs),
-  }));
-  const byId = new Map(joined.map((j) => [j.id, j] as const));
-  const rejectionOf = (id: string) => byId.get(id)?.rejection ?? null;
-  const observations = [
-    ...mcp.flatMap((s) => observeMcpSession(s.session, s.calls, Date.now(), rejectionOf)),
-    ...jobs.flatMap((j) => observeJob(j.record, j.events)),
-  ];
-  const outcomes = new Map(joined.map((j) => [j.id, j.outcome] as const));
-  const reasons = new Map(jobs.map((j) => [j.record.id, failureReason(j.events, rejectionOf(j.record.id))] as const));
-  return { observations, digestion: analyzeHarness(observations, deliveryCounts(mcp, jobs), outcomes, reasons) };
+/** The harness digestion of one export snapshot (no store reads: exportAll already loaded everything). */
+export function digestHarness(exported: ExportResult): HarnessDigestion {
+  const outcomes = new Map(exported.jobs.map((j) => [j.record.id, j.joined.outcome] as const));
+  const reasons = new Map(exported.jobs.map((j) => [j.record.id, failureReason(j.events, j.joined.rejection)] as const));
+  return analyzeHarness(exported.observations, deliveryCounts(exported.mcp, exported.jobs), outcomes, reasons);
+}
+
+/**
+ * `graph harness` without a directory: export and digest only. No SessionGraph
+ * analyzer runs, so it stays fast on large windows. Writes harness.html and harness.json.
+ */
+export function harnessOnly(outDir: string, opts: { sinceMs?: number } = {}): { dir: string; digestion: HarnessDigestion } {
+  ensurePrivateDir(outDir);
+  const exported = exportAll(join(outDir, 'export'), { sinceMs: opts.sinceMs });
+  const digestion = digestHarness(exported);
+  writePrivateFile(join(outDir, 'harness.json'), JSON.stringify(digestion, null, 2));
+  writeHarnessPicture(outDir, digestion, exported.observations, new Date().toISOString());
+  return { dir: outDir, digestion };
 }
 
 function emptyLane(): LaneStats {
@@ -176,7 +176,8 @@ async function analyzeOne(analyzer: AnalyzerCommand, input: string, out: string)
  */
 export async function analyzeGraphs(outDir: string, opts: { sinceMs?: number; analyzer?: AnalyzerCommand | null } = {}): Promise<GraphAnalysis> {
   ensurePrivateDir(outDir);
-  const exported = exportGraphs(join(outDir, 'export'), { sinceMs: opts.sinceMs });
+  const snapshot = exportAll(join(outDir, 'export'), { sinceMs: opts.sinceMs });
+  const exported = snapshot.summary;
   const analyzer = opts.analyzer === undefined ? await resolveAnalyzer() : opts.analyzer;
   const sessions: SessionAnalysis[] = [];
   const inputs: Array<{ id: string; type: 'job' | 'mcp' }> = [
@@ -193,8 +194,8 @@ export async function analyzeGraphs(outDir: string, opts: { sinceMs?: number; an
   }
   const findingCounts: Record<string, number> = {};
   for (const s of sessions) for (const f of s.findings) findingCounts[f.code] = (findingCounts[f.code] ?? 0) + 1;
-  const joined = exported.jobs.map(joinJob).filter((j): j is JobPromptBehavior => j !== null);
-  const { observations, digestion } = digestHarness(exported, joined, opts.sinceMs ?? 0);
+  const joined = snapshot.jobs.map((j) => j.joined);
+  const digestion = digestHarness(snapshot);
   const result: GraphAnalysis = {
     schema: 'agentctl.graph-analysis.v1', createdAt: new Date().toISOString(),
     analyzer: analyzer?.via ?? null, exported, sessions, findingCounts, hotspots: computeHotspots(exported),
@@ -202,7 +203,7 @@ export async function analyzeGraphs(outDir: string, opts: { sinceMs?: number; an
   };
   writePrivateFile(join(outDir, 'analysis.json'), JSON.stringify(result, null, 2));
   writePrivateFile(join(outDir, 'summary.md'), formatSummary(result));
-  writePictures(outDir, result, joined, observations);
+  writePictures(outDir, result, joined, snapshot.observations);
   return result;
 }
 
@@ -232,8 +233,7 @@ export function pickFocus(a: GraphAnalysis, joined: JobPromptBehavior[]): { id: 
 
 /** workflows/<id>.mmd per session, and graph.html with the overview and the focus session. */
 function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavior[], observations: HarnessObservation[] = []): void {
-  const bySession = new Map<string, HarnessObservation[]>();
-  for (const o of observations) bySession.set(o.session, [...(bySession.get(o.session) ?? []), o]);
+  const bySession = observationsBySession(observations);
   ensurePrivateDir(join(outDir, 'workflows'));
   const inputs = [
     ...a.exported.jobs.map((id) => ({ id, type: 'job' as const })),
@@ -255,15 +255,29 @@ function writePictures(outDir: string, a: GraphAnalysis, joined: JobPromptBehavi
       'How models take in the harness (flow and back): harness.html.',
     ],
   }));
-  if (a.harness) {
-    const hFocus = pickHarnessFocus(a.harness, observations);
-    writePrivateFile(join(outDir, 'harness.html'), harnessHtml({
-      title: `Harness digestion ${a.createdAt.slice(0, 10)}`, digestion: a.harness,
-      flow: harnessFlowMermaid(a.harness), back: harnessBackMermaid(a.harness),
-      ...(hFocus ? { focus: { id: hFocus.id, why: hFocus.why,
-        mermaid: workflowMermaid(readExport(outDir, hFocus.type, hFocus.id), undefined, bySession.get(hFocus.id)) } } : {}),
-    }));
+  if (a.harness) writeHarnessPicture(outDir, a.harness, observations, a.createdAt, bySession);
+}
+
+function observationsBySession(observations: HarnessObservation[]): Map<string, HarnessObservation[]> {
+  const bySession = new Map<string, HarnessObservation[]>();
+  for (const o of observations) {
+    const list = bySession.get(o.session);
+    if (list) list.push(o); else bySession.set(o.session, [o]);
   }
+  return bySession;
+}
+
+function writeHarnessPicture(
+  outDir: string, digestion: HarnessDigestion, observations: HarnessObservation[], createdAt: string,
+  bySession = observationsBySession(observations),
+): void {
+  const focus = pickHarnessFocus(digestion, observations);
+  writePrivateFile(join(outDir, 'harness.html'), harnessHtml({
+    title: `Harness digestion ${createdAt.slice(0, 10)}`, digestion,
+    flow: harnessFlowMermaid(digestion), back: harnessBackMermaid(digestion),
+    ...(focus ? { focus: { id: focus.id, why: focus.why,
+      mermaid: workflowMermaid(readExport(outDir, focus.type, focus.id), undefined, bySession.get(focus.id)) } } : {}),
+  }));
 }
 
 /**

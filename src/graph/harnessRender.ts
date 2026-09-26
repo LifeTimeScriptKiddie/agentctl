@@ -1,4 +1,4 @@
-import { CLASSES, label } from './render.js';
+import { CLASSES, htmlEscape, label, mermaidBlock, pageHtml } from './render.js';
 import type { DirectiveDigest, HarnessDigestion } from './harness.js';
 
 /**
@@ -108,10 +108,6 @@ export function harnessBackMermaid(d: HarnessDigestion): string {
   return `${lines.join('\n')}\n`;
 }
 
-function htmlEscape(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 /** Markdown lines for summary.md. */
 export function harnessSummaryLines(d: HarnessDigestion): string[] {
   const exercised = d.directives.filter((x) => x.applicable > 0);
@@ -141,7 +137,6 @@ export function harnessHtml(opts: {
   focus?: { id: string; why: string; mermaid: string };
 }): string {
   const d = opts.digestion;
-  const block = (src: string) => `<pre class="mermaid">${htmlEscape(src)}</pre>`;
   const row = (cells: Array<string | number>) => `<tr>${cells.map((c) => `<td>${htmlEscape(String(c))}</td>`).join('')}</tr>`;
   const table = (head: string[], rows: string[]) => (rows.length
     ? `<div class="scroll"><table><thead><tr>${head.map((h) => `<th>${htmlEscape(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
@@ -156,42 +151,24 @@ export function harnessHtml(opts: {
   const back = d.back.map((b) => row([b.run, b.outcome, b.reason,
     b.notFollowed.length ? b.notFollowed.map((n) => `${n.directive}${n.detail ? `:${n.detail}` : ''} (${n.model})`).join('; ') : 'none: lane problem or harness gap']));
   const sources = d.sources.map((s) => row([s.title, s.audience, s.delivered, s.readers.join(', ') || '—', s.delivery, s.edit]));
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Harness digestion</title>
-<style>
-  :root { --bg: #f8fafc; --fg: #0f172a; --muted: #475569; --card: #ffffff; --line: #e2e8f0; --accent: #7c3aed; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #0b1220; --fg: #e2e8f0; --muted: #94a3b8; --card: #111a2e; --line: #1e293b; --accent: #a78bfa; } }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
-  main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 28px 0 8px; }
-  p, li { color: var(--muted); }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; }
-  pre.mermaid { margin: 0; background: #ffffff; border-radius: 6px; padding: 8px; }
-  .toggle { display: flex; gap: 8px; margin: 16px 0 8px; flex-wrap: wrap; }
+  return pageHtml({
+    title: 'Harness digestion',
+    css: `  .toggle { display: flex; gap: 8px; margin: 16px 0 8px; flex-wrap: wrap; }
   .toggle button { font: inherit; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
   .toggle button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .view[hidden] { display: none; }
   .scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; }
-  code { font-size: 13px; }
-</style>
-</head>
-<body>
-<main>
-<h1>${htmlEscape(opts.title)}</h1>
+  th { color: var(--muted); font-weight: 600; }`,
+    body: `<h1>${htmlEscape(opts.title)}</h1>
 <p>How the models agentctl talks to take in its harness. <b>Flow</b> follows each harness line forward: where it is written, which model read it, whether its behavior followed it, and how the run ended. <b>Back</b> starts from failures and deviations and walks back to the line that was not followed and the file to edit. Content-free: verdicts come from lint codes, decision kinds and failure classes, never from prompt or answer text. ${d.observations} observation(s); harness version(s): ${htmlEscape(d.versions.join(', ') || 'none recorded')}.</p>
 <div class="toggle" role="group" aria-label="Direction">
   <button type="button" data-view="flow" aria-pressed="true">Flow: harness → model → outcome</button>
   <button type="button" data-view="back" aria-pressed="false">Back: outcome → harness → file</button>
 </div>
-<section class="view" id="view-flow">${block(opts.flow)}</section>
-<section class="view" id="view-back">${block(opts.back)}</section>
+<section class="view" id="view-flow">${mermaidBlock(opts.flow)}</section>
+<section class="view" id="view-back">${mermaidBlock(opts.back)}</section>
 <p>Green edge: followed. Red edge: not followed (or a failed run). Violet: harness text. Dashed grey: a directive the graph cannot check without reading content (blind spot).</p>
 <h2>Readers</h2>
 <section>${table(['Model', '✓ followed', '✗ not followed', 'Follow rate', 'Runs', 'Failed runs'], readers)}</section>
@@ -203,25 +180,14 @@ export function harnessHtml(opts: {
 <section>${table(['Source', 'Audience', 'Read', 'Readers', 'When', 'Edit'], sources)}</section>
 ${opts.focus ? `<h2>Session: <code>${htmlEscape(opts.focus.id)}</code></h2>
 <p>${htmlEscape(opts.focus.why)} The "told (harness)" lane shows the directives this session's models read: a green ✓ edge runs forward to behavior that followed, a red dashed ✗ edge runs back from behavior that did not.</p>
-<section>${block(opts.focus.mermaid)}</section>` : ''}
-<p>${d.versions.length > 1 ? 'Several harness versions are pooled here; compare them with `agentctl graph compare`. ' : ''}Every session's workflow with its harness lane is in <code>workflows/&lt;id&gt;.mmd</code>; the prompt ↔ behavior overview is in <a href="graph.html">graph.html</a>.</p>
-</main>
-<script type="module">
-  const show = (name) => {
+<section>${mermaidBlock(opts.focus.mermaid)}</section>` : ''}
+<p>${d.versions.length > 1 ? 'Several harness versions are pooled here; compare them with <code>agentctl graph compare</code>. ' : ''}Every session's workflow with its harness lane is in <code>workflows/&lt;id&gt;.mmd</code>; the prompt ↔ behavior overview is in <a href="graph.html">graph.html</a>.</p>`,
+    script: `  const show = (name) => {
     document.querySelectorAll('.toggle button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === name)));
     document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== 'view-' + name; });
   };
-  document.querySelectorAll('.toggle button').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
-  try {
-    const { default: mermaid } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
-    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict', flowchart: { htmlLabels: true, useMaxWidth: false } });
-    await mermaid.run({ querySelector: 'pre.mermaid' });
-  } catch (e) {
-    document.querySelectorAll('pre.mermaid').forEach((el) => { el.style.whiteSpace = 'pre'; el.style.color = '#0f172a'; });
-  }
-  show('flow'); // hide the back view only after both diagrams were laid out while visible
-</script>
-</body>
-</html>
-`;
+  document.querySelectorAll('.toggle button').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));`,
+    // hide the back view only after both diagrams were laid out while visible
+    afterRender: "  show('flow');",
+  });
 }

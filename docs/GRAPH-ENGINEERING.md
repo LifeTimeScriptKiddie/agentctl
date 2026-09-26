@@ -122,6 +122,7 @@ Open `harness.html`. The toggle switches between **Flow** (left to right: harnes
 | --- | --- | --- | --- |
 | `mcp.instructions` | caller | once per client session | `src/mcp/harnessText.ts` → `mcpInstructions` |
 | `tool.run_tasks` | caller | with the tool list | `src/mcp/harnessText.ts` → `RUN_TASKS_DESCRIPTION`; `src/mcp/server.ts` → `taskShape` |
+| `tool.other` | caller | with the tool list | `src/mcp/server.ts` → the other `registerTool` calls (no directives yet; fingerprinted so edits are visible) |
 | `feedback.spec_warnings` | caller | in the result of a request with spec issues | `src/graph/specRules.ts` → `SPEC_RULES` |
 | `prompt.lead` | lead model | every lead round | `src/core/orchestrateLoop.ts` → `buildLeadPrompt` |
 | `prompt.worker` | worker models | every task-graph dispatch | `src/core/orchestrateLoop.ts` → `buildWorkerPrompt` |
@@ -137,10 +138,11 @@ Open `harness.html`. The toggle switches between **Flow** (left to right: harnes
 | `handle_simple_yourself` | mcp.instructions | should | blind spot (needs content) |
 | `self_contained` | tool.run_tasks | should | no `thin_instruction` or `refers_outside` |
 | `parallel_tasks` | tool.run_tasks | should | not `serial_chain` |
-| `roster_lanes` | tool.run_tasks | must | the graph was not refused for lane, capability, model or effort |
+| `roster_lanes` | tool.run_tasks | must | the graph was not refused for lane, capability, model or effort (no verdict when the job is outside the window) |
 | `model_only_hard` | tool.run_tasks | should | no `strong_model_pinned` |
-| `heed_warning` | feedback.spec_warnings | must | the next run_tasks request in the session no longer carries the warned code (one verdict per warned code; analysis-only codes are never warned, so never judged) |
-| `lead.envelope_only` | prompt.lead | must | a delegation reply parses as `delegate.v1` |
+| `heed_warning` | feedback.spec_warnings | must | the next run_tasks request in the session no longer carries a code the previous result actually returned in `spec_warnings` (trace field `warned`; refused calls return none) |
+| `lead.envelope_only` | prompt.lead | must | a delegation reply parses as `delegate.v1` (code `bad_envelope` or `multiple_envelopes` otherwise) |
+| `lead.max_tasks` | prompt.lead | must | the reply is not refused for too many tasks (`too_many_tasks`) |
 | `lead.roster_names` | prompt.lead | must | the batch passes the roster check |
 | `lead.new_ids` | prompt.lead | must | no reused task id |
 | `lead.valid_deps` | prompt.lead | must | no unknown, duplicate or cyclic dependency |
@@ -157,8 +159,10 @@ Blind spots are listed, not guessed. A directive that can only be judged by read
 
 ### What the graph records for this
 
-- MCP trace records and job `started` events carry `harness`: a fingerprint (`h` + 10 hex) of every harness text (`harnessVersion()` in `src/mcp/harnessText.ts`). Verdicts are split `byVersion`, so a harness edit can be compared with `graph compare` on fresh traffic.
-- The loop engine writes a `lead_decision` event per lead reply: `kind` (answer, delegate, invalid, rejected, closed), task counts, pinned models, tasks with acceptance, and the roster problem. The export folds it into the lead's `tool_result` node as `arguments.decision` (and `rejection` as a code). It adds no node, and the problem text never leaves the job directory.
+- MCP trace records and job `started` events carry `harness`: a fingerprint (`h` + 10 hex) of every harness text (`harnessVersion()` in `src/mcp/harnessText.ts`). It hashes one fingerprint per source: the MCP instructions, every registered tool's description and input schema (collected from the server's own `registerTool` calls, so no tool text can be missed), every `SPEC_RULES` guidance, and the lead and worker prompts. Verdicts are split `byVersion`, so a harness edit can be compared with `graph compare` on fresh traffic.
+- run_tasks trace records carry `warned`: the `spec_warnings` codes the result actually returned.
+- The loop engine writes a `lead_decision` event per lead reply: `kind` (answer, empty, delegate, invalid, rejected, closed), task counts, pinned models, tasks with acceptance, and `code` (`too_many_tasks`, `multiple_envelopes`, `bad_envelope`, or a refusal code). The problem text is never stored. The export folds the event into the lead's `tool_result` node as `arguments.decision` and `arguments.code`, without adding a node.
+- One `graph analyze` reads each job and session once (`exportAll`), so the JSONL, the pictures and `analysis.json` agree. `agentctl graph harness` without a directory skips the SessionGraph analyzer and writes only `harness.html` and `harness.json`.
 - Every node a verdict was observed at carries `arguments.harness = { "<directive>[:<code>]": "followed" | "not_followed" }`.
 
 ### Reading and acting

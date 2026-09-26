@@ -23,6 +23,8 @@ export interface McpCallRecord {
   to?: string;
   /** Spec lint codes of the request (prompt side); never request text. */
   issues?: string[];
+  /** run_tasks only: spec_warnings codes actually returned to the caller ([] when none or refused). */
+  warned?: string[];
   /** Fingerprint of the harness text this client read (see src/mcp/harnessText.ts). */
   harness?: string;
 }
