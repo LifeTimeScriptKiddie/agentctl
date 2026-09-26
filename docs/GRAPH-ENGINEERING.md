@@ -165,6 +165,13 @@ Blind spots are listed, not guessed. A directive that can only be judged by read
 - One `graph analyze` reads each job and session once (`exportAll`), so the JSONL, the pictures and `analysis.json` agree. `agentctl graph harness` without a directory skips the SessionGraph analyzer and writes only `harness.html` and `harness.json`.
 - Every node a verdict was observed at carries `arguments.harness = { "<directive>[:<code>]": "followed" | "not_followed" }`.
 
+### Evidence, coverage and versions
+
+- **Sample bar.** Every tally (per directive, per reader, per version) carries `n` (`applicable`), `followRate`, a Wilson 95% interval `ci95` and `enough` (n ≥ `HARNESS_MIN_SAMPLES`, the same 3 as `SPEC_THRESHOLDS.minGraphs`). Below the bar a rate is shown as "85% (n<3)" and never colored as a problem.
+- **All k in a row.** `must` directives also report `passAllK` (k = 3): C(followed, 3) / C(n, 3), the share of 3-check subsets that were all followed, in the spirit of tau-bench's pass^k. Checks from one session are correlated, so it describes the sample; it is not a calibrated probability (`caveats` in the digestion says so).
+- **Coverage.** `coverage` splits failed runs (unique job ids) into `explained` (a directive was not followed) and `unexplained`, counts unexplained runs per `reason` in `gaps`, and lists a reason seen in 2+ unexplained runs under `candidates`: a harness gap worth a new directive, or a lane to fix.
+- **Per-source versions.** Traces and job `started` events also carry `harness_sources` (`harnessSourceHashes()`), one hash per source; the global `harness` is the hash of those hashes. Each observation gets the hash of its own directive's source (`sourceVersion`), and each directive reports `bySourceVersion`, so editing one source is credited only to that source's directives. Traces without per-source hashes appear as `unrecorded`.
+
 ### Reading and acting
 
 | Evidence (`analysis.json → harness`) | Meaning | Move |
@@ -175,7 +182,7 @@ Blind spots are listed, not guessed. A directive that can only be judged by read
 | `heed_warning` not followed for a code | the fix sentence does not land | rewrite that `SPEC_RULES` guidance |
 | `back[].notFollowed` empty with a recurring `reason` | no directive covers the failure: a lane problem (`worker:*`, `lead:*`) or a **harness gap** (`ambiguous_route`, a refusal code) | lanes: route around them. Gap: propose a new directive and its check, and add it to the registry |
 
-The same evidence bar as `graph improve` applies. Act only on at least 3 observations. One run is an anecdote.
+The same evidence bar as `graph improve` applies: act only when `enough` is true, and read the interval. "5 of 6" has a 95% interval of roughly 44–97%. One run is an anecdote.
 
 ### Invariants (tests enforce them)
 

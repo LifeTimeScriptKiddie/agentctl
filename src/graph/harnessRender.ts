@@ -1,5 +1,5 @@
 import { CLASSES, htmlEscape, label, mermaidBlock, pageHtml } from './render.js';
-import type { DirectiveDigest, HarnessDigestion } from './harness.js';
+import { HARNESS_MIN_SAMPLES, PASS_K, type DirectiveDigest, type HarnessDigestion, type Tally } from './harness.js';
 
 /**
  * Pictures of harness digestion (content-free):
@@ -13,19 +13,23 @@ import type { DirectiveDigest, HarnessDigestion } from './harness.js';
  */
 
 const pct = (x: number | null) => (x === null ? '—' : `${Math.round(x * 100)}%`);
+/** "85% (72–93%)", or "85% (n<3)" when there are too few checks to trust the rate. */
+const rateText = (t: Tally) => (t.followRate === null ? '—'
+  : `${pct(t.followRate)} ${t.enough && t.ci95 ? `(${Math.round(t.ci95[0] * 100)}–${Math.round(t.ci95[1] * 100)}%)` : `(n<${HARNESS_MIN_SAMPLES})`}`);
 
 function directiveClass(d: DirectiveDigest): string {
   if (d.check === null) return 'kBlind';
   if (d.applicable === 0) return 'kAct';
-  if (d.notFollowed > 0) return d.strength === 'must' ? 'kErr' : 'kIssue';
+  // Too few checks: shown, never colored as a problem.
+  if (d.notFollowed > 0) return !d.enough ? 'kAct' : d.strength === 'must' ? 'kErr' : 'kIssue';
   return 'kOk';
 }
 
 function directiveLabel(d: DirectiveDigest): string {
   const state = d.check === null ? 'blind spot: needs content'
     : d.applicable === 0 ? 'not exercised yet'
-      : `✓${d.followed} ✗${d.notFollowed} · ${pct(d.followRate)}`;
-  return label(d.title, d.strength, state);
+      : `✓${d.followed} ✗${d.notFollowed} · ${rateText(d)}`;
+  return label(d.title, d.strength, state, d.passAllK !== null ? `all ${PASS_K} in a row: ${pct(d.passAllK)}` : null);
 }
 
 export function harnessFlowMermaid(d: HarnessDigestion): string {
@@ -44,7 +48,7 @@ export function harnessFlowMermaid(d: HarnessDigestion): string {
   }
   for (const m of models) {
     const r = d.readers[m]!;
-    lines.push(`  ${mid.get(m)}[${label(m, `✓${r.followed} ✗${r.notFollowed} · ${pct(r.followRate)}`)}]:::${r.notFollowed ? 'kIssue' : 'kAsked'}`);
+    lines.push(`  ${mid.get(m)}[${label(m, `✓${r.followed} ✗${r.notFollowed} · ${rateText(r)}`)}]:::${r.notFollowed && r.enough ? 'kIssue' : 'kAsked'}`);
   }
   const anyRuns = models.some((m) => d.readers[m]!.runs > 0);
   if (anyRuns) {
@@ -55,7 +59,8 @@ export function harnessFlowMermaid(d: HarnessDigestion): string {
   for (const x of d.directives) {
     for (const [m, t] of Object.entries(x.byModel)) {
       lines.push(`  ${did.get(x.id)} -->|${label(`✓${t.followed} ✗${t.notFollowed}`)}| ${mid.get(m)}`);
-      (t.notFollowed ? miss : ok).push(links++);
+      if (t.notFollowed && t.enough) miss.push(links); else if (!t.notFollowed) ok.push(links);
+      links++;
     }
   }
   for (const m of models) {
@@ -78,7 +83,8 @@ export function harnessBackMermaid(d: HarnessDigestion): string {
     lines.push(`  none[${label('nothing to trace back: no failed runs and no directive left unfollowed')}]:::kDone`, ...CLASSES.map((c) => `  ${c}`));
     return `${lines.join('\n')}\n`;
   }
-  if (failedRuns) lines.push(`  fail[${label('failed or refused runs', `${failedRuns} run(s)`)}]:::kFail`);
+  const cov = d.coverage;
+  if (failedRuns) lines.push(`  fail[${label('failed or refused runs', `${failedRuns} run(s) · ${cov.explained} explained by a directive`)}]:::kFail`);
   const devTotal = missed.reduce((n, x) => n + x.notFollowed, 0);
   if (devTotal) lines.push(`  dev[${label('not followed', `${devTotal} time(s)`)}]:::kIssue`);
   const srcId = new Map<string, string>();
@@ -101,7 +107,8 @@ export function harnessBackMermaid(d: HarnessDigestion): string {
     for (const b of d.back) if (b.notFollowed.length === 0) reasons.set(b.reason, (reasons.get(b.reason) ?? 0) + 1);
     lines.push(`  gap[${label('no directive covers this', 'lane problem or harness gap')}]:::kBlind`);
     [...reasons].forEach(([reason, n], i) => {
-      lines.push(`  g${i}[${label(reason)}]:::kErr`, `  fail -->|${label(`${n} run(s)`)}| g${i}`, `  g${i} --> gap`);
+      const candidate = cov.candidates.includes(reason) ? 'recurring: candidate new directive' : null;
+      lines.push(`  g${i}[${label(reason, candidate)}]:::kErr`, `  fail -->|${label(`${n} run(s)`)}| g${i}`, `  g${i} --> gap`);
     });
   }
   lines.push(...CLASSES.map((c) => `  ${c}`));
@@ -120,13 +127,17 @@ export function harnessSummaryLines(d: HarnessDigestion): string[] {
     ...d.sources.map((s) => `- ${s.title}: read ${s.delivered}× by ${s.readers.join(', ') || 'nobody in this window'}`),
   ];
   if (exercised.length) {
-    lines.push('', '| Directive | Source | Must/should | ✓ | ✗ | Follow rate | Failed runs after ✓ / ✗ |', '| --- | --- | --- | --- | --- | --- | --- |');
+    lines.push('', `| Directive | Source | Must/should | ✓ | ✗ | Follow rate (95% CI) | All ${PASS_K} in a row | Failed runs after ✓ / ✗ |`, '| --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const x of exercised) {
-      lines.push(`| ${x.title} | ${x.source} | ${x.strength} | ${x.followed} | ${x.notFollowed} | ${pct(x.followRate)} | ${x.after.followed.failed}/${x.after.followed.runs} · ${x.after.notFollowed.failed}/${x.after.notFollowed.runs} |`);
+      lines.push(`| ${x.title} | ${x.source} | ${x.strength} | ${x.followed} | ${x.notFollowed} | ${rateText(x)} | ${pct(x.passAllK)} | ${x.after.followed.failed}/${x.after.followed.runs} · ${x.after.notFollowed.failed}/${x.after.notFollowed.runs} |`);
     }
+    lines.push('', `Rates under ${HARNESS_MIN_SAMPLES} checks are shown but not flagged. ${d.caveats.join(' ')}`);
   }
-  const traced = d.back.filter((b) => b.notFollowed.length);
-  lines.push('', `- Failed runs: ${d.back.length}; traced to a directive: ${traced.length}; not a harness-reading problem: ${d.back.length - traced.length}`);
+  const c = d.coverage;
+  lines.push('', `- Coverage: ${c.failedRuns} failed run(s), ${c.explained} explained by a directive not followed (${pct(c.explainedRate)}), ${c.unexplained} not explained${Object.keys(c.gaps).length ? ` (${Object.entries(c.gaps).map(([r, n]) => `${r} ${n}`).join(', ')})` : ''}`);
+  if (c.candidates.length) lines.push(`- Candidate new directives (a reason no directive covers, in 2+ runs): ${c.candidates.join(', ')}`);
+  const versions = Object.entries(d.sourceVersions).filter(([, v]) => v.length > 1);
+  if (versions.length) lines.push(`- Sources seen in more than one version: ${versions.map(([src, v]) => `${src} (${v.join(', ')})`).join('; ')}`);
   lines.push(`- Blind spots (need content to check): ${d.blindSpots.join(', ')}`);
   return lines;
 }
@@ -142,15 +153,20 @@ export function harnessHtml(opts: {
     ? `<div class="scroll"><table><thead><tr>${head.map((h) => `<th>${htmlEscape(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
     : '<p>None in this window.</p>');
   const readers = Object.entries(d.readers).sort((a, b) => b[1].applicable - a[1].applicable)
-    .map(([m, r]) => row([m, r.followed, r.notFollowed, pct(r.followRate), r.runs, r.failed]));
+    .map(([m, r]) => row([m, r.followed, r.notFollowed, rateText(r), r.runs, r.failed]));
   const directives = d.directives.map((x) => row([
     x.title, x.source, x.strength, `“${x.says}”`,
-    x.check ?? 'blind spot', x.applicable ? `${x.followed} / ${x.notFollowed}` : '—', pct(x.followRate),
+    x.check ?? 'blind spot', x.applicable ? `${x.followed} / ${x.notFollowed}` : '—', rateText(x), pct(x.passAllK),
     x.applicable ? `${x.after.followed.failed}/${x.after.followed.runs} · ${x.after.notFollowed.failed}/${x.after.notFollowed.runs}` : '—',
   ]));
   const back = d.back.map((b) => row([b.run, b.outcome, b.reason,
     b.notFollowed.length ? b.notFollowed.map((n) => `${n.directive}${n.detail ? `:${n.detail}` : ''} (${n.model})`).join('; ') : 'none: lane problem or harness gap']));
-  const sources = d.sources.map((s) => row([s.title, s.audience, s.delivered, s.readers.join(', ') || '—', s.delivery, s.edit]));
+  const sources = d.sources.map((s) => row([s.title, s.audience, s.delivered, s.readers.join(', ') || '—', s.delivery,
+    (d.sourceVersions[s.id] ?? []).join(', ') || 'not recorded', s.edit]));
+  const c = d.coverage;
+  const coverage = `${c.failedRuns} failed run(s): ${c.explained} explained by a directive not followed (${pct(c.explainedRate)}), ${c.unexplained} not explained`
+    + `${Object.keys(c.gaps).length ? ` — ${Object.entries(c.gaps).map(([r, n]) => `${r}: ${n}`).join(', ')}` : ''}.`
+    + `${c.candidates.length ? ` Candidate new directives (in 2+ runs): ${c.candidates.join(', ')}.` : ''}`;
   return pageHtml({
     title: 'Harness digestion',
     css: `  .toggle { display: flex; gap: 8px; margin: 16px 0 8px; flex-wrap: wrap; }
@@ -173,11 +189,13 @@ export function harnessHtml(opts: {
 <h2>Readers</h2>
 <section>${table(['Model', '✓ followed', '✗ not followed', 'Follow rate', 'Runs', 'Failed runs'], readers)}</section>
 <h2>Directives</h2>
-<section>${table(['Directive', 'Source', 'Must/should', 'The harness says', 'Checked by', '✓ / ✗', 'Follow rate', 'Failed runs after ✓ · ✗'], directives)}</section>
+<section>${table(['Directive', 'Source', 'Must/should', 'The harness says', 'Checked by', '✓ / ✗', 'Follow rate (95% CI)', `All ${PASS_K} in a row`, 'Failed runs after ✓ · ✗'], directives)}</section>
+<p>Rates under ${HARNESS_MIN_SAMPLES} checks are shown but not flagged. ${htmlEscape(d.caveats.join(' '))}</p>
 <h2>Failed runs, traced back</h2>
+<p>${htmlEscape(coverage)}</p>
 <section>${table(['Run', 'Outcome', 'Reason', 'Not followed (reader)'], back)}</section>
 <h2>Harness sources</h2>
-<section>${table(['Source', 'Audience', 'Read', 'Readers', 'When', 'Edit'], sources)}</section>
+<section>${table(['Source', 'Audience', 'Read', 'Readers', 'When', 'Versions seen', 'Edit'], sources)}</section>
 ${opts.focus ? `<h2>Session: <code>${htmlEscape(opts.focus.id)}</code></h2>
 <p>${htmlEscape(opts.focus.why)} The "told (harness)" lane shows the directives this session's models read: a green ✓ edge runs forward to behavior that followed, a red dashed ✗ edge runs back from behavior that did not.</p>
 <section>${mermaidBlock(opts.focus.mermaid)}</section>` : ''}

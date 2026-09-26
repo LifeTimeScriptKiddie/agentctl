@@ -6,7 +6,8 @@ import { appendJobEvent, createJob, getJob, readJobEvents, updateJob } from '../
 import { appendMcpCall, type McpCallRecord } from '../src/mcp/trace.js';
 import { runLoopOrchestration, type LoopAgent, type LoopCallResult, type LeadDecisionRecord } from '../src/core/orchestrateLoop.js';
 import {
-  HARNESS_DIRECTIVES, HARNESS_SOURCES, analyzeHarness, deliveryCounts, failureReason, observeJob, observeMcpSession,
+  HARNESS_DIRECTIVES, HARNESS_MIN_SAMPLES, HARNESS_SOURCES, analyzeHarness, deliveryCounts, failureReason, observeJob, observeMcpSession,
+  passAllK, wilson95,
   type HarnessObservation,
 } from '../src/graph/harness.js';
 import { harnessBackMermaid, harnessFlowMermaid, harnessHtml } from '../src/graph/harnessRender.js';
@@ -15,6 +16,7 @@ import { graphHtml, workflowMermaid } from '../src/graph/render.js';
 import { analyzeGraphs, harnessOnly } from '../src/graph/analyze.js';
 import { harnessFingerprintOf, harnessSourceHashes, harnessSourceTexts, harnessVersion } from '../src/mcp/harnessText.js';
 import { SPEC_RULES } from '../src/graph/specRules.js';
+import { SPEC_THRESHOLDS } from '../src/graph/improve.js';
 
 let home: string;
 beforeEach(() => {
@@ -249,6 +251,71 @@ describe('review fixes', () => {
       expect(page).not.toContain('a"b<');
     }
     expect(pages[0]).toContain("show('flow')");
+  });
+});
+
+describe('research: evidence, coverage, per-source versions', () => {
+  const o = (directive: string, verdict: HarnessObservation['verdict'], run: string | null, extra: Partial<HarnessObservation> = {}): HarnessObservation => ({
+    directive, verdict, run, model: 'caller:claude', session: 'mcp_abcdefgh', sessionType: 'mcp', node: 'n', version: 'h1', ...extra,
+  });
+
+  it('R1: Wilson 95% interval, passAllK and the sample bar', () => {
+    expect(wilson95(0, 0)).toBeNull();
+    expect(wilson95(5, 5)).toEqual([0.566, 1]);
+    expect(wilson95(0, 5)).toEqual([0, 0.434]);
+    expect(wilson95(1, 6)).toEqual([0.03, 0.564]);
+    expect(passAllK(2, 2)).toBeNull(); // below the sample bar
+    expect(passAllK(5, 6)).toBe(0.5); // C(5,3)/C(6,3) = 10/20
+    expect(passAllK(2, 6)).toBe(0);
+    expect(HARNESS_MIN_SAMPLES).toBe(SPEC_THRESHOLDS.minGraphs);
+    const few = [o('never_self', 'not_followed', 'j1'), o('never_self', 'followed', 'j2')];
+    const d = analyzeHarness(few, deliveryCounts([], []), new Map());
+    const x = d.directives.find((y) => y.id === 'never_self')!;
+    expect(x).toMatchObject({ enough: false, passAllK: null, ci95: [0.095, 0.905] });
+    expect(harnessFlowMermaid(d)).toContain('(n#lt;3)'); // shown, not flagged
+    expect(harnessFlowMermaid(d)).not.toMatch(/d\d+\[.*never route.*\]:::kErr/);
+    expect(d.caveats[0]).toMatch(/correlated/);
+    const many = analyzeHarness(Array.from({ length: 6 }, (_, i) => o('never_self', i < 5 ? 'followed' : 'not_followed', `j${i}`)), deliveryCounts([], []), new Map());
+    expect(many.directives.find((y) => y.id === 'never_self')).toMatchObject({ enough: true, passAllK: 0.5 });
+    expect(harnessFlowMermaid(many)).toMatch(/never route to yourself.*:::kErr/);
+  });
+
+  it('R2: coverage splits failed runs into explained and unexplained, and flags recurring gaps', () => {
+    const outcomes = new Map([['j1', 'failed'], ['j2', 'failed'], ['j3', 'rejected'], ['j4', 'succeeded']] as const);
+    const reasons = new Map([['j1', 'ambiguous_route'], ['j2', 'ambiguous_route'], ['j3', 'bad_model']]);
+    const d = analyzeHarness([o('roster_lanes', 'not_followed', 'j3'), o('pass_context', 'not_followed', 'j3')],
+      deliveryCounts([], []), outcomes, reasons);
+    expect(d.coverage).toEqual({ failedRuns: 3, explained: 1, unexplained: 2, explainedRate: 0.333, gaps: { ambiguous_route: 2 }, candidates: ['ambiguous_route'] });
+    const back = harnessBackMermaid(d);
+    expect(back).toContain('1 explained by a directive');
+    expect(back).toContain('candidate new directive');
+  });
+
+  it('R3: observations carry their own source version, and traces record per-source hashes', async () => {
+    const sources = harnessSourceHashes();
+    const calls = [call(1, 'agentctl_run_tasks', { job_id: 'j', issues: ['strong_model_pinned'], harness: harnessVersion(), harness_sources: sources })];
+    const obs = observeMcpSession('mcp_abcdefgh', calls, T0, () => null);
+    expect(obs.find((x) => x.directive === 'model_only_hard')!.sourceVersion).toBe(sources['tool.run_tasks']);
+    expect(obs.find((x) => x.directive === 'pass_context')!.sourceVersion).toBe(sources['mcp.instructions']);
+    const legacy = observeMcpSession('mcp_abcdefgh', [call(1, 'agentctl_run_tasks', { job_id: 'j' })], T0, () => null);
+    expect(legacy.every((x) => x.sourceVersion === null)).toBe(true);
+    const d = analyzeHarness([...obs, ...legacy], deliveryCounts([], []), new Map());
+    expect(Object.keys(d.directives.find((x) => x.id === 'model_only_hard')!.bySourceVersion).sort())
+      .toEqual([sources['tool.run_tasks'], 'unrecorded'].sort());
+    expect(d.sourceVersions['tool.run_tasks']).toEqual([sources['tool.run_tasks']]);
+    // The MCP server writes both fingerprints on every traced call.
+    const { createAgentctlMcpServer } = await import('../src/mcp/server.js');
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+    const [c, sv] = InMemoryTransport.createLinkedPair();
+    await createAgentctlMcpServer({ caller: ['claude'], registry: { names: () => [], healthcheck: async () => ({}) } as never }).connect(sv);
+    const client = new Client({ name: 't', version: '1' });
+    await client.connect(c);
+    await client.callTool({ name: 'agentctl_jobs_list', arguments: {} });
+    const { listMcpSessions, readMcpSession } = await import('../src/mcp/trace.js');
+    const rec = readMcpSession(listMcpSessions()[0]!)[0]!;
+    expect(rec).toMatchObject({ harness: harnessVersion(), harness_sources: sources });
+    await client.close();
   });
 });
 

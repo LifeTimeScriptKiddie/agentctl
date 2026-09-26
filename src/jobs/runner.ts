@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { agentAsk, agentDelegate, agentOrchestrate, agentRunTasks } from '../api.js';
 import { loadRegistry } from '../core/loadRegistry.js';
-import { harnessVersion } from '../mcp/harnessText.js';
+import { harnessSourceHashes, harnessVersion } from '../mcp/harnessText.js';
 import type { AskResult } from '../core/ask.js';
 import {
   appendJobEvent, cancelRequested, createJob, getJob, isTerminal, readJobInput, readJobResult,
@@ -127,7 +127,7 @@ export async function runJob(
   poll.unref?.();
 
   updateJob(id, { status: 'running', startedAt: new Date().toISOString(), pid: process.pid });
-  appendJobEvent(id, { type: 'started', kind: input.kind, harness: harnessVersion() });
+  appendJobEvent(id, { type: 'started', kind: input.kind, harness: harnessVersion(), harness_sources: harnessSourceHashes() });
   const registry = opts.registry ?? loadRegistry();
   const signal = controller.signal;
 

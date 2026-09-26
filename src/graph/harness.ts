@@ -3,6 +3,7 @@ import type { McpCallRecord } from '../mcp/trace.js';
 import type { JobOutcome } from './promptBehavior.js';
 import { guidanceFor, isWarned } from './specRules.js';
 import { leadProblemCode } from '../core/orchestrateLoop.js';
+import { SPEC_THRESHOLDS } from './improve.js';
 
 /**
  * Harness digestion: how the models agentctl talks to take in the harness it
@@ -128,6 +129,8 @@ export interface HarnessObservation {
   run: string | null;
   /** Harness fingerprint the model read (src/mcp/harnessText.ts), when recorded. */
   version: string | null;
+  /** Fingerprint of this directive's own source, when the trace recorded per-source hashes. */
+  sourceVersion?: string | null;
 }
 
 const REQUEST_TOOLS = new Set(['agentctl_delegate', 'agentctl_orchestrate', 'agentctl_run_tasks']);
@@ -195,7 +198,18 @@ export function observeMcpSession(
       else if (movedOn || now - Date.parse(c.at) > ABANDON_AFTER_MS) obs('wait_until_done', false, { node: `${session}:r${c.seq}` });
     }
   });
-  return out;
+  const sourcesAt = new Map<string, Record<string, string> | undefined>();
+  for (const c of calls) {
+    sourcesAt.set(`${session}:c${c.seq}`, c.harness_sources);
+    sourcesAt.set(`${session}:r${c.seq}`, c.harness_sources);
+  }
+  return out.map((o) => withSourceVersion(o, sourcesAt.get(o.node)));
+}
+
+/** Tag an observation with the hash of its directive's own source (null when the trace predates per-source hashes). */
+function withSourceVersion(o: HarnessObservation, sources: Record<string, string> | undefined): HarnessObservation {
+  const src = DIRECTIVE.get(o.directive)?.source;
+  return { ...o, sourceVersion: (src && sources?.[src]) ?? null };
 }
 
 /** Lead and worker verdicts from one job's events (ids match export.ts: `<job>:e<index+1>`). */
@@ -203,6 +217,8 @@ export function observeJob(record: JobRecord, events: JobEvent[]): HarnessObserv
   const out: HarnessObservation[] = [];
   const started = events.find((e) => e.type === 'started');
   const version = typeof started?.harness === 'string' ? started.harness : null;
+  const sources = started?.harness_sources && typeof started.harness_sources === 'object'
+    ? started.harness_sources as Record<string, string> : undefined;
   const base = { session: record.id, sessionType: 'job' as const, run: record.id, version };
   let lead: { node: string; model: string } | null = null;
   events.forEach((e, i) => {
@@ -243,10 +259,42 @@ export function observeJob(record: JobRecord, events: JobEvent[]): HarnessObserv
       });
     }
   });
-  return out;
+  return out.map((o) => withSourceVersion(o, sources));
 }
 
-export interface Tally { applicable: number; followed: number; notFollowed: number; followRate: number | null }
+/** Below this many checks a rate is shown but never colored as a problem (same bar as SPEC_THRESHOLDS.minGraphs). */
+export const HARNESS_MIN_SAMPLES = SPEC_THRESHOLDS.minGraphs;
+/** k for passAllK on `must` directives. */
+export const PASS_K = 3;
+export const PASS_ALL_K_CAVEAT = 'passAllK treats the checks in a bucket as exchangeable; checks from one session or run are correlated, '
+  + 'so it describes this sample, not a calibrated chance of k independent successes.';
+
+export interface Tally {
+  applicable: number; followed: number; notFollowed: number; followRate: number | null;
+  /** Wilson 95% interval of the follow rate; null with no checks. */
+  ci95: [number, number] | null;
+  /** At least HARNESS_MIN_SAMPLES checks: enough to color a verdict. */
+  enough: boolean;
+}
+
+/** Wilson score interval (z = 1.96); well defined at rates 0 and 1. */
+export function wilson95(followed: number, n: number): [number, number] | null {
+  if (n <= 0) return null;
+  const z = 1.96; const p = followed / n; const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+  const r = (x: number) => Number(Math.min(1, Math.max(0, x)).toFixed(3));
+  return [r(center - half), r(center + half)];
+}
+
+/** C(followed, k) / C(n, k): the share of k-subsets of these checks that were all followed. Null below the sample bar. */
+export function passAllK(followed: number, n: number, k = PASS_K): number | null {
+  if (n < Math.max(k, HARNESS_MIN_SAMPLES)) return null;
+  let v = 1;
+  for (let i = 0; i < k; i++) v *= (followed - i) / (n - i);
+  return Number(Math.max(0, v).toFixed(3));
+}
 
 export interface DirectiveDigest extends HarnessDirective, Tally {
   byModel: Record<string, Tally>;
@@ -257,6 +305,10 @@ export interface DirectiveDigest extends HarnessDirective, Tally {
   after: { followed: { runs: number; failed: number }; notFollowed: { runs: number; failed: number } };
   /** failRate(not followed) / failRate(followed); null when either side has no finished runs or followed never failed. */
   failLift: number | null;
+  /** `must` directives only: see passAllK and PASS_ALL_K_CAVEAT. */
+  passAllK: number | null;
+  /** Verdicts per hash of this directive's source ('unrecorded' for traces without per-source hashes). */
+  bySourceVersion: Record<string, Tally>;
 }
 
 export interface SourceDigest extends HarnessSource {
@@ -299,6 +351,19 @@ export interface HarnessDigestion {
   directives: DirectiveDigest[];
   /** Failed or refused runs, each traced back to directives not followed (empty list = not a harness-reading problem). */
   back: BackTrace[];
+  /**
+   * How much of failure the harness explains. Failed runs (unique job ids) split
+   * into explained (some directive not followed) and unexplained; unexplained
+   * runs are counted per reason, and a reason seen in >= 2 unexplained runs is a
+   * candidate for a new directive (or a lane fix).
+   */
+  coverage: {
+    failedRuns: number; explained: number; unexplained: number; explainedRate: number | null;
+    gaps: Record<string, number>; candidates: string[];
+  };
+  /** Source hashes seen per source, from traces that recorded them. */
+  sourceVersions: Record<string, string[]>;
+  caveats: string[];
   /** Per reading model: verdicts and the runs its behavior fed into. */
   readers: Record<string, Tally & { runs: number; failed: number }>;
   /** Directives the graph cannot check without reading content. */
@@ -311,6 +376,7 @@ function tally(list: HarnessObservation[]): Tally {
   return {
     applicable: list.length, followed, notFollowed: list.length - followed,
     followRate: list.length ? Number((followed / list.length).toFixed(3)) : null,
+    ci95: wilson95(followed, list.length), enough: list.length >= HARNESS_MIN_SAMPLES,
   };
 }
 
@@ -389,6 +455,8 @@ export function analyzeHarness(
       byDetail: Object.fromEntries(Object.entries(groupBy(list, (o) => o.detail)).map(([k, v]) => [k, tally(v)])),
       after: { followed: f, notFollowed: nf },
       failLift: rf && rn !== null ? Number((rn / rf).toFixed(2)) : null,
+      passAllK: d.strength === 'must' ? passAllK(list.filter((o) => o.verdict === 'followed').length, list.length) : null,
+      bySourceVersion: Object.fromEntries(Object.entries(groupBy(list, (o) => o.sourceVersion ?? 'unrecorded')).map(([k, v]) => [k, tally(v)])),
     };
   });
   const delivered: Record<string, [number, string[]]> = {
@@ -410,8 +478,22 @@ export function analyzeHarness(
   }));
   const readers = Object.fromEntries(Object.entries(groupBy(observations, (o) => o.model))
     .map(([m, list]) => [m, { ...tally(list), ...after(list) }]));
+  const unexplained = back.filter((b) => b.notFollowed.length === 0);
+  const gaps: Record<string, number> = {};
+  for (const b of unexplained) gaps[b.reason] = (gaps[b.reason] ?? 0) + 1;
+  const sourceVersions: Record<string, string[]> = {};
+  for (const o of observations) {
+    const src = DIRECTIVE.get(o.directive)?.source;
+    if (src && o.sourceVersion && !(sourceVersions[src] ??= []).includes(o.sourceVersion)) sourceVersions[src]!.push(o.sourceVersion);
+  }
   return {
     schema: 'agentctl.harness-digestion.v1', readers,
+    coverage: {
+      failedRuns: back.length, explained: back.length - unexplained.length, unexplained: unexplained.length,
+      explainedRate: back.length ? Number(((back.length - unexplained.length) / back.length).toFixed(3)) : null,
+      gaps, candidates: Object.entries(gaps).filter(([, n]) => n >= 2).map(([reason]) => reason).sort(),
+    },
+    sourceVersions, caveats: [PASS_ALL_K_CAVEAT],
     versions: [...new Set(observations.map((o) => o.version).filter((v): v is string => !!v))].sort(),
     sources, directives, back,
     blindSpots: HARNESS_DIRECTIVES.filter((d) => d.check === null).map((d) => d.id),

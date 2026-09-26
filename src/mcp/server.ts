@@ -12,7 +12,7 @@ import { appendMcpCall, newMcpSessionId } from './trace.js';
 import { buildLoopLanes } from '../core/orchestrateFlow.js';
 import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
 import { lintPrompt, lintTaskGraph, specWarnings } from '../graph/specRules.js';
-import { harnessVersion, mcpInstructions, RUN_TASKS_DESCRIPTION } from './harnessText.js';
+import { harnessSourceHashes, harnessVersion, mcpInstructions, RUN_TASKS_DESCRIPTION } from './harnessText.js';
 
 /**
  * `agentctl mcp`: agentctl as a native tool server for Claude Code, Cursor,
@@ -113,7 +113,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
         const issues = specIssues(name, args);
         appendMcpCall(traceSession, {
           seq: ++seq, tool: name, ok: result.isError !== true, ms: Date.now() - started, caller: caller.join(',') || null,
-          harness: harnessVersion(),
+          harness: harnessVersion(), harness_sources: harnessSourceHashes(),
           job_id: (parsed.job_id ?? args.job_id ?? (parsed as { id?: unknown }).id ?? null) as string | null,
           ...(typeof parsed.done === 'boolean' ? { done: parsed.done } : {}),
           ...(typeof parsed.status === 'string' ? { status: parsed.status } : {}),

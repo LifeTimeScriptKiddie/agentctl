@@ -27,6 +27,8 @@ export interface McpCallRecord {
   warned?: string[];
   /** Fingerprint of the harness text this client read (see src/mcp/harnessText.ts). */
   harness?: string;
+  /** Fingerprint per harness source (src/mcp/harnessText.ts harnessSourceHashes), so an edit is credited to its own source. */
+  harness_sources?: Record<string, string>;
 }
 
 const SESSION_RE = /^mcp_[a-z0-9]{8,40}$/;

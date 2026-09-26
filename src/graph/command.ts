@@ -114,12 +114,13 @@ export function registerGraphCommands(program: Command): void {
       if (!h) throw new Error(`no harness digestion in ${dir}; re-run \`agentctl graph analyze\` with this build`);
       emit('harness', 0, {
         dir, page: join(dir, 'harness.html'), versions: h.versions, observations: h.observations,
-        readers: h.readers,
+        readers: h.readers, coverage: h.coverage, sourceVersions: h.sourceVersions,
         directives: h.directives.filter((d) => d.applicable > 0).map((d) => ({
           id: d.id, source: d.source, strength: d.strength, followed: d.followed, notFollowed: d.notFollowed,
-          followRate: d.followRate, failLift: d.failLift, byModel: d.byModel,
+          followRate: d.followRate, ci95: d.ci95, enough: d.enough, passAllK: d.passAllK, failLift: d.failLift,
+          byModel: d.byModel, bySourceVersion: d.bySourceVersion,
         })),
-        back: h.back, blindSpots: h.blindSpots,
+        back: h.back, blindSpots: h.blindSpots, caveats: h.caveats,
       });
     })());
 
