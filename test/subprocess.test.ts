@@ -16,6 +16,8 @@ const EMPTY_MCP = join(presetsDir(), 'empty-mcp.json');
 const CLAUDE_BASE = [
   '-p', '--output-format', 'json', '--tools', 'Read,Grep,Glob',
   '--strict-mcp-config', '--mcp-config', EMPTY_MCP, '--setting-sources', 'user',
+  // effort is pinned so a worker never inherits the user's interactive setting
+  '--effort', 'medium',
 ];
 // lane policy: the claude lane pins its default model (Sonnet) explicitly
 const CLAUDE_ARGS = [...CLAUDE_BASE, '--model', 'claude-sonnet-5'];
@@ -244,10 +246,15 @@ describe('per-agent model switching', () => {
     ]);
   });
 
-  it('effort is a no-op for a preset without an effort block (claude)', () => {
-    const inv = buildInvocation(loadPreset('claude'), req({ role: 'chat', effort: 'max' }));
-    expect(inv.args).not.toContain('-c');
-    expect(inv.args).not.toContain('model_reasoning_effort="max"');
+  it('claude pins effort as a plain flag: requested, else medium, never the user setting', () => {
+    const asked = buildInvocation(loadPreset('claude'), req({ role: 'chat', effort: 'max' }));
+    const i = asked.args.indexOf('--effort');
+    expect(asked.args.slice(i, i + 2)).toEqual(['--effort', 'max']);
+    expect(asked.args).not.toContain('-c');
+    const dflt = buildInvocation(loadPreset('claude'), req({ role: 'chat' }));
+    const j = dflt.args.indexOf('--effort');
+    expect(dflt.args.slice(j, j + 2)).toEqual(['--effort', 'medium']);
+    expect(() => buildInvocation(loadPreset('claude'), req({ role: 'chat', effort: '--dangerously' }))).toThrow(/invalid reasoning effort/);
   });
 
   it('no requested model falls back to preset default (codex pin unchanged)', () => {

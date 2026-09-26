@@ -28,6 +28,14 @@ commandTemplate:
 # evaluator/critic roles append this flag with read-only tools.
 disallowedToolsFlag: --disallowedTools
 # per-invocation model switching (claude accepts an alias or a full name).
+# Pin reasoning effort per call so delegated work never inherits the user's
+# interactive setting (--setting-sources user would otherwise apply, e.g. xhigh).
+# medium is Anthropic's default for Opus 5.5; loop workers request low.
+effort:
+  flag: --effort
+  style: flag
+  default: medium
+  options: [low, medium, high, xhigh, max]
 models:
   flag: --model
   # Lane policy: Claude runs Opus 5.5 (hard work) and Sonnet (everything else)

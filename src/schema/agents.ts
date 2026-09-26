@@ -44,12 +44,14 @@ export type Models = z.infer<typeof ModelsSchema>;
  * `-c model_reasoning_effort="<level>"`). When present, every invocation pins
  * the effort — `default` unless the request overrides it — so a delegated call
  * never floats with the user's interactive config. Rendered as
- * `[flag, key="value"]`. A value outside `options` is passed through (callers
+ * `[flag, key="value"]` (style `config`) or `[flag, value]` (style `flag`). A value outside `options` is passed through (callers
  * may warn), same escape-hatch rule as `models`.
  */
 export const EffortSchema = z.object({
   flag: z.string().default('-c'),
   key: z.string().default('model_reasoning_effort'),
+  /** `config`: `[flag, key="value"]` (codex -c). `flag`: `[flag, value]` (claude --effort <level>). */
+  style: z.enum(['config', 'flag']).default('config'),
   default: z.string(),
   options: z.array(z.string()).default([]),
 });

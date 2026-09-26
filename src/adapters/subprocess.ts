@@ -104,7 +104,7 @@ export function resolveEffort(
   const value = requested ?? cfg.default;
   assertArgValue('reasoning effort', value);
   const known = cfg.options.length === 0 || cfg.options.includes(value);
-  return { args: [cfg.flag, `${cfg.key}="${value}"`], value, known };
+  return { args: cfg.style === 'flag' ? [cfg.flag, value] : [cfg.flag, `${cfg.key}="${value}"`], value, known };
 }
 
 /**
