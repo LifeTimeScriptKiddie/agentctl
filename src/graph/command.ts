@@ -9,6 +9,7 @@ import { startJob } from '../jobs/runner.js';
 import { exportGraphs } from './export.js';
 import { analyzeGraphs, harnessOnly, resolveAnalyzer, type GraphAnalysis } from './analyze.js';
 import { compareAnalyses, improveFromAnalysis, type Proposal } from './improve.js';
+import { runWorkflows } from './workflows.js';
 
 function emit(command: string, exitCode: number, result?: unknown, error?: string): void {
   process.stdout.write(`${JSON.stringify(buildJsonEnvelope(`graph ${command}`, exitCode, [], result, error))}\n`);
@@ -122,6 +123,25 @@ export function registerGraphCommands(program: Command): void {
         })),
         back: h.back, blindSpots: h.blindSpots, caveats: h.caveats,
       });
+    })());
+
+  graph.command('workflows')
+    .option('--since <window>', 'only activity since (7d, 24h, 90m, ISO date)', '14d')
+    .option('--out <dir>', 'output directory (default $AGENTCTL_HOME/graph/workflows-<timestamp>)')
+    .option('--claude-code <dir>', 'Claude Code transcripts root (default ~/.claude/projects)')
+    .option('--no-claude-code', 'skip Claude Code transcripts')
+    .option('--effort-evidence <file>', 'bench-effort result to size the lookup fix (default: the newest one)')
+    .description('mine repeated workflows across sessions and say per workflow: observe only, cheap fix, or engineer it (workflows.html)')
+    .action((o: { since?: string; out?: string; claudeCode?: string | boolean; effortEvidence?: string }) => guard('workflows', async () => {
+      const analyzer = await resolveAnalyzer();
+      if (!analyzer) throw new Error('SessionGraph analyzer not found (set AGENTCTL_SESSIONGRAPH_ROOT or install the Pi package)');
+      const out = o.out ?? join(agentctlHome(), 'graph', `workflows-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+      const r = await runWorkflows(out, analyzer, {
+        sinceMs: parseSince(o.since),
+        ...(o.claudeCode === false ? { claudeCodeDir: null } : typeof o.claudeCode === 'string' ? { claudeCodeDir: o.claudeCode } : {}),
+        ...(o.effortEvidence ? { effortEvidence: o.effortEvidence } : {}),
+      });
+      emit('workflows', 0, r);
     })());
 
   graph.command('improve')

@@ -180,6 +180,19 @@ Blind spots are listed, not guessed. A directive that can only be judged by read
   - `agentctl bench-effort --seed 12` drafts cases from recent jobs into the private `$AGENTCTL_HOME/bench/effort-cases.yaml`. It is real task text, so it never goes in the repo. Review the file: delete cases the lane cannot do and add `contains`/`regex` checks.
   - `agentctl bench-effort --lane claude --levels low,medium,high,xhigh` runs every case at every level, interleaved so cache and drift affect all levels alike. It reports pass rate, median output tokens, cost and time per level, and saves the numbers (no text) to `$AGENTCTL_HOME/bench/effort-<time>.json`.
 
+### Workflows across sessions: worth engineering or not?
+
+`agentctl graph workflows [--since 14d]` runs SessionGraph's workflow miner (`sessiongraph workflows`, see the SessionGraph repository's `docs/WORKFLOWS.md`) over Claude Code transcripts plus agentctl's own job graphs. It uses the newest `bench-effort` result as evidence.
+
+Each request becomes a phase sequence, and repeated ones group into families. Each family gets a verdict:
+- **observe only:** not enough evidence, or it repeats cleanly;
+- **cheap fix:** for example, run question-answering at low effort;
+- **engineer it:** repeated, erratic, and with friction (non-test tools failing) or unrecovered failures.
+
+The output is `workflows.html`, which shows the families, verdicts and reasons, and each family's graph with the typical path. The weekly job writes it to `$AGENTCTL_HOME/graph/latest/workflows/`. Keep or roll back a recommendation with `sessiongraph workflows-compare before/workflows.json after/workflows.json --recommendation <id>`.
+
+The analyzer is found in this order: `AGENTCTL_SESSIONGRAPH_ANALYZER`, `sessiongraph` on PATH, `AGENTCTL_SESSIONGRAPH_ROOT`, a sibling `sessiongraph` checkout next to agentctl's, then the Pi package. The Pi package may predate `workflows`, and the error then says so.
+
 ### Reading and acting
 
 | Evidence (`analysis.json → harness`) | Meaning | Move |
@@ -309,7 +322,8 @@ Below these, `improve` stays quiet.
 | Harness registry, verdicts, digestion, back traces | `src/graph/harness.ts` |
 | Harness pictures (`harness.html`, flow and back) | `src/graph/harnessRender.ts` |
 | Harness texts and their fingerprint | `src/mcp/harnessText.ts` |
-| CLI (`graph export/analyze/harness/improve/apply/compare`) | `src/graph/command.ts` |
+| Workflow mining over sessions (runs SessionGraph) | `src/graph/workflows.ts` |
+| CLI (`graph export/analyze/harness/workflows/improve/apply/compare`) | `src/graph/command.ts` |
 | MCP descriptions, `spec_warnings`, content-free trace | `src/mcp/server.ts`, `src/mcp/trace.ts` |
 | Pi tool pass-through | `integrations/pi/agentctl.ts` |
 | Tests | `test/graph.test.ts`, `test/graphPromptBehavior.test.ts`, `test/graphHarness.test.ts`, `test/mcpServer.test.ts` |

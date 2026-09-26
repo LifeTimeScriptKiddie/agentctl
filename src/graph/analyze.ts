@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { run } from '../util/exec.js';
 import { writePrivateFile, ensurePrivateDir } from '../core/privateFs.js';
 import { readJobEvents, getJob } from '../jobs/store.js';
@@ -25,9 +26,18 @@ const PI_PACKAGE_ANALYZER = join(
 );
 
 /**
+ * A `sessiongraph` checkout next to agentctl's own checkout (…/agentctl/<worktree>
+ * and …/agentctl/sessiongraph). Newer than the Pi-installed package, so it wins.
+ */
+function siblingCheckout(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'sessiongraph', 'packages', 'sessiongraph');
+}
+
+/**
  * Resolution order: AGENTCTL_SESSIONGRAPH_ANALYZER (an executable),
  * `sessiongraph` on PATH, then `uv run` inside AGENTCTL_SESSIONGRAPH_ROOT's
- * packages/sessiongraph or the Pi-installed package. Nothing is installed here.
+ * packages/sessiongraph, a sibling sessiongraph checkout, or the Pi-installed
+ * package. Nothing is installed here.
  */
 export async function resolveAnalyzer(): Promise<AnalyzerCommand | null> {
   const explicit = process.env.AGENTCTL_SESSIONGRAPH_ANALYZER?.trim();
@@ -35,7 +45,7 @@ export async function resolveAnalyzer(): Promise<AnalyzerCommand | null> {
   const onPath = await run('sessiongraph', ['--help'], { timeoutMs: 15_000 });
   if (!onPath.notFound && onPath.exitCode === 0) return { file: 'sessiongraph', prefix: [], via: 'PATH' };
   const root = process.env.AGENTCTL_SESSIONGRAPH_ROOT?.trim();
-  for (const dir of [root ? join(root, 'packages', 'sessiongraph') : null, PI_PACKAGE_ANALYZER]) {
+  for (const dir of [root ? join(root, 'packages', 'sessiongraph') : null, siblingCheckout(), PI_PACKAGE_ANALYZER]) {
     if (dir && existsSync(join(dir, 'pyproject.toml'))) {
       return { file: 'uv', prefix: ['--directory', dir, 'run', '--frozen', 'sessiongraph'], via: `uv (${dir})` };
     }
