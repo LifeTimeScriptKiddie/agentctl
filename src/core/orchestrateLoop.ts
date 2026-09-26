@@ -114,6 +114,8 @@ export interface LeadDecisionRecord {
   tasks: number;
   pinnedModels: number;
   withAcceptance: number;
+  /** Delegated tasks that set their own effort (the lead choosing effort per task). */
+  withEffort: number;
   /** invalid: too_many_tasks | multiple_envelopes | bad_envelope; rejected: a classifyRejection code. */
   code?: string;
 }
@@ -244,8 +246,9 @@ function formatRoster(agents: LoopAgent[]): string {
     const caps = Object.entries(a.capabilities).filter(([, v]) => v).map(([k]) => k).join(', ') || 'none';
     const fast = `${a.workerModel ?? 'cli default'}${a.workerEffort ? ` @${a.workerEffort}` : ''}`;
     const strong = a.strongModel && a.strongModel !== a.workerModel ? `; stronger: ${a.strongModel}` : '';
+    const efforts = a.effortLevels.length ? `; effort: ${a.effortLevels.join('|')}` : '';
     const status = a.available ? 'available' : `unavailable${a.note ? `: ${a.note}` : ''}`;
-    return `- ${a.name} [${status}] fast: ${fast}${strong}; caps: ${caps}`;
+    return `- ${a.name} [${status}] fast: ${fast}${strong}${efforts}; caps: ${caps}`;
   }).join('\n');
 }
 
@@ -277,6 +280,7 @@ export function buildLeadPrompt(args: {
           'dependsOn may name tasks in this batch or finished tasks from earlier rounds. Use new ids every round.',
           `At most ${args.maxTasks} tasks per round. Round ${args.round} of ${args.maxRounds}.`,
           'Workers use their fast model. Set "model" only when a task truly needs the stronger model listed for that lane.',
+          'Where a lane lists effort levels, set "effort" per task: "low" for lookups and small edits, "medium" for most work, "high" or above only for hard design or debugging. Omit it to use the lane\'s fast default.',
           'Workers see only their instruction and their dependencies\' results, so write each instruction to stand on its own.',
         ].join('\n'),
     'Failed, skipped or blocked tasks are facts: re-assign, narrow, or answer with what you have. Never claim a worker did something its result does not show.',
@@ -448,6 +452,7 @@ function decisionRecord(
     round, phase, lastRound, kind, tasks: tasks.length,
     pinnedModels: tasks.filter((t) => t.model != null).length,
     withAcceptance: tasks.filter((t) => !!t.acceptance?.trim()).length,
+    withEffort: tasks.filter((t) => t.effort != null).length,
     ...(problem ? { code: leadProblemCode(kind, problem) } : {}),
   };
 }

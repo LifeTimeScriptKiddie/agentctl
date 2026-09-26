@@ -184,7 +184,8 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   server.registerTool('agentctl_agents', {
     title: 'List agents',
     description: 'Worker lanes with availability, capabilities, the fast model tasks run on by default, the stronger '
-      + 'model a task may request, and any usage-limit cap. Use it to pick `agent`/`model` for agentctl_run_tasks. No model calls.',
+      + 'model a task may request, the effort levels a task may set, and any usage-limit cap. Use it to pick '
+      + '`agent`/`model`/`effort` for agentctl_run_tasks. No model calls.',
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async () => {
@@ -204,6 +205,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
           fast_model: lane?.workerModel ?? null,
           fast_effort: lane?.workerEffort ?? null,
           strong_model: lane?.strongModel ?? null,
+          efforts: reg.getPreset(name)?.effort?.options ?? [],
           ...(lane?.note ? { note: lane.note } : {}),
           models: reg.getPreset(name)?.models?.options ?? [],
         };
@@ -237,7 +239,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       task: z.string().min(1).describe('Self-contained task for the worker, including any needed context.'),
       to: z.string().optional().describe('Pin an agent (see agentctl_agents); omit to route automatically.'),
       model: z.string().optional(),
-      effort: z.string().optional(),
+      effort: z.string().optional().describe("Reasoning effort, one of the lane's `efforts` (agentctl_agents); omit for the lane default."),
       briefing_workspace: z.string().optional().describe('Team-memory workspace to brief the worker from.'),
       timeout_seconds: z.number().int().min(10).max(3600).optional().describe('Per-worker timeout (default 600).'),
       wait_seconds: z.number().int().min(0).max(300).optional().describe(`Max seconds to wait here (capped at ${maxWait}).`),
@@ -311,7 +313,8 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
     type: z.enum(['reason', 'code', 'search', 'shell', 'bulk']).optional(),
     needs: z.array(z.string()).optional().describe('Required capabilities, e.g. ["canRunShell"].'),
     model: z.string().optional().describe("Only for hard tasks: the lane's strong_model (see agentctl_agents)."),
-    effort: z.string().optional(),
+    effort: z.string().optional().describe("One of the lane's `efforts` (agentctl_agents): low for lookups and small edits, "
+      + 'medium for most work, high or above only for hard design or debugging. Omit for the fast default.'),
     acceptance: z.string().max(4000).optional().describe('What a good result contains.'),
   });
 

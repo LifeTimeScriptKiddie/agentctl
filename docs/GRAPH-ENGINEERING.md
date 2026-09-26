@@ -172,6 +172,14 @@ Blind spots are listed, not guessed. A directive that can only be judged by read
 - **Coverage.** `coverage` splits failed runs (unique job ids) into `explained` (a directive was not followed) and `unexplained`, counts unexplained runs per `reason` in `gaps`, and lists a reason seen in 2+ unexplained runs under `candidates`: a harness gap worth a new directive, or a lane to fix.
 - **Per-source versions.** Traces and job `started` events also carry `harness_sources` (`harnessSourceHashes()`), one hash per source; the global `harness` is the hash of those hashes. Each observation gets the hash of its own directive's source (`sourceVersion`), and each directive reports `bySourceVersion`, so editing one source is credited only to that source's directives. Traces without per-source hashes appear as `unrecorded`.
 
+### Effort: set it, choose it, measure it
+
+- **Every lane pins effort.** The Claude preset passes `--effort` (requested, else `medium`), so a delegated Claude call never inherits the user's interactive setting. Codex passes `-c model_reasoning_effort=…`. Task-graph workers use `low` when the lane offers it.
+- **Callers and the lead can choose it.** `agentctl_agents` lists each lane's `efforts`. The run_tasks and delegate `effort` fields say when to use each level, and the lead prompt lists effort levels per lane with the same guidance. `lead_decision` records `withEffort`, how many delegated tasks set their own effort.
+- **Measure it on a fixed task set, not on live traffic.** Live traffic mixes task difficulty with settings.
+  - `agentctl bench-effort --seed 12` drafts cases from recent jobs into the private `$AGENTCTL_HOME/bench/effort-cases.yaml`. It is real task text, so it never goes in the repo. Review the file: delete cases the lane cannot do and add `contains`/`regex` checks.
+  - `agentctl bench-effort --lane claude --levels low,medium,high,xhigh` runs every case at every level, interleaved so cache and drift affect all levels alike. It reports pass rate, median output tokens, cost and time per level, and saves the numbers (no text) to `$AGENTCTL_HOME/bench/effort-<time>.json`.
+
 ### Reading and acting
 
 | Evidence (`analysis.json → harness`) | Meaning | Move |

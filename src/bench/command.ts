@@ -8,6 +8,7 @@ import { detectCallerContext } from '../core/caller.js';
 import { parseSince } from '../graph/command.js';
 import { benchRoster, loadCases, runLiveBench, runRoutingBench } from './bench.js';
 import { rollbackTune, tune } from './tune.js';
+import { loadEffortCases, runEffortSweep, saveEffortSweep, seedEffortCases } from './effort.js';
 import { loadLimits, pruneExpired, updateLimits } from '../core/limitStore.js';
 
 type Format = 'text' | 'json';
@@ -50,6 +51,56 @@ export function registerBenchCommands(program: Command): void {
       ];
       out('bench', o.format, failed ? 1 : 0, { routing, live }, lines.join('\n'));
     }));
+
+  program.command('bench-effort')
+    .alias('effort-sweep')
+    .description('run your own tasks on one lane at several effort levels; compare pass rate, tokens, cost, time (spends quota)')
+    .option('--lane <agent>', 'lane to sweep', 'claude')
+    .option('--levels <list>', 'comma-separated effort levels', 'low,medium,high,xhigh')
+    .option('--model <model>', 'model for every call (default: the lane default)')
+    .option('--limit <n>', 'use only the first n cases')
+    .option('--cases <file>', 'cases file (default: $AGENTCTL_HOME/bench/effort-cases.yaml)')
+    .option('--seed <n>', 'draft n cases from your recent jobs into the private cases file, then stop')
+    .option('--force', 'with --seed: replace an existing cases file', false)
+    .option('--timeout <seconds>', 'per call', '300')
+    .option('--format <format>', 'text | json', 'text')
+    .action((o: { lane: string; levels: string; model?: string; limit?: string; cases?: string; seed?: string; force: boolean; timeout: string; format: Format }) =>
+      guard('bench-effort', () => o.format, async () => {
+        if (o.seed) {
+          const r = seedEffortCases(Number(o.seed), { force: o.force });
+          out('bench-effort', o.format, 0, { path: r.path, cases: r.cases.length },
+            `drafted ${r.cases.length} case(s) in ${r.path}\nreview them (delete unusable ones, add contains/regex checks), then run: agentctl bench-effort --lane ${o.lane}`);
+          return;
+        }
+        const registry = loadRegistry();
+        const preset = registry.getPreset(o.lane);
+        if (!preset) throw new Error(`no lane '${o.lane}'`);
+        const levels = o.levels.split(',').map((x) => x.trim()).filter(Boolean);
+        const offered = preset.effort?.options ?? [];
+        const unknown = levels.filter((l) => !offered.includes(l));
+        if (!preset.effort) throw new Error(`lane '${o.lane}' has no effort control`);
+        if (unknown.length) throw new Error(`lane '${o.lane}' offers ${offered.join('|')}; not: ${unknown.join(', ')}`);
+        let cases = o.cases ? loadEffortCases(o.cases) : loadEffortCases();
+        if (o.limit) cases = cases.slice(0, Number(o.limit));
+        const sweep = await runEffortSweep(cases, levels, async (task, effort) => {
+          const r = await agentAsk(registry, { to: o.lane, prompt: task, effort, model: o.model ?? null, timeoutSeconds: Number(o.timeout) });
+          const a = r.results[0];
+          return { ok: Boolean(a?.ok), text: a?.text ?? r.error ?? '', outputTokens: a?.usage.outputTokens ?? null,
+            costUsd: a?.costUsd ?? a?.usage.costUsd ?? null, model: a?.model ?? null };
+        });
+        const saved = saveEffortSweep({ lane: o.lane, model: o.model ?? null, cases: cases.length, ...sweep });
+        const pct = (x: number | null) => (x === null ? '—' : `${Math.round(x * 100)}%`);
+        const lines = [
+          `effort sweep on ${o.lane}${o.model ? ` (${o.model})` : ''}: ${cases.length} case(s) × ${levels.length} level(s)`,
+          'level    ok    pass(checked)   median out tokens   median cost   median time',
+          ...sweep.levels.map((l) => [
+            l.effort.padEnd(8), pct(l.okRate).padEnd(5), `${pct(l.passRate)} (${l.checked})`.padEnd(15),
+            String(l.medianOutputTokens ?? '—').padEnd(19), (l.medianCostUsd === null ? '—' : `$${l.medianCostUsd}`).padEnd(13), `${l.medianSeconds}s`,
+          ].join(' ')),
+          `saved: ${saved}`,
+        ];
+        out('bench-effort', o.format, 0, { ...sweep, saved }, lines.join('\n'));
+      }));
 
   program.command('doctor')
     .description('check setup, each tool, recent failures, sandbox/caller and MCP installs; prints the next step for each problem')
