@@ -126,7 +126,7 @@ No file write. Each `ask` / `delegate` is stateless unless the underlying CLI ha
 | `~/.agentctl/limits.json` | Model tier cooldowns after usage limits (`AGENTCTL_LIMITS_FILE`) |
 | `~/.agentctl/route-log.jsonl` | Routing / orchestrate decisions (append-only audit) |
 | `~/.agentctl/orchestrations/<hash>.json` | Resumable `orchestrate` runs (`--resume`) |
-| `~/.agentctl/comet-profile/` | Comet lane browser profile (`chrome-profile/` when `appName: Google Chrome`) |
+| `~/.agentctl/chrome-profile/` | Comet browser profile |
 
 Cursor automation should use **`--session <stable-name>`** when a task spans multiple shell invocations in one job (e.g. `cursor-job-123`).
 

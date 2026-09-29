@@ -165,9 +165,7 @@ describe.skipIf(process.platform === 'win32')('private state files', () => {
     it('browser profile dir', () => {
       const preset = PresetSchema.parse({ ...loadPreset('comet'), userDataDir: null });
       const dir = prepareProfileDir(preset);
-      expect(dir).toBe(join(home, 'comet-profile'));
-      const chrome = PresetSchema.parse({ ...loadPreset('comet'), appName: 'Google Chrome', userDataDir: null });
-      expect(prepareProfileDir(chrome)).toBe(join(home, 'chrome-profile'));
+      expect(dir).toBe(join(home, 'chrome-profile'));
       expect(mode(dir)).toBe(0o700);
 
       const custom = join(mkdtempSync(join(tmpdir(), 'agentctl-profile-')), 'p');
