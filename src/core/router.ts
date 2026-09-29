@@ -91,18 +91,18 @@ export function suggestModel(agent: string | null, reasons: string[], task = '')
   }
   if (has('second-opinion') && agent === 'cursor') return 'composer-2.5';
   if (has('creative')) {
-    if (agent === 'claude') return 'claude-sonnet-5';
+    if (agent === 'claude') return 'claude-sonnet-5-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (has('bulk')) {
-    if (agent === 'claude') return 'claude-sonnet-5';
+    if (agent === 'claude') return 'claude-sonnet-5-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (has('trivial')) {
-    if (agent === 'claude') return 'claude-sonnet-5';
+    if (agent === 'claude') return 'claude-sonnet-5-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.3-codex-spark';
@@ -123,12 +123,12 @@ export function suggestModel(agent: string | null, reasons: string[], task = '')
     if (agent === 'pi') return 'openai-codex/gpt-5.6-sol';
   }
   if (has('write') || has('shell') || has('code')) {
-    if (agent === 'claude') return 'claude-sonnet-5';
+    if (agent === 'claude') return 'claude-sonnet-5-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
   }
   if (tier === 'balanced') {
-    if (agent === 'claude') return 'claude-sonnet-5';
+    if (agent === 'claude') return 'claude-sonnet-5-5';
     if (agent === 'cursor') return 'composer-2.5';
     if (agent === 'codex' || agent === 'codex_write') return 'gpt-5.6-luna';
     if (agent === 'pi') return 'openai-codex/gpt-5.6-luna';
@@ -161,7 +161,7 @@ export function defaultWorkerModel(agent: string | null): string | null {
   if (!agent) return null;
   switch (agent) {
     case 'claude':
-      return 'claude-sonnet-5';
+      return 'claude-sonnet-5-5';
     case 'codex':
     case 'codex_write':
       return 'gpt-5.6-luna';
@@ -220,14 +220,25 @@ const SIGNALS: Signal[] = [
     requires: 'canAccessNetwork',
   },
   {
+    id: 'google-research',
+    // Google-ecosystem research goes to Gemini, which runs behind the agy
+    // (Antigravity) lane. The standalone gemini CLI lane stays removed
+    // (2026-08-27, re-checked 2026-09-29: IneligibleTierError UNSUPPORTED_CLIENT).
+    // Only agy is credited here, so it outscores Comet's lead on the general
+    // search signal; Comet still gets the task through `search` when agy is down.
+    re: /\b(?:google(?:\s+scholar)?|gemini|youtube|gcp|google\s+cloud|firebase|android)\b/i,
+    prefer: ['agy'],
+    weight: 9,
+    requires: 'canAccessNetwork',
+  },
+  {
     id: 'search',
     // Literature/research markers (papers, literature, scholarly) keep tasks like
     // "summarize recent papers on X" on the web-research lane instead of letting
     // the bulk "summarize" signal pull them to a cheap general model.
     re: /\b(search|look\s?up|google|latest|news|browse|web\s+for|perplexity|online|papers|literature|scholarly)\b/i,
-    // agy is the primary web-research lane; Comet/Perplexity is the fallback.
-    // (gemini removed 2026-08-27 — lane permanently dead: IneligibleTierError.)
-    prefer: ['agy', 'comet'],
+    // General web research goes to Comet (Perplexity) first; agy is the fallback.
+    prefer: ['comet', 'agy'],
     weight: 6,
     requires: 'canAccessNetwork',
   },

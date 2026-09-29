@@ -277,7 +277,10 @@ export function stepFingerprint(step: PlanStep): string {
   return createHash('sha256').update(material).digest('hex').slice(0, 24);
 }
 
-/** Run worker dispatch; on agy failure retry once with comet if available. */
+/** Web-research lanes back each other up: a failed step retries once on the other. */
+const WEB_FALLBACK: Record<string, string> = { agy: 'comet', comet: 'agy' };
+
+/** Run worker dispatch; on agy/comet failure retry once on the other web lane if available. */
 async function dispatchStep(
   deps: OrchestrateDeps,
   agent: string,
@@ -289,16 +292,17 @@ async function dispatchStep(
   const r = await deps.dispatch(agent, instruction, model, effort);
   if (r.ok) return { result: r, agent, model };
 
-  if (agent === 'agy') {
-    const cometUp = deps.agents.some((a) => a.name === 'comet' && a.available);
-    if (cometUp && allowFallback('comet')) {
-      const r2 = await deps.dispatch('comet', instruction, null, null);
+  const backup = WEB_FALLBACK[agent];
+  if (backup) {
+    const backupUp = deps.agents.some((a) => a.name === backup && a.available);
+    if (backupUp && allowFallback(backup)) {
+      const r2 = await deps.dispatch(backup, instruction, null, null);
       const combinedCost = addCost(r.costUsd ?? null, r2.costUsd);
-      if (r2.ok) return { result: { ...r2, costUsd: combinedCost }, agent: 'comet', model: null };
+      if (r2.ok) return { result: { ...r2, costUsd: combinedCost }, agent: backup, model: null };
       return {
         result: {
           ok: false,
-          text: `agy: ${r.text}; comet fallback: ${r2.text}`,
+          text: `${agent}: ${r.text}; ${backup} fallback: ${r2.text}`,
           costUsd: combinedCost,
         },
         agent,

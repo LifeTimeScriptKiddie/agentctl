@@ -53,7 +53,7 @@ const probes: AgentProbe[] = [
     name: 'claude',
     available: false,
     detail: 'not found',
-    models: ['claude-opus-5-5', 'claude-sonnet-5'],
+    models: ['claude-opus-5-5', 'claude-sonnet-5-5'],
     defaultModel: null,
     optional: true,
   },

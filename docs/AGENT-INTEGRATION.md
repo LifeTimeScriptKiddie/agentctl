@@ -22,9 +22,9 @@ Nobody has to type `/agentctl`. Once agentctl is registered, the client's model 
 | Fast repository questions | `cursor` (Composer) |
 | Web research | `agy` |
 
-Model policy: GPT lanes use only `gpt-5.6-luna` and `gpt-5.6-sol` (no Terra, no GPT‑6 Astra). Claude uses only `claude-opus-5-5` and `claude-sonnet-5`. Cursor uses only Composer. Pi gets the same tools as native Pi tools (`agentctl_delegate`, `agentctl_run_tasks`, `agentctl_orchestrate`, `agentctl_job_wait`, `agentctl_job_cancel`) through its extension.
+Model policy: GPT lanes use only `gpt-5.6-luna` and `gpt-5.6-sol` (no Terra, no GPT‑6 Astra). Claude uses only `claude-opus-5-5` and `claude-sonnet-5-5`. Cursor uses only Composer. Pi gets the same tools as native Pi tools (`agentctl_delegate`, `agentctl_run_tasks`, `agentctl_orchestrate`, `agentctl_job_wait`, `agentctl_job_cancel`) through its extension.
 
-Delegated tasks run on each lane's **fast** model by default (`gpt-5.6-luna` at low effort, `claude-sonnet-5`, `composer-2.5-fast`). A task may ask for the lane's **strong** model (`gpt-5.6-sol`, `claude-opus-5-5`, `composer-2.5`) when it is hard. `agentctl_agents` lists both per lane.
+Delegated tasks run on each lane's **fast** model by default (`gpt-5.6-luna` at low effort, `claude-sonnet-5-5`, `composer-2.5-fast`). A task may ask for the lane's **strong** model (`gpt-5.6-sol`, `claude-opus-5-5`, `composer-2.5`) when it is hard. `agentctl_agents` lists both per lane.
 
 ## Who leads
 

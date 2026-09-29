@@ -24,9 +24,9 @@ function fleet(overrides: Record<string, boolean> = {}): RouterAgent[] {
 }
 
 describe('route (deterministic)', () => {
-  it('search task → agy (Antigravity web lane)', () => {
+  it('general search task → comet (Perplexity web lane)', () => {
     const d = route('search the web for the latest news on X', fleet());
-    expect(d.agent).toBe('agy');
+    expect(d.agent).toBe('comet');
     expect(d.method).toBe('deterministic');
   });
 
@@ -50,9 +50,9 @@ describe('route (deterministic)', () => {
     expect(d.tier).toBe('balanced');
   });
 
-  it('search intent beats an incidental tech noun (look up news on rust → agy)', () => {
+  it('search intent beats an incidental tech noun (look up news on rust → comet)', () => {
     const d = route('look up the latest news on rust async', fleet());
-    expect(d.agent).toBe('agy'); // "rust" must not pull this to codex
+    expect(d.agent).toBe('comet'); // "rust" must not pull this to codex
   });
 
   it('reasoning task → cursor (no-claude-default profile)', () => {
@@ -103,7 +103,7 @@ describe('route (deterministic)', () => {
 
   it('research summarization → web-research lane, not the bulk model', () => {
     const d = route('summarize recent papers on retrieval-augmented generation', fleet());
-    expect(d.agent).toBe('agy');
+    expect(d.agent).toBe('comet');
   });
 
   it('a plain "summarize and translate, quick" stays on the cheap bulk lane', () => {
@@ -127,8 +127,20 @@ describe('route (deterministic)', () => {
     expect(d.ranked.map((r) => r.agent)).not.toContain('dry_run');
   });
 
-  it('search falls back to Comet when the agy web lane is down', () => {
-    const d = route('look up the latest news', fleet({ agy: false }));
+  it('search falls back to agy when the Comet web lane is down', () => {
+    const d = route('look up the latest news', fleet({ comet: false }));
+    expect(d.agent).toBe('agy');
+    expect(d.method).toBe('fallback');
+  });
+
+  it('Google-ecosystem research → agy (Gemini), even with a general search verb', () => {
+    expect(route('search google scholar for papers on RAG', fleet()).agent).toBe('agy');
+    expect(route('what does the gemini api pricing page say', fleet()).agent).toBe('agy');
+    expect(route('look up the latest firebase auth changes', fleet()).agent).toBe('agy');
+  });
+
+  it('Google-ecosystem research falls back to comet when agy is down', () => {
+    const d = route('search google for the latest android release notes', fleet({ agy: false }));
     expect(d.agent).toBe('comet');
     expect(d.method).toBe('fallback');
   });
@@ -154,7 +166,7 @@ describe('route (deterministic)', () => {
   it('creative writing uses native Claude Sonnet', () => {
     const d = route('draft a short story with natural dialogue', fleet());
     expect(d.agent).toBe('claude');
-    expect(d.model).toBe('claude-sonnet-5');
+    expect(d.model).toBe('claude-sonnet-5-5');
   });
 
   it('cross-model second opinion stays on Composer through Cursor', () => {
@@ -178,7 +190,7 @@ describe('route (deterministic)', () => {
   it('model-aware: reasoning, bulk, and fallback defaults use the local roster', () => {
     expect(route('explain and analyze the trade-offs', fleet()).model).toBe('composer-2.5');
     expect(route('summarize this quickly', fleet()).model).toBe('composer-2.5');
-    expect(suggestModel('claude', ['bulk signal'])).toBe('claude-sonnet-5');
+    expect(suggestModel('claude', ['bulk signal'])).toBe('claude-sonnet-5-5');
     expect(suggestModel('codex', ['reason signal'])).toBe('gpt-5.6-luna');
     expect(suggestModel('codex', ['reason signal'], 'deep architectural analysis')).toBe('gpt-5.6-sol');
     expect(defaultWorkerModel('codex')).toBe('gpt-5.6-luna');
@@ -194,7 +206,7 @@ describe('Cursor-first role policy', () => {
     ['plan a cybersecurity review', 'codex', 'gpt-5.6-sol'],
     ['deep code review', 'claude', 'claude-opus-5-5'],
     ['deep security review', 'claude', 'claude-opus-5-5'],
-    ['draft a report', 'claude', 'claude-sonnet-5'],
+    ['draft a report', 'claude', 'claude-sonnet-5-5'],
     ['analyze cybersecurity findings', 'cursor', 'composer-2.5'],
     ['patch the security bug in this file', 'codex_write', 'gpt-daybreak-blue-latest'],
     ['run tests and explain their output', 'codex_write', 'gpt-5.6-luna'],

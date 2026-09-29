@@ -320,6 +320,21 @@ describe('runOrchestration', () => {
     expect(res.outcomes[0]!.output).toBe('from comet');
   });
 
+  it('falls back from comet to agy on search executor failure', async () => {
+    const plan = async () =>
+      '{"goal":"g","steps":[{"id":"s1","instruction":"look up news","type":"search","agent":"comet","acceptance":"ok"}]}';
+    const dispatch = vi.fn(async (agent: string) => {
+      if (agent === 'comet') return { ok: false, text: 'comet not signed in' };
+      if (agent === 'agy') return { ok: true, text: 'from agy' };
+      return { ok: false, text: '?' };
+    });
+    const agents = fleet().map((a) => (a.name === 'comet' || a.name === 'agy' ? { ...a, available: true } : a));
+    const res = await runOrchestration('g', deps({ plan, dispatch, agents }), {});
+    expect(res.status).toBe('done');
+    expect(res.outcomes[0]!.agent).toBe('agy');
+    expect(res.outcomes[0]!.output).toBe('from agy');
+  });
+
   it('surfaces executor failure detail in step note', async () => {
     const dispatch = vi.fn(async () => ({ ok: false, text: 'usage_limit on luna' }));
     const res = await runOrchestration('g', deps({ dispatch }), {});

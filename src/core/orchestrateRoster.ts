@@ -86,7 +86,7 @@ const FAST_WORKER_MODELS: Record<string, string> = {
   codex: 'gpt-5.6-luna',
   codex_write: 'gpt-5.6-luna',
   pi: 'openai-codex/gpt-5.6-luna',
-  claude: 'claude-sonnet-5',
+  claude: 'claude-sonnet-5-5',
 };
 const STRONG_WORKER_MODELS: Record<string, string> = {
   cursor: 'composer-2.5',

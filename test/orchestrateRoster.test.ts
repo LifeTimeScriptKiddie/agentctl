@@ -38,7 +38,7 @@ describe('orchestrateRoster', () => {
     vi.stubEnv('AGENTCTL_HOME', home);
     const reg = AdapterRegistry.fromPackaged();
     expect(resolveOrchestratorModel(reg, 'codex')).toBe('gpt-5.6-sol');
-    expect(resolveOrchestratorModel(reg, 'claude')).toBe('claude-sonnet-5');
+    expect(resolveOrchestratorModel(reg, 'claude')).toBe('claude-sonnet-5-5');
     expect(resolveOrchestratorModel(reg, 'cursor')).toBe('composer-2.5');
     expect(resolveOrchestratorModel(reg, 'claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
   });

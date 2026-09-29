@@ -27,9 +27,13 @@ routing:
   - id: web-search
     task: search the web for the latest Node.js LTS release
     mustHave: [canAccessNetwork]
-    expect: agy
+    expect: comet
   - id: research-papers
     task: summarize recent papers on retrieval augmented generation
+    mustHave: [canAccessNetwork]
+    expect: comet
+  - id: google-research
+    task: look up the latest Gemini API model list on Google
     mustHave: [canAccessNetwork]
     expect: agy
   - id: news-not-write

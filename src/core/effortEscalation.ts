@@ -12,7 +12,7 @@ export const CODEX_MODEL_LADDER = ['gpt-5.6-luna', 'gpt-5.6-sol'] as const;
 export const CURSOR_MODEL_LADDER = ['composer-2.5-fast', 'composer-2.5'] as const;
 
 /** Claude lane: Sonnet → Opus 5.5 after a rejected attempt. */
-export const CLAUDE_MODEL_LADDER = ['claude-sonnet-5', 'claude-opus-5-5'] as const;
+export const CLAUDE_MODEL_LADDER = ['claude-sonnet-5-5', 'claude-opus-5-5'] as const;
 
 function nextInLadder(ladder: readonly string[], current: string | null): string | null {
   if (!current) return ladder[0] ?? null;

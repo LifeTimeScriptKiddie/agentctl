@@ -45,7 +45,7 @@ const ECONOMY_MODELS: Record<string, string> = {
   codex: 'gpt-5.6-luna',
   codex_write: 'gpt-5.6-luna',
   cursor: 'composer-2.5',
-  claude: 'claude-sonnet-5',
+  claude: 'claude-sonnet-5-5',
   pi: 'openai-codex/gpt-5.6-luna',
 };
 
@@ -58,8 +58,8 @@ const ORCH_MODELS: Record<string, Partial<Record<CostTier, string>>> = {
     frontier: 'gpt-5.6-sol',
   },
   claude: {
-    economy: 'claude-sonnet-5',
-    balanced: 'claude-sonnet-5',
+    economy: 'claude-sonnet-5-5',
+    balanced: 'claude-sonnet-5-5',
     frontier: 'claude-opus-5-5',
   },
   cursor: {

@@ -70,7 +70,7 @@ describe('features', () => {
 describe('router overrides', () => {
   it('routing.prefer reorders a signal but keeps its capability guard', () => {
     const task = 'search the web for the latest Node.js LTS release';
-    expect(route(task, roster).agent).toBe('agy');
+    expect(route(task, roster).agent).toBe('comet');
     expect(route(task, roster, { prefer: { search: ['cursor', 'agy'] } }).agent).toBe('cursor');
     // claude lacks canAccessNetwork: an override cannot hand it web research
     expect(route(task, roster, { prefer: { search: ['claude'] } }).agent).not.toBe('claude');
@@ -105,13 +105,13 @@ describe('routing bench', () => {
 
 describe('tune', () => {
   it('demotes a lane only on quality evidence, and promotes a healthy capable lane', () => {
-    seedRejections('agy', 5);
+    seedRejections('comet', 5);
     seedCalls('cursor', 9, 1);
     const changes = proposeRouting(gatherEvidence(home), {}, roster);
     expect(changes).toHaveLength(1);
     expect(changes[0]!.signal).toBe('search');
     expect(changes[0]!.to[0]).toBe('cursor');
-    expect(changes[0]!.to.at(-1)).toBe('agy');
+    expect(changes[0]!.to.at(-1)).toBe('comet');
   });
 
   it('ignores operational failures and usage caps when deciding demotions', () => {
@@ -122,7 +122,7 @@ describe('tune', () => {
   });
 
   it('needs enough verdicts before demoting', () => {
-    seedRejections('agy', 2);
+    seedRejections('comet', 2);
     seedCalls('cursor', 9, 1);
     expect(proposeRouting(gatherEvidence(home), {}, roster)).toEqual([]);
   });
@@ -130,7 +130,7 @@ describe('tune', () => {
   it('dry run writes nothing; --apply backs up, writes and logs; rollback restores', () => {
     savePreferences(prefs(), home);
     const original = readFileSync(join(home, 'preferences.yaml'), 'utf8');
-    seedRejections('agy', 5);
+    seedRejections('comet', 5);
     seedCalls('cursor', 9, 1);
 
     const dry = tune({ cases: cases.routing, roster, apply: false, home });
@@ -151,7 +151,7 @@ describe('tune', () => {
 
   it('rollback refuses to discard a manual routing edit made after the tune', () => {
     savePreferences(prefs(), home);
-    seedRejections('agy', 5);
+    seedRejections('comet', 5);
     seedCalls('cursor', 9, 1);
     tune({ cases: cases.routing, roster, apply: true, home });
     const edited = loadPreferences(home)!;
@@ -164,11 +164,11 @@ describe('tune', () => {
 
   it('refuses to apply a candidate that breaks a hard benchmark case', () => {
     savePreferences(prefs(), home);
-    seedRejections('agy', 5);
+    seedRejections('comet', 5);
     seedCalls('cursor', 9, 1);
-    const strict = [{ id: 'web-must-be-agy', task: 'search the web for the latest news', mustHave: [], notAgents: ['cursor'] }];
+    const strict = [{ id: 'web-must-be-comet', task: 'search the web for the latest news', mustHave: [], notAgents: ['cursor'] }];
     const r = tune({ cases: strict, roster, apply: true, home });
-    expect(r.regressions).toEqual(['web-must-be-agy (search)']);
+    expect(r.regressions).toEqual(['web-must-be-comet (search)']);
     expect(r.changes).toEqual([]);
     expect(r.applied).toBe(false);
     expect(routingPrefer(loadPreferences(home))).toEqual({});
@@ -182,7 +182,7 @@ describe('tune', () => {
   });
 
   it('counts a job-run orchestration once, not from both the job and its run file', () => {
-    seedRejections('agy', 2);
+    seedRejections('comet', 2);
     const goal = 'g';
     mkdirSync(join(home, 'jobs', 'job_1'), { recursive: true });
     writeFileSync(join(home, 'jobs', 'job_1', 'input.json'), JSON.stringify({ kind: 'orchestrate', goal }));
@@ -194,7 +194,7 @@ describe('tune', () => {
 
   it('keeps the good changes when another proposed change breaks the bench', () => {
     savePreferences(prefs(), home);
-    seedRejections('agy', 5);
+    seedRejections('comet', 5);
     seedRejections('agy_image', 5);
     seedCalls('cursor', 9, 1);
     const strict = [{ id: 'image-not-cursor', task: 'generate a hero image of a lighthouse', mustHave: [], notAgents: ['cursor'] }];

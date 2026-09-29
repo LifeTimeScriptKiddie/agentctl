@@ -33,7 +33,7 @@ describe('effortEscalation', () => {
   });
 
   it('escalateWorker moves claude from Sonnet to Opus 5.5', () => {
-    expect(escalateWorker('claude', 'claude-sonnet-5', null)).toMatchObject({ changed: true, model: 'claude-opus-5-5' });
+    expect(escalateWorker('claude', 'claude-sonnet-5-5', null)).toMatchObject({ changed: true, model: 'claude-opus-5-5' });
     expect(escalateWorker('claude', 'claude-opus-5-5', null).changed).toBe(false);
   });
 

@@ -252,7 +252,7 @@ describe('orchestrate flow (real presets)', () => {
     savePreferences({
       version: 1, updatedAt: '2026-09-24', source: 'manual', tier: 'balanced',
       orchestrator: { agent: 'cursor', model: 'composer-2.5' },
-      orchestratorBackup: { agent: 'claude', model: 'claude-sonnet-5' },
+      orchestratorBackup: { agent: 'claude', model: 'claude-sonnet-5-5' },
       agents: { comet: { enabled: false }, agy: { enabled: false } },
     });
     registry = AdapterRegistry.fromPackaged();
@@ -287,7 +287,7 @@ describe('orchestrate flow (real presets)', () => {
     const r = await runOrchestrateGoal(registry, { goal: 'compare two designs', timeoutSeconds: 5 });
     expect(r.status).toBe('done');
     expect(codex.mock.calls[0]![0]).toMatchObject({ model: 'gpt-5.6-luna', effort: 'low' });
-    expect(claude.mock.calls[0]![0]).toMatchObject({ model: 'claude-sonnet-5' });
+    expect(claude.mock.calls[0]![0]).toMatchObject({ model: 'claude-sonnet-5-5' });
   });
 
   it('keeps write lanes off the roster without --approve', async () => {
@@ -339,7 +339,7 @@ describe('orchestrate flow (real presets)', () => {
     const backup = vi.spyOn(registry.get('claude'), 'invoke').mockResolvedValue(text('claude', 'Backup answer.'));
     const r = await runOrchestrateGoal(registry, { goal: 'q', timeoutSeconds: 5 });
     expect(r).toMatchObject({ status: 'done', synthesis: 'Backup answer.' });
-    expect(backup.mock.calls[0]![0].model).toBe('claude-sonnet-5');
+    expect(backup.mock.calls[0]![0].model).toBe('claude-sonnet-5-5');
   });
 });
 

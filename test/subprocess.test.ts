@@ -20,7 +20,7 @@ const CLAUDE_BASE = [
   '--effort', 'medium',
 ];
 // lane policy: the claude lane pins its default model (Sonnet) explicitly
-const CLAUDE_ARGS = [...CLAUDE_BASE, '--model', 'claude-sonnet-5'];
+const CLAUDE_ARGS = [...CLAUDE_BASE, '--model', 'claude-sonnet-5-5'];
 
 function req(p: Partial<AdapterRequest> & { role: AdapterRequest['role'] }): AdapterRequest {
   return {
@@ -265,7 +265,7 @@ describe('per-agent model switching', () => {
   it('resolveModel reports whether a model is in the curated list (escape hatch)', () => {
     const claude = loadPreset('claude');
     expect(resolveModel(claude, 'claude-opus-5-5')).toEqual({ model: 'claude-opus-5-5', flag: '--model', known: true });
-    expect(resolveModel(claude, null).model).toBe('claude-sonnet-5');
+    expect(resolveModel(claude, null).model).toBe('claude-sonnet-5-5');
     // an unknown model is still honored (passed through), but flagged not-known
     const escaped = resolveModel(claude, 'claude-4-experimental');
     expect(escaped.model).toBe('claude-4-experimental');
