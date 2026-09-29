@@ -38,7 +38,8 @@ export interface SetupPlan {
   probes: AgentProbe[];
 }
 
-const ORCH_CANDIDATES = ['cursor', 'codex', 'claude', 'pi'] as const;
+// Claude (Opus) leads when installed (policy 2026-09-29); codex/Sol is the backup.
+const ORCH_CANDIDATES = ['claude', 'cursor', 'codex', 'pi'] as const;
 
 /** Economy worker defaults when the agent is available. */
 const ECONOMY_MODELS: Record<string, string> = {
@@ -58,8 +59,8 @@ const ORCH_MODELS: Record<string, Partial<Record<CostTier, string>>> = {
     frontier: 'gpt-5.6-sol',
   },
   claude: {
-    economy: 'claude-sonnet-5-5',
-    balanced: 'claude-sonnet-5-5',
+    economy: 'claude-opus-5-5',
+    balanced: 'claude-opus-5-5',
     frontier: 'claude-opus-5-5',
   },
   cursor: {

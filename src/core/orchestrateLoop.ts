@@ -3,6 +3,7 @@ import { PlanStepSchema, type PlanStep } from '../schema/plan.js';
 import type { AdapterCapabilities } from '../schema/capabilities.js';
 import { extractJson } from '../util/json.js';
 import { quoteUntrusted } from './untrusted.js';
+import { CYBER_LANES, CYBER_MODEL, cyberPolicyLane } from './router.js';
 import { classifyRejection } from '../graph/specRules.js';
 import { stepFingerprint, type ApproveStep, type OrchestrationResult, type StepOutcome } from './orchestrator.js';
 
@@ -280,6 +281,8 @@ export function buildLeadPrompt(args: {
           'dependsOn may name tasks in this batch or finished tasks from earlier rounds. Use new ids every round.',
           `At most ${args.maxTasks} tasks per round. Round ${args.round} of ${args.maxRounds}.`,
           'Workers use their fast model. Set "model" only when a task truly needs the stronger model listed for that lane.',
+          'Prefer claude for reasoning, review, planning and writing: set "model":"claude-opus-5-5" for review, analysis and planning; its fast model (Sonnet 5.5) covers the rest.',
+          `Cyber/security tasks (pentest, CVE, exploit, threat model, security review) go only to codex or codex_write with "model":"${CYBER_MODEL}" (OpenAI Daybreak), never another lane.`,
           'Where a lane lists effort levels, set "effort" per task: "low" for lookups and small edits, "medium" for most work, "high" or above only for hard design or debugging. Omit it to use the lane\'s fast default.',
           'Workers see only their instruction and their dependencies\' results, so write each instruction to stand on its own.',
         ].join('\n'),
@@ -359,9 +362,22 @@ function createGraphRun(goal: string, deps: GraphDeps, opts: LoopOptions, worker
   const agentOf = (name: string) => deps.agents.find((a) => a.name === name);
 
   /** Other lanes able to take this task, best first (roster order). */
-  const alternatives = (task: LoopTask, failed: Set<string>) => deps.agents.filter((a) =>
-    !failed.has(a.name) && a.available && task.needs.every((n) => a.capabilities[n])
-    && !deps.isCapped?.(a.name, a.workerModel));
+  const usable = (a: LoopAgent, task: LoopTask, model: string | null) =>
+    a.available && task.needs.every((n) => a.capabilities[n]) && !deps.isCapped?.(a.name, model);
+  // A cyber task may only move to another lane that serves Daybreak.
+  const alternatives = (task: LoopTask, failed: Set<string>, cyber: boolean) => deps.agents.filter((a) =>
+    !failed.has(a.name) && (cyber
+      ? CYBER_LANES.includes(a.name) && a.models.includes(CYBER_MODEL) && usable(a, task, CYBER_MODEL)
+      : usable(a, task, a.workerModel)));
+
+  /** Cyber policy: whoever assigned the task, it runs on a Daybreak lane (preferred lane first). */
+  const cyberLane = (task: LoopTask): LoopAgent | null | undefined => {
+    const writes = task.needs.some((n) => n === 'canModifyRepo' || n === 'canWriteFiles' || n === 'canRunShell');
+    const policy = cyberPolicyLane(task.instruction, task.agent, writes || undefined);
+    if (!policy) return undefined;
+    const ok = (a: LoopAgent | undefined) => a && a.models.includes(CYBER_MODEL) && usable(a, task, CYBER_MODEL) ? a : undefined;
+    return ok(agentOf(policy.agent)) ?? alternatives(task, new Set([policy.agent]), true)[0] ?? null;
+  };
 
   async function runTask(task: LoopTask, round: number): Promise<LoopOutcome> {
     const depOutcomes = task.dependsOn.map((d) => outcomes.get(d)!);
@@ -379,6 +395,19 @@ function createGraphRun(goal: string, deps: GraphDeps, opts: LoopOptions, worker
     let lane = agentOf(task.agent)!;
     let model = task.model ?? lane.workerModel;
     let effort = task.effort ?? lane.workerEffort;
+    const policyLane = cyberLane(task);
+    const cyber = policyLane !== undefined || model === CYBER_MODEL;
+    let policyNote = '';
+    if (policyLane === null) {
+      return { ...base, agent: task.agent, model: CYBER_MODEL, effort, ok: false, attempts: 0,
+        note: 'cyber policy: no available lane serves Daybreak (gpt-daybreak-blue-latest)' };
+    }
+    if (policyLane && (policyLane.name !== lane.name || model !== CYBER_MODEL)) {
+      policyNote = ` (cyber policy: ${lane.name}/${model ?? 'default'} → ${policyLane.name}/${CYBER_MODEL})`;
+      if (!(task.effort && policyLane.effortLevels.includes(task.effort))) effort = policyLane.workerEffort;
+      lane = policyLane;
+      model = CYBER_MODEL;
+    }
     let cost: number | null = null;
     let attempts = 0;
     let reroutedFrom: string | undefined;
@@ -402,22 +431,23 @@ function createGraphRun(goal: string, deps: GraphDeps, opts: LoopOptions, worker
       const served = r.model ?? model;
       if (r.ok) {
         return { ...base, agent: lane.name, model: served, effort, ok: true, attempts, costUsd: cost,
-          output: r.text, note: reroutedFrom ? `done after re-route from ${reroutedFrom}` : 'done',
+          output: r.text, note: (reroutedFrom ? `done after re-route from ${reroutedFrom}` : 'done') + policyNote,
           ...(reroutedFrom ? { reroutedFrom } : {}) };
       }
       if (r.failureClass === 'usage_limit') deps.onCapped?.(lane.name, model, r);
       lastFailure = `${lane.name} failed (${r.failureClass}): ${clip(r.text.replace(/\s+/g, ' '), 220)}`;
       const next = REROUTABLE_FAILURES.has(r.failureClass) && !reroutedFrom
-        ? alternatives(task, tried)[0] : undefined;
+        ? alternatives(task, tried, cyber)[0] : undefined;
       if (!next) {
         return { ...base, agent: lane.name, model: served, effort, ok: false, attempts, costUsd: cost,
           note: reroutedFrom ? `${lastFailure} (after re-route from ${reroutedFrom})` : lastFailure,
           ...(reroutedFrom ? { reroutedFrom } : {}) };
       }
-      // The pinned model/effort belonged to the failed lane; the new lane uses its fast defaults.
+      // The pinned model/effort belonged to the failed lane; the new lane uses its fast defaults
+      // (except Daybreak, which is policy rather than a lane choice).
       reroutedFrom = lane.name;
       lane = next;
-      model = lane.workerModel;
+      model = cyber ? CYBER_MODEL : lane.workerModel;
       effort = lane.workerEffort;
     }
   }

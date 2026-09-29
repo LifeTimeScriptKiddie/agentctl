@@ -23,3 +23,6 @@ examples/**/.run.lock
 
 __pycache__/
 *.pyc
+
+# local agent observer traces (session content, home paths)
+.iseeagents/

@@ -1,7 +1,7 @@
 import { PlanSchema, type Plan, type PlanStep } from '../schema/plan.js';
 import type { LoopGraph } from './orchestrateLoop.js';
 import { extractJson } from '../util/json.js';
-import { route, defaultWorkerModel, type RouterAgent } from './router.js';
+import { CYBER_LANES, CYBER_MODEL, cyberPolicyLane, route, defaultWorkerModel, type RouterAgent } from './router.js';
 import { loadPreferences, routingPrefer } from './preferences.js';
 import { readPlannerRoutingRules } from '../assets.js';
 import { suggestEffort, escalateWorker } from './effortEscalation.js';
@@ -49,6 +49,26 @@ export function routeStepAgent(step: PlanStep, agents: RouterAgent[]): StepRoute
     return { agent: null, model: null, effort: null, rationale: `no available agent satisfies needs: [${needs.join(', ')}]` };
   }
   const pool = needs.length > 0 ? capable : available;
+
+  // Cyber policy outranks the planner: a cyber step runs on a Daybreak lane, whoever it named.
+  const writes = needs.some((n) => n === 'canModifyRepo' || n === 'canWriteFiles' || n === 'canRunShell');
+  const cyber = cyberPolicyLane(step.instruction, step.agent, writes || undefined);
+  if (cyber) {
+    const lanes = [cyber.agent, ...CYBER_LANES.filter((n) => n !== cyber.agent)];
+    const pick = lanes.map((n) => pool.find((a) => a.name === n))
+      .find((a) => a && (a.models === undefined || a.models.includes(CYBER_MODEL)));
+    if (!pick) {
+      return { agent: null, model: null, effort: null,
+        rationale: `cyber policy: no available lane serves ${CYBER_MODEL}` };
+    }
+    const effort = step.effort && (pick.effortLevels === undefined || pick.effortLevels.includes(step.effort))
+      ? step.effort : suggestEffort(pick.name, step.type, step.instruction) ?? null;
+    const moved = step.agent && (step.agent !== pick.name || (step.model && step.model !== CYBER_MODEL));
+    return { agent: pick.name, model: CYBER_MODEL, effort,
+      rationale: moved
+        ? `cyber policy: planner's ${step.agent}${step.model ? ` (${step.model})` : ''} → ${pick.name} (${CYBER_MODEL})`
+        : `cyber policy: ${pick.name} (${CYBER_MODEL})` };
+  }
 
   if (step.agent) {
     const pick = pool.find((a) => a.name === step.agent);

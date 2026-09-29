@@ -21,7 +21,7 @@ import {
   type GraphDeps, type LoopAgent, type LoopCallResult, type LoopDeps, type LoopTaskRef,
   type LeadDecisionRecord,
 } from './orchestrateLoop.js';
-import { route } from './router.js';
+import { CYBER_MODEL, isCyberTask, isPolicyModel, route } from './router.js';
 import type { HealthStatus } from '../adapters/protocol.js';
 import { exhaustedUntil, loadLimits, markExhausted, updateLimits } from './limitStore.js';
 import { DEFAULT_COOLDOWN_MS } from './modelLadder.js';
@@ -320,7 +320,11 @@ export async function runOrchestrateGoal(
   const approve = opts.approve ?? false;
   const { workerNames, health } = await workerPool(registry, approve, opts.excludeAgents);
   const excluded = new Set(opts.excludeAgents ?? []);
-  const lead = resolveLeadFor(registry, opts.orchestrator, opts.orchestratorModel, excluded);
+  // Cyber goals are led on Daybreak too (unless the caller picked the lead or is codex itself).
+  const cyberLead = !opts.orchestrator && isCyberTask(opts.goal) && !excluded.has('codex') && registry.has('codex');
+  const lead = cyberLead
+    ? resolveLeadFor(registry, 'codex', CYBER_MODEL, excluded)
+    : resolveLeadFor(registry, opts.orchestrator, opts.orchestratorModel, excluded);
   const approveStep = approvalGate(approve);
   if (selectEngine(opts) === 'loop') {
     const loopDeps = createLoopDeps(
@@ -389,9 +393,14 @@ export async function runTaskGraphGoal(registry: AdapterRegistry, opts: RunTaskG
   const prefer = routingPrefer(loadPreferences());
   const filled = opts.tasks.map((t: unknown) => {
     if (!t || typeof t !== 'object' || (t as { agent?: unknown }).agent) return t;
-    const task = t as { instruction?: unknown; type?: unknown };
+    const task = t as { instruction?: unknown; type?: unknown; model?: unknown };
     const text = `${typeof task.type === 'string' ? task.type : 'reason'} ${String(task.instruction ?? '')}`;
-    return { ...task, agent: route(text, routable, { prefer }).agent ?? '' };
+    const decision = route(text, routable, { prefer });
+    const agent = decision.agent ?? '';
+    // Policy models win over the lane's fast default: Daybreak for cyber, Opus for Claude reasoning.
+    const pinned = !task.model && decision.model && workers.agents.find((a) => a.name === agent)?.models.includes(decision.model)
+      && isPolicyModel(decision.model);
+    return { ...task, agent, ...(pinned ? { model: decision.model } : {}) };
   });
   const parsed = parseTaskBatch(filled);
   if ('error' in parsed) throw new Error(parsed.error);

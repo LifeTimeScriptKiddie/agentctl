@@ -44,6 +44,55 @@ export interface RouteDecision {
 const FRONTIER_INTENT_RE =
   /\b(?:complex|difficult|hard|ambiguous|high[- ]stakes|critical|deep|adversarial|root cause|multi[- ]system|cross[- ]system|architecture|architectural|threat model|security review)\b/i;
 
+/**
+ * Cyber/security work is pinned to OpenAI Daybreak on the codex lanes (policy
+ * 2026-09-29). Shared by the signal and suggestModel so they cannot drift.
+ */
+const CYBER_RE = new RegExp([
+  String.raw`\b(?:cyber(?:security)?|infosec|appsec|vulnerabilit(?:y|ies)|vulns?|threat[- ]model(?:ing)?|STRIDE|pentest(?:ing)?|penetration test(?:ing)?|CVE(?:-\d+(?:-\d+)?)?|CWE(?:-\d+)?|exploit(?:s|able|ation)?|malware|ransomware|incident response|red team(?:ing)?|attack surface|OWASP|SAST|DAST)\b`,
+  // Vulnerability classes.
+  String.raw`\b(?:XSS|cross[- ]site scripting|SQL ?i|SQL injection|(?:command|code|prompt|template|LDAP|XML) injection|CSRF|XSRF|SSRF|IDOR|XXE|RCE|remote code execution|path traversal|directory traversal|deserialization|privilege escalation|priv ?esc|auth(?:entication|orization)? bypass|buffer overflow|use[- ]after[- ]free|hard[- ]?coded (?:secrets?|credentials?|keys?)|secret leak(?:s|age)?)\b`,
+  // "security" only as a cyber qualifier, so "security deposit" stays ordinary work.
+  String.raw`\bsecurity\s+(?:review|audit|bugs?|flaws?|issues?|holes?|findings?|fix(?:es)?|patch(?:es)?|scan(?:s|ning)?|tests?|testing|assessment|posture|hardening|headers?|controls?|code|model|advisor(?:y|ies)|incidents?|risks?|analysis|triage)\b`,
+  String.raw`\b(?:application|app|web|network|cloud|api|container|offensive|defensive|information)\s+security\b`,
+].join('|'), 'i');
+
+/** OpenAI Daybreak, the only model cyber tasks run on. */
+export const CYBER_MODEL = 'gpt-daybreak-blue-latest';
+/** Lanes that serve Daybreak; cyber routing is restricted to these. */
+export const CYBER_LANES: readonly string[] = ['codex', 'codex_write'];
+/** Daybreak at high/max effort routinely needs 2–3 minutes; shorter timeouts fail real work. */
+export const CYBER_MIN_TIMEOUT_SECONDS = 600;
+
+/**
+ * Router picks that are user policy, not a cost guess: they win over a lane's
+ * `defaultModel` preference (which otherwise overrides the router's model).
+ */
+export function isPolicyModel(model: string | null | undefined): boolean {
+  return model === CYBER_MODEL || model === 'claude-opus-5-5';
+}
+
+const SHELL_INTENT_RE = /\b(run|execute|shell|command\s?line|docker|container|deploy|pipeline)\b/i;
+
+export function isCyberTask(text: string): boolean {
+  return CYBER_RE.test(text);
+}
+
+/**
+ * Cyber policy for a lane a model or caller picked (planner, lead, run_tasks,
+ * MCP delegate): keep a Daybreak lane, otherwise move to codex, or codex_write
+ * when the work writes or runs tools, always on Daybreak. Null when not cyber.
+ */
+export function cyberPolicyLane(
+  text: string,
+  agent: string | null | undefined,
+  needsWrite = WRITE_INTENT_RE.test(text) || SHELL_INTENT_RE.test(text),
+): { agent: string; model: string } | null {
+  if (!CYBER_RE.test(text)) return null;
+  const lane = agent && CYBER_LANES.includes(agent) ? agent : needsWrite ? 'codex_write' : 'codex';
+  return { agent: lane, model: CYBER_MODEL };
+}
+
 function hasReason(reasons: string[], id: string): boolean {
   return reasons.some((r) => r.startsWith(id));
 }
@@ -73,22 +122,18 @@ export function classifyCostPerformance(
 }
 
 /**
- * Suggest the cheapest local model expected to satisfy the task. Code work
- * starts on Luna and relies on bounded verifier-driven escalation; expensive
- * reasoning models are selected up front only for explicit frontier intent.
+ * Suggest the model for the task. Cyber work always runs on Daybreak. Claude
+ * lanes run Opus 5.5 for reasoning, review and planning and Sonnet 5.5 for the
+ * rest (Opus steps down to Sonnet when capped). Code work starts on Luna and
+ * relies on bounded verifier-driven escalation.
  */
 export function suggestModel(agent: string | null, reasons: string[], task = ''): string | null {
   if (!agent) return null;
   const has = (s: string) => reasons.some((r) => r.startsWith(s));
+  if ((has('cyber') || CYBER_RE.test(task)) && CYBER_LANES.includes(agent)) return CYBER_MODEL;
   if (has('planning') && agent === 'codex') return 'gpt-5.6-sol';
-  if (has('deep-review')) {
-    if (agent === 'claude') return 'claude-opus-5-5';
-    if (agent === 'cursor') return 'composer-2.5';
-  }
-  if (has('cyber') || /\b(?:cyber(?:security)?|security|vulnerabilit(?:y|ies)|threat model|malware|incident response)\b/i.test(task)) {
-    if (agent === 'cursor') return 'composer-2.5';
-    if (agent === 'codex' || agent === 'codex_write') return 'gpt-daybreak-blue-latest';
-  }
+  if (agent === 'claude' && (has('planning') || has('deep-review') || has('reason'))) return 'claude-opus-5-5';
+  if (has('deep-review') && agent === 'cursor') return 'composer-2.5';
   if (has('second-opinion') && agent === 'cursor') return 'composer-2.5';
   if (has('creative')) {
     if (agent === 'claude') return 'claude-sonnet-5-5';
@@ -198,9 +243,9 @@ const WRITE_INTENT_RE =
 
 const SIGNALS: Signal[] = [
   { id: 'planning', re: /\b(?:plan|planning|orchestrat(?:e|ion))\b/i,
-    prefer: ['codex', 'cursor', 'claude'], weight: 12 },
-  { id: 'cyber', re: /\b(?:cyber(?:security)?|security|vulnerabilit(?:y|ies)|threat model|pentest|CVE(?:-\d+)?|malware|incident response)\b/i,
-    prefer: ['cursor', 'codex'], weight: 10 },
+    prefer: ['claude', 'codex', 'cursor'], weight: 12 },
+  // Cyber is Daybreak-only: route() drops every non-codex lane when it fires.
+  { id: 'cyber', re: CYBER_RE, prefer: ['codex', 'codex_write'], weight: 10 },
   { id: 'deep-review', re: /\b(?:(?:deep|thorough|critical|rigorous|comprehensive)\s+(?:(?:code|security)\s+)?review|review[\s\S]{0,40}in depth)\b/i,
     prefer: ['claude', 'cursor', 'codex'], weight: 12 },
 
@@ -244,7 +289,7 @@ const SIGNALS: Signal[] = [
   },
   {
     id: 'shell',
-    re: /\b(run|execute|shell|command\s?line|docker|container|deploy|pipeline)\b/i,
+    re: SHELL_INTENT_RE,
     prefer: ['codex_write', 'codex'],
     weight: 5,
     requires: 'canRunShell',
@@ -262,19 +307,19 @@ const SIGNALS: Signal[] = [
   {
     id: 'code',
     re: /\b(code|coding|bug|debug|refactor|compile|build|tests?|stack\s?trace|repo|repository|function|implement|typescript|javascript|python|rust|golang|lint|api|firmware|arduino|esp32|esp8266|embedded|platformio|microcontroller|agentctl|router|routing)\b/i,
-    prefer: ['cursor', 'codex', 'claude', 'pi'],
+    prefer: ['claude', 'cursor', 'codex', 'pi'],
     weight: 4,
   },
   {
     id: 'reason',
     re: /\b(explain|analy[sz]e|analysis|design|architect|architecture|plan|reason|why|trade-?offs?|compare|review|strateg|understand|decide)\b/i,
-    prefer: ['cursor', 'claude', 'codex', 'pi'],
+    prefer: ['claude', 'cursor', 'codex', 'pi'],
     weight: 3,
   },
   {
     id: 'second-opinion',
     re: /\b(second opinion|alternate perspective|cross[- ]model|independent review)\b/i,
-    prefer: ['cursor'],
+    prefer: ['claude', 'cursor'],
     weight: 6,
   },
   {
@@ -286,20 +331,20 @@ const SIGNALS: Signal[] = [
   {
     id: 'trivial',
     re: /\b(typo|spelling|format|formatting|rename|link fix|one\s?word|very simple|mechanical)\b/i,
-    prefer: ['cursor', 'claude', 'pi', 'codex'],
+    prefer: ['claude', 'cursor', 'pi', 'codex'],
     weight: 4,
   },
   {
     id: 'bulk',
     re: /\b(summari[sz]e|translate|rewrite|bulk|quick|one\s?word|tl;?dr|list|rephrase)\b/i,
-    prefer: ['cursor', 'claude', 'pi', 'codex'],
+    prefer: ['claude', 'cursor', 'pi', 'codex'],
     weight: 4,
   },
 ];
 
-const DEFAULT_AGENT = 'cursor';
+const DEFAULT_AGENT = 'claude';
 /** Tiebreak / walk-down order for general routing (comet & dry_run excluded). */
-const FALLBACK_ORDER = ['cursor', 'codex', 'claude', 'pi'];
+const FALLBACK_ORDER = ['claude', 'cursor', 'codex', 'pi'];
 /** Agents never chosen by general routing unless a signal explicitly prefers them. */
 const NON_GENERAL = new Set(['dry_run', 'comet', 'agy', 'agy_image', 'codex_write']);
 
@@ -382,14 +427,20 @@ export function route(task: string, agents: RouterAgent[], opts: RouteOptions = 
 
   // Explicit job roles outrank incidental words such as "code" or "report".
   // Capabilities below still constrain which lanes may actually execute.
-  const role = ['planning', 'deep-review', 'cyber', 'creative'].find((id) => matched.includes(id));
-  const primary = role ? (opts.prefer?.[role] ?? SIGNALS.find((sig) => sig.id === role)?.prefer)?.[0] : undefined;
+  // Cyber outranks every other role so a "deep security review" still lands on Daybreak.
+  const cyber = matched.includes('cyber');
+  const role = ['cyber', 'planning', 'deep-review', 'creative'].find((id) => matched.includes(id));
+  const primary = cyber
+    ? (matched.includes('write') ? 'codex_write' : 'codex')
+    : role ? (opts.prefer?.[role] ?? SIGNALS.find((sig) => sig.id === role)?.prefer)?.[0] : undefined;
   if (primary) bump(primary, 30, `${role} priority`);
+  if (cyber) for (const name of [...scores.keys()]) if (!CYBER_LANES.includes(name)) scores.delete(name);
 
-  // eligible = scored ∪ general agents; comet/dry_run only if explicitly scored
-  const eligible = agents.filter(
-    (a) => scores.has(a.name) || (!NON_GENERAL.has(a.name) && FALLBACK_ORDER.includes(a.name)),
-  );
+  // eligible = scored ∪ general agents; comet/dry_run only if explicitly scored.
+  // Cyber tasks are restricted to the Daybreak lanes, with no general fallback.
+  const eligible = agents.filter((a) => cyber
+    ? CYBER_LANES.includes(a.name)
+    : scores.has(a.name) || (!NON_GENERAL.has(a.name) && FALLBACK_ORDER.includes(a.name)));
   for (const a of eligible) if (!scores.has(a.name)) scores.set(a.name, { agent: a.name, score: 0, reasons: [] });
 
   // rank: score desc, then FALLBACK_ORDER as a stable tiebreak

@@ -13,7 +13,9 @@ describe('MODEL-ROUTING.md', () => {
   it('extracts planner rules for orchestrator injection', () => {
     const rules = readPlannerRoutingRules();
     expect(rules).toContain('Use only available lanes');
-    expect(rules).toContain('claude / opus');
+    expect(rules).toContain('claude / claude-opus-5-5');
+    expect(rules).toContain('Cybersecurity work of any kind');
+    expect(rules).toContain('codex / gpt-daybreak-blue-latest');
     expect(rules).not.toContain('PLANNER_RULES_START');
   });
 

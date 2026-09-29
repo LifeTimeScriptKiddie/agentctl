@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { loadRegistry } from '../core/loadRegistry.js';
-import { RESEARCH_KINDS, route } from '../core/router.js';
+import { CYBER_MODEL, RESEARCH_KINDS, cyberPolicyLane, route } from '../core/router.js';
 import { isAgentEnabled, loadPreferences, routingPrefer } from '../core/preferences.js';
 import { findDestructive } from '../approval.js';
 import { getJob, listJobs, readJobEvents, readJobResult, isJobId } from '../jobs/store.js';
@@ -257,15 +257,22 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   }, async (args) => {
     const blocked = gate(args.task);
     if (blocked) return fail(blocked);
-    if (args.to && caller.includes(args.to)) {
-      return fail(`'${args.to}' is the calling agent; delegate to a different agent or do the work directly.`);
+    // Cyber policy: a calling agent cannot pin cyber work off Daybreak. Unpinned
+    // tasks are left to the router, which already picks the Daybreak lane.
+    const cyber = cyberPolicyLane(args.task, args.to);
+    const to = cyber && args.to ? cyber.agent : args.to;
+    const model = cyber ? (args.to ? cyber.model : null) : args.model ?? null;
+    if (to && caller.includes(to)) {
+      return fail(cyber
+        ? `cyber work runs only on ${to} with ${CYBER_MODEL}, which is the calling agent; do it directly on ${CYBER_MODEL}.`
+        : `'${to}' is the calling agent; delegate to a different agent or do the work directly.`);
     }
     const approval = { approve: args.approve, approve_context: args.approve_context };
     return startAndWait({
       kind: 'delegate', task: args.task,
-      ...(args.to ? { to: args.to } : {}),
+      ...(to ? { to } : {}),
       ...(args.research ? { research: args.research } : {}),
-      model: args.model ?? null, effort: args.effort ?? null,
+      model, effort: args.effort ?? null,
       timeoutSeconds: args.timeout_seconds ?? 600,
       approve: opts.allowApprove ? approval.approve ?? false : false,
       approveContext: opts.allowApprove ? approval.approve_context ?? false : false,

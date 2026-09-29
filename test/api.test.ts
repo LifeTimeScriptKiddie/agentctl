@@ -221,10 +221,11 @@ describe('injected context to gated targets needs --approve-context (N3)', () =>
     await seed('run the linter');
     const registry = AdapterRegistry.fromPackaged();
     vi.spyOn(registry, 'healthcheck').mockResolvedValue(Object.fromEntries(
-      registry.names().map((n) => [n, { available: true, detail: 'test', checkedVia: 'test' }]),
+      // claude down so the reasoning task lands on the mocked, writable cursor lane.
+      registry.names().map((n) => [n, { available: n !== 'claude', detail: 'test', checkedVia: 'test' }]),
     ));
     const invoke = writableCursor(registry);
-    const task = 'analyze cybersecurity findings';
+    const task = 'analyze the lint findings';
 
     const dropped = await agentRoute(registry, { task, briefingWorkspace: 'team-atlas', timeoutSeconds: 5, approve: true });
     expect(dropped.route.agent).toBe('cursor');

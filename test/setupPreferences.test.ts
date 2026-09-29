@@ -74,6 +74,14 @@ describe('agentctl setup preferences', () => {
     expect(plan.summary[1]).toMatch(/orchestrator backup:.*gpt-5.6-sol/);
   });
 
+  it('prefers Claude Opus as orchestrator when claude is installed', () => {
+    const withClaude = probes.map((p) => (p.name === 'claude' ? { ...p, available: true, defaultModel: 'claude-sonnet-5-5' } : p));
+    for (const tier of ['economy', 'balanced', 'frontier'] as const) {
+      const plan = planAutoSetup(withClaude, { tier });
+      expect(plan.preferences.orchestrator).toEqual({ agent: 'claude', model: 'claude-opus-5-5' });
+    }
+  });
+
   it('falls back to codex when cursor is missing', () => {
     const noCursor = probes.map((p) => (
       p.name === 'cursor' ? { ...p, available: false } : p

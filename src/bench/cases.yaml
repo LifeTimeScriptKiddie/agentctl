@@ -47,7 +47,7 @@ routing:
   - id: explain-read-only
     task: explain how the router scores agents
     notAgents: [codex_write, agy, agy_image, comet]
-    expect: cursor
+    expect: claude
   - id: howto-read-only
     task: how do I update the README for a new flag?
     notAgents: [codex_write]
@@ -55,17 +55,22 @@ routing:
     task: compare Kafka and SQS trade-offs for our event bus
     notAgents: [codex_write, agy_image]
   - id: deep-review
-    task: deep review of the approval module for security bugs
+    task: deep review of the approval module for race conditions
     notAgents: [codex_write, agy, agy_image, comet]
     expect: claude
+  # Cyber is Daybreak-only (codex lanes); every other lane is a hard failure.
   - id: cyber-locked
     task: threat model the MCP server and its job runner
-    notAgents: [agy, agy_image, comet, codex_write]
-    expect: cursor
+    notAgents: [agy, agy_image, comet, codex_write, claude, cursor, pi]
+    expect: codex
+  - id: cyber-over-deep-review
+    task: deep security review of the approval module
+    notAgents: [agy, agy_image, comet, codex_write, claude, cursor, pi]
+    expect: codex
   - id: planning
     task: plan the migration of team memory to Postgres
     notAgents: [agy, agy_image, comet, codex_write]
-    expect: codex
+    expect: claude
 
 live:
   - id: arithmetic

@@ -125,6 +125,51 @@ describe('loop engine', () => {
     expect(r.outcomes[0]!.note).toContain('re-route from cursor');
   });
 
+  it('re-routes a Daybreak (cyber) task only to another Daybreak lane, keeping the model', async () => {
+    const daybreak = 'gpt-daybreak-blue-latest';
+    const withDaybreak = (name: string) => lane(name, { models: [`${name}-fast`, daybreak] });
+    const h = harness([delegate(t('a', 'codex', { model: daybreak })), 'Done.'],
+      (agent) => (agent === 'codex' ? fail('usage_limit', 'hit your usage limit') : ok('ok')),
+      [withDaybreak('codex'), lane('claude'), lane('cursor'), withDaybreak('codex_write')]);
+    await runLoopOrchestration('goal', h.deps);
+    expect(h.calls.map((c) => [c.agent, c.model])).toEqual([['codex', daybreak], ['codex_write', daybreak]]);
+    expect(h.leadPrompts[0]).toContain(`"model":"${daybreak}"`);
+  });
+
+  it('a Daybreak task with no other Daybreak lane fails instead of leaving the policy', async () => {
+    const daybreak = 'gpt-daybreak-blue-latest';
+    const h = harness([delegate(t('a', 'codex', { model: daybreak })), 'Done.'],
+      (agent) => (agent === 'codex' ? fail('timeout') : ok('ok')),
+      [lane('codex', { models: ['codex-fast', daybreak] }), lane('claude'), lane('cursor')]);
+    const r = await runLoopOrchestration('goal', h.deps);
+    expect(h.calls.map((c) => c.agent)).toEqual(['codex']);
+    expect(r.outcomes[0]).toMatchObject({ ok: false, agent: 'codex' });
+  });
+
+  it('moves a lead-assigned cyber task off claude onto codex/Daybreak, and keeps it there on re-route', async () => {
+    const daybreak = 'gpt-daybreak-blue-latest';
+    const withDaybreak = (name: string) => lane(name, { models: [`${name}-fast`, daybreak] });
+    const h = harness([
+      JSON.stringify({ agentctl: 'delegate.v1', tasks: [{ id: 'a', agent: 'claude', instruction: 'threat model the MCP server' }] }),
+      'Done.',
+    ], (agent) => (agent === 'codex' ? fail('timeout') : ok('ok')),
+    [withDaybreak('codex'), lane('claude'), lane('cursor'), withDaybreak('codex_write')]);
+    const r = await runLoopOrchestration('goal', h.deps);
+    expect(h.calls.map((c) => [c.agent, c.model])).toEqual([['codex', daybreak], ['codex_write', daybreak]]);
+    expect(r.outcomes[0]!.note).toContain('cyber policy: claude/claude-fast → codex/' + daybreak);
+  });
+
+  it('fails a cyber task when no lane serves Daybreak rather than running it elsewhere', async () => {
+    const h = harness([
+      JSON.stringify({ agentctl: 'delegate.v1', tasks: [{ id: 'a', agent: 'claude', instruction: 'triage CVE-2026-1234' }] }),
+      'Done.',
+    ]);
+    const r = await runLoopOrchestration('goal', h.deps);
+    expect(h.calls).toHaveLength(0);
+    expect(r.outcomes[0]).toMatchObject({ ok: false, attempts: 0 });
+    expect(r.outcomes[0]!.note).toMatch(/cyber policy: no available lane serves Daybreak/);
+  });
+
   it('skips lanes known to be capped when re-routing', async () => {
     const h = harness([delegate(t('a', 'cursor')), 'Done.'],
       (agent) => (agent === 'cursor' ? fail('timeout') : ok('ok')));

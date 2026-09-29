@@ -164,10 +164,21 @@ describe('routeStepAgent', () => {
     );
     expect(routeStepAgent(parsed.steps[0]!, fleet()).agent).toBe('agy');
   });
-  it('an ordinary reasoning step routes to balanced Cursor Composer', () => {
+  it('an ordinary reasoning step routes to Claude Opus', () => {
     const r = routeStepAgent(step({ id: 's1', instruction: 'explain the design', type: 'reason' }), fleet());
-    expect(r.agent).toBe('cursor');
-    expect(r.model).toBe('composer-2.5');
+    expect(r.agent).toBe('claude');
+    expect(r.model).toBe('claude-opus-5-5');
+  });
+
+  it('cyber policy overrides a planner-assigned non-Daybreak lane and model', () => {
+    const r = routeStepAgent(step({ id: 's1', instruction: 'deep security review of auth', agent: 'claude', model: 'claude-opus-5-5' }), fleet());
+    expect(r).toMatchObject({ agent: 'codex', model: 'gpt-daybreak-blue-latest' });
+    expect(r.rationale).toMatch(/cyber policy: planner's claude/);
+    const pinned = routeStepAgent(step({ id: 's2', instruction: 'analyze security findings', agent: 'codex' }), fleet());
+    expect(pinned.model).toBe('gpt-daybreak-blue-latest');
+    const noLane = routeStepAgent(step({ id: 's3', instruction: 'threat model the server' }),
+      fleet().filter((a) => a.name !== 'codex'));
+    expect(noLane.agent).toBeNull();
   });
 
   it('honors planner-assigned agent, model, and effort', () => {
@@ -412,7 +423,7 @@ describe('runOrchestration', () => {
     });
     expect(res.status).toBe('blocked');
     expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(res.outcomes[0]).toMatchObject({ attempts: 1, agent: 'cursor', note: 'blocked by approval gate' });
+    expect(res.outcomes[0]).toMatchObject({ attempts: 1, agent: 'claude', note: 'blocked by approval gate' });
   });
 
   it('quotes dependency outputs and verifier feedback so injected text cannot close the block', async () => {

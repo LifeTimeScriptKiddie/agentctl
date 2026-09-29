@@ -6,7 +6,7 @@ import type { AdapterCapabilities } from './schema/capabilities.js';
 import type { AdapterRegistry } from './adapters/registry.js';
 import type { ResearchKind, RouteDecision, RouterAgent } from './core/router.js';
 import {
-  route,
+  CYBER_MIN_TIMEOUT_SECONDS, CYBER_MODEL, isPolicyModel, route,
 } from './core/router.js';
 import type { OrchestrationResult, StepOutcome } from './core/orchestrator.js';
 import { assertApproved, ApprovalRequiredError, gateInjectedContext } from './approval.js';
@@ -425,6 +425,13 @@ export async function agentAsk(
 }
 
 /** Deterministic route, optionally executing the chosen agent. */
+/** Daybreak needs minutes at high effort: raise a too-short timeout and say so. */
+function cyberTimeout(model: string | null, timeoutSeconds: number, warnings: string[]): number {
+  if (model !== CYBER_MODEL || timeoutSeconds >= CYBER_MIN_TIMEOUT_SECONDS) return timeoutSeconds;
+  warnings.push(`timeout raised ${timeoutSeconds}s → ${CYBER_MIN_TIMEOUT_SECONDS}s for ${CYBER_MODEL}`);
+  return CYBER_MIN_TIMEOUT_SECONDS;
+}
+
 export async function agentRoute(
   registry: AdapterRegistry,
   opts: RouteOptions,
@@ -449,7 +456,8 @@ export async function agentRoute(
     ...(opts.delegate ? { delegate: true } : {}),
     task: opts.task,
     agent: decision.agent,
-    model: opts.model ?? (decision.agent ? preferredModel(loadPreferences(), decision.agent) : null) ?? decision.model,
+    model: opts.model ?? (isPolicyModel(decision.model) ? decision.model : null)
+      ?? (decision.agent ? preferredModel(loadPreferences(), decision.agent) : null) ?? decision.model,
     effort: opts.effort ?? decision.effort,
     tier: decision.tier,
     method: decision.method,
@@ -474,17 +482,20 @@ export async function agentRoute(
     };
   }
 
+  // Policy picks (Daybreak for cyber, Opus for Claude reasoning) beat the lane's defaultModel preference.
   const routedModel = opts.model
+    ?? (isPolicyModel(decision.model) ? decision.model : null)
     ?? preferredModel(loadPreferences(), decision.agent)
     ?? decision.model
     ?? null;
+  const effectiveTimeout = cyberTimeout(routedModel, timeoutSeconds, warnings);
 
   const ask = await executeSingleAsk(
     registry,
     {
       to: decision.agent,
       prompt: opts.task,
-      timeoutSeconds,
+      timeoutSeconds: effectiveTimeout,
       model: routedModel,
       effort: opts.effort ?? decision.effort ?? null,
       session: opts.session,
@@ -523,10 +534,11 @@ export async function agentDelegate(
       ...(!known ? { error: `unknown agent '${opts.to}'. Known: ${registry.names().join(', ')}` } : {}) };
   }
   if (opts.to) {
+    const pinnedWarnings: string[] = [];
     const askResult = await agentAsk(registry, {
       to: opts.to,
       prompt: opts.task,
-      timeoutSeconds: opts.timeoutSeconds,
+      timeoutSeconds: cyberTimeout(opts.model ?? null, opts.timeoutSeconds ?? 120, pinnedWarnings),
       approve: opts.approve,
       approveContext: opts.approveContext,
       model: opts.model,
@@ -541,7 +553,7 @@ export async function agentDelegate(
     const ask = askResult.results[0];
     return {
       exitCode: askResult.exitCode,
-      warnings: askResult.warnings,
+      warnings: [...pinnedWarnings, ...askResult.warnings],
       route: {
         agent: opts.to,
         model: ask?.model ?? opts.model ?? null,
