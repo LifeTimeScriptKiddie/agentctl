@@ -41,10 +41,11 @@ export function parsePort(endpoint: string): number {
   return m ? Number(m[1]) : 9222;
 }
 
-export function defaultProfileDir(): string {
-  // Chrome-specific dir: keeps a dedicated, unlocked profile so the managed
-  // instance never collides with a stray browser holding another profile's lock.
-  return join(agentctlHome(), 'chrome-profile');
+export function defaultProfileDir(appName = 'Google Chrome'): string {
+  // One dedicated, unlocked profile per browser app so the managed instance
+  // never collides with a stray browser holding another profile's lock, and a
+  // Comet run never rewrites the Chrome profile (or the reverse).
+  return join(agentctlHome(), appName === 'Comet' ? 'comet-profile' : 'chrome-profile');
 }
 
 /** argv for `open` to launch a debuggable instance on an explicitly configured port. */
@@ -215,7 +216,7 @@ export function prepareProfileDir(preset: Preset): string {
 }
 
 function profileDirFor(preset: Preset): string {
-  return preset.userDataDir ?? defaultProfileDir();
+  return preset.userDataDir ?? defaultProfileDir(preset.appName);
 }
 
 /**
