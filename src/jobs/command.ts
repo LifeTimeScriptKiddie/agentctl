@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { parseResearchKind } from '../core/router.js';
 import { buildJsonEnvelope } from '../format/output.js';
 import { getJob, listJobs, pruneJobs, readJobEvents, readJobResult, isJobId } from './store.js';
 import { cancelJob, runJob, startJob, waitForJob, type JobInput } from './runner.js';
@@ -111,6 +112,7 @@ export function registerJobsCommands(program: Command): void {
   start.command('delegate')
     .argument('<task>')
     .option('--to <agent>', 'pin the agent instead of routing')
+    .option('--research <kind>', 'declare web research: google (agy/Gemini) | general (Comet)')
     .option('--model <name>')
     .option('--effort <level>')
     .option('--timeout <seconds>', 'per-agent timeout', '600')
@@ -129,6 +131,7 @@ export function registerJobsCommands(program: Command): void {
         excludeAgents: parseCaller(o.caller as string | undefined),
         ...(o.to ? { to: String(o.to) } : {}),
         ...(o.briefingWorkspace ? { briefingWorkspace: String(o.briefingWorkspace) } : {}),
+        ...(o.research ? { research: parseResearchKind(String(o.research)) } : {}),
       };
       emit('start', 0, startJob(input, { caller: parseCaller(o.caller as string | undefined).join(',') || null }));
     })());

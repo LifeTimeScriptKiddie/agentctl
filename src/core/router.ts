@@ -330,6 +330,29 @@ export interface RouteOptions {
    * signal's required capability.
    */
   prefer?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Caller-declared web research, overriding keyword detection: `google` routes
+   * like a Google-ecosystem question (agy/Gemini first), `general` like plain web
+   * research (Comet first, and Google keywords are ignored). Either way the task
+   * requires network access, and the other web lane is the fallback.
+   */
+  research?: ResearchKind;
+}
+
+export const RESEARCH_KINDS = ['google', 'general'] as const;
+export type ResearchKind = (typeof RESEARCH_KINDS)[number];
+
+/** Validate a caller-supplied research kind (CLI flag, MCP argument). */
+export function parseResearchKind(value: string | undefined | null): ResearchKind | undefined {
+  if (value == null || value === '') return undefined;
+  if ((RESEARCH_KINDS as readonly string[]).includes(value)) return value as ResearchKind;
+  throw new Error(`invalid research kind '${value}' (expected: ${RESEARCH_KINDS.join(' | ')})`);
+}
+
+function signalMatches(sig: Signal, task: string, research: ResearchKind | undefined): boolean {
+  if (research && sig.id === 'search') return true;
+  if (research && sig.id === 'google-research') return research === 'google';
+  return sig.re.test(task);
 }
 
 export function route(task: string, agents: RouterAgent[], opts: RouteOptions = {}): RouteDecision {
@@ -347,7 +370,7 @@ export function route(task: string, agents: RouterAgent[], opts: RouteOptions = 
 
   const matched: string[] = [];
   for (const sig of SIGNALS) {
-    if (!sig.re.test(task)) continue;
+    if (!signalMatches(sig, task, opts.research)) continue;
     matched.push(sig.id);
     (opts.prefer?.[sig.id] ?? sig.prefer).forEach((name, i) => {
       const a = byName.get(name);

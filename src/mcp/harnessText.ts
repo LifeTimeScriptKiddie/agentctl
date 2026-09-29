@@ -16,7 +16,7 @@ export function mcpInstructions(allowApprove: boolean): string {
     + 'being asked, when another agent fits the work better than you or an independent opinion helps: '
     + 'codex_write (GPT Luna/Sol) for code edits, tests and shell work in the repo; claude (Opus 5.5 for deep '
     + 'review/hard reasoning, Sonnet 5.5 otherwise) for review and writing; cursor (Composer) for fast repository '
-    + 'questions; comet (Perplexity) for general web research; agy (Gemini) for Google-ecosystem research. Pick the tool by who leads: agentctl_delegate for one task; '
+    + 'questions; comet (Perplexity) for general web research; agy (Gemini) for Google-ecosystem research; for web research pass research: "google" or "general" instead of relying on keywords. Pick the tool by who leads: agentctl_delegate for one task; '
     + 'agentctl_run_tasks when you can split the work yourself (you are the lead: send a task graph, independent '
     + 'tasks run in parallel on fast lanes, you get every result back and decide the next step); agentctl_orchestrate '
     + 'only when you want another model to plan and combine the work. Pass what you already know (files read, '

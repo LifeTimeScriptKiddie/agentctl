@@ -4,7 +4,7 @@ import type { AdapterCapabilities } from './schema/capabilities.js';
  * Prefer these functions over parsing CLI stdout.
  */
 import type { AdapterRegistry } from './adapters/registry.js';
-import type { RouteDecision, RouterAgent } from './core/router.js';
+import type { ResearchKind, RouteDecision, RouterAgent } from './core/router.js';
 import {
   route,
 } from './core/router.js';
@@ -106,6 +106,8 @@ export interface RouteOptions {
   signal?: AbortSignal;
   /** Agents the router must not pick, e.g. the calling agent (see `--caller`). */
   excludeAgents?: string[];
+  /** Declared web research (router `research` option); overrides keyword detection. */
+  research?: ResearchKind;
 }
 
 export interface RouteCommandResult {
@@ -435,13 +437,13 @@ export async function agentRoute(
     assertApproved(opts.task, opts.approve ?? false);
   } catch (e) {
     if (e instanceof ApprovalRequiredError) {
-      const decision = route(opts.task, agents, { prefer: routingPrefer(loadPreferences()) });
+      const decision = route(opts.task, agents, { prefer: routingPrefer(loadPreferences()), ...(opts.research ? { research: opts.research } : {}) });
       return { exitCode: 3, warnings, route: decision, agents, approvalRequired: true, error: e.message };
     }
     throw e;
   }
 
-  const decision = route(opts.task, agents, { prefer: routingPrefer(loadPreferences()) });
+  const decision = route(opts.task, agents, { prefer: routingPrefer(loadPreferences()), ...(opts.research ? { research: opts.research } : {}) });
 
   logRoute({
     ...(opts.delegate ? { delegate: true } : {}),

@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import type { AdapterRegistry } from '../adapters/registry.js';
 import { loadRegistry } from '../core/loadRegistry.js';
-import { route } from '../core/router.js';
+import { RESEARCH_KINDS, route } from '../core/router.js';
 import { isAgentEnabled, loadPreferences, routingPrefer } from '../core/preferences.js';
 import { findDestructive } from '../approval.js';
 import { getJob, listJobs, readJobEvents, readJobResult, isJobId } from '../jobs/store.js';
@@ -13,6 +13,10 @@ import { buildLoopLanes } from '../core/orchestrateFlow.js';
 import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
 import { lintPrompt, lintTaskGraph, specWarnings } from '../graph/specRules.js';
 import { harnessSourceHashes, harnessVersion, mcpInstructions, RUN_TASKS_DESCRIPTION } from './harnessText.js';
+
+const RESEARCH_DESC =
+  'Web research, routed by kind instead of keywords: google = Google-ecosystem questions (agy/Gemini first), '
+  + 'general = everything else (Comet/Perplexity first). The other web lane is the fallback. Ignored when `to` is set.';
 
 /**
  * `agentctl mcp`: agentctl as a native tool server for Claude Code, Cursor,
@@ -216,9 +220,12 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   server.registerTool('agentctl_route', {
     title: 'Preview routing',
     description: 'Which agent/model/effort agentctl would pick for a task, with per-agent scores. No model calls.',
-    inputSchema: { task: z.string().min(1).describe('The task text to route.') },
+    inputSchema: {
+      task: z.string().min(1).describe('The task text to route.'),
+      research: z.enum(RESEARCH_KINDS).optional().describe(RESEARCH_DESC),
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, async ({ task }) => {
+  }, async ({ task, research }) => {
     const reg = registry();
     const health = await reg.healthcheck();
     const prefs = loadPreferences();
@@ -226,7 +233,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       name, capabilities: reg.get(name).capabilities(),
       available: (health[name]?.available ?? false) && isAgentEnabled(prefs, name),
     }));
-    return ok(route(task, agents, { prefer: routingPrefer(prefs) }));
+    return ok(route(task, agents, { prefer: routingPrefer(prefs), ...(research ? { research } : {}) }));
   });
 
   server.registerTool('agentctl_delegate', {
@@ -238,6 +245,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
     inputSchema: withoutApproval({
       task: z.string().min(1).describe('Self-contained task for the worker, including any needed context.'),
       to: z.string().optional().describe('Pin an agent (see agentctl_agents); omit to route automatically.'),
+      research: z.enum(RESEARCH_KINDS).optional().describe(RESEARCH_DESC),
       model: z.string().optional(),
       effort: z.string().optional().describe("Reasoning effort, one of the lane's `efforts` (agentctl_agents); omit for the lane default."),
       briefing_workspace: z.string().optional().describe('Team-memory workspace to brief the worker from.'),
@@ -256,6 +264,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
     return startAndWait({
       kind: 'delegate', task: args.task,
       ...(args.to ? { to: args.to } : {}),
+      ...(args.research ? { research: args.research } : {}),
       model: args.model ?? null, effort: args.effort ?? null,
       timeoutSeconds: args.timeout_seconds ?? 600,
       approve: opts.allowApprove ? approval.approve ?? false : false,

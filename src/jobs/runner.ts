@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { ResearchKind } from '../core/router.js';
 import type { LoopTaskRef } from '../core/orchestrateLoop.js';
 import type { OrchestrateHooks } from '../core/orchestrateFlow.js';
 import type { StepOutcome } from '../core/orchestrator.js';
@@ -38,6 +39,8 @@ export interface JobInput {
   approveContext?: boolean;
   briefingWorkspace?: string;
   excludeAgents?: string[];
+  /** Delegate only: declared web research (google | general), see router `research`. */
+  research?: ResearchKind;
   /** Orchestrate only: 'strict' selects plan→verify; default is the loop engine. */
   engine?: 'loop' | 'strict';
   /** Tasks only: the caller-built task graph (see agentRunTasks). */
@@ -203,6 +206,7 @@ export async function runJob(
         effort: input.effort ?? null,
         ...(input.briefingWorkspace ? { briefingWorkspace: input.briefingWorkspace } : {}),
         ...(input.excludeAgents?.length ? { excludeAgents: input.excludeAgents } : {}),
+        ...(input.research ? { research: input.research } : {}),
         signal,
       });
       writeJobResult(id, r);

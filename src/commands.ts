@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import type { ResearchKind } from './core/router.js';
 import type { RunState } from './schema/runState.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { runLoop, type ControllerDeps } from './core/controller.js';
@@ -308,6 +309,7 @@ export async function cmdRoute(
     briefingWorkspace?: string; sessionScope?: string;
     format?: OutputFormat;
     gatewayUrl?: string | null;
+    research?: ResearchKind;
   },
   io: IO,
 ): Promise<number> {
@@ -326,6 +328,7 @@ export async function cmdRoute(
     briefingWorkspace: args.briefingWorkspace,
     sessionScope: args.sessionScope,
     gatewayUrl: args.gatewayUrl,
+    ...(args.research ? { research: args.research } : {}),
   });
   if (args.format === 'json') {
     emitJson(io, buildJsonEnvelope(
@@ -371,6 +374,7 @@ export async function cmdDelegate(
     to?: string; briefingWorkspace?: string; sessionScope?: string;
     format?: OutputFormat;
     gatewayUrl?: string | null;
+    research?: ResearchKind;
   },
   io: IO,
 ): Promise<number> {
@@ -390,6 +394,7 @@ export async function cmdDelegate(
     briefingWorkspace: args.briefingWorkspace,
     sessionScope: args.sessionScope,
     gatewayUrl: args.gatewayUrl,
+    ...(args.research ? { research: args.research } : {}),
   });
   if (args.format === 'json') {
     emitJson(io, buildJsonEnvelope(

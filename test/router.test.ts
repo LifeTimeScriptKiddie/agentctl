@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { route, suggestModel, defaultWorkerModel, type RouterAgent } from '../src/core/router.js';
+import { route, suggestModel, defaultWorkerModel, type RouterAgent, parseResearchKind } from '../src/core/router.js';
 import type { AdapterCapabilities } from '../src/schema/capabilities.js';
 
 const caps = (p: Partial<AdapterCapabilities> = {}): AdapterCapabilities => ({
@@ -137,6 +137,29 @@ describe('route (deterministic)', () => {
     expect(route('search google scholar for papers on RAG', fleet()).agent).toBe('agy');
     expect(route('what does the gemini api pricing page say', fleet()).agent).toBe('agy');
     expect(route('look up the latest firebase auth changes', fleet()).agent).toBe('agy');
+  });
+
+  it('declared research overrides keywords in both directions', () => {
+    // No web keyword at all: the declaration alone makes it web research.
+    expect(route('what changed in the kotlin coroutines api this year', fleet(), { research: 'google' }).agent).toBe('agy');
+    expect(route('what changed in the kotlin coroutines api this year', fleet(), { research: 'general' }).agent).toBe('comet');
+    // A Google keyword is ignored when the caller says general.
+    expect(route('compare android and ios market share', fleet(), { research: 'general' }).agent).toBe('comet');
+  });
+
+  it('declared research still requires network and falls back across web lanes', () => {
+    const d = route('state of rust async runtimes', fleet({ comet: false }), { research: 'general' });
+    expect(d.agent).toBe('agy');
+    expect(d.method).toBe('fallback');
+    // Both web lanes down: only a network-capable lane may take it (cursor here), never claude/codex/pi.
+    expect(route('firebase pricing', fleet({ agy: false, comet: false }), { research: 'google' }).agent).toBe('cursor');
+    expect(route('firebase pricing', fleet({ agy: false, comet: false, cursor: false }), { research: 'google' }).agent).toBeNull();
+  });
+
+  it('parseResearchKind accepts google|general and rejects anything else', () => {
+    expect(parseResearchKind('google')).toBe('google');
+    expect(parseResearchKind(undefined)).toBeUndefined();
+    expect(() => parseResearchKind('bing')).toThrow(/google \| general/);
   });
 
   it('Google-ecosystem research falls back to comet when agy is down', () => {

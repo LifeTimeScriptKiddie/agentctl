@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseResearchKind } from './core/router.js';
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -251,6 +252,7 @@ export function buildProgram(): Command {
     .option('--explain', 'show the per-agent scoring', false)
     .option('--llm', 'deprecated; ambiguous routes require human selection', false)
     .option('--model <name>', 'model override for the chosen agent')
+    .option('--research <kind>', 'declare web research: google (agy/Gemini) | general (Comet); overrides keywords')
     .option('--effort <level>', 'reasoning-effort override for the chosen agent')
     .option('--session <name>', 'persist/continue a named session')
     .option('--resume', 'continue the most recent session', false)
@@ -261,7 +263,7 @@ export function buildProgram(): Command {
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--approve-context', 'send memory/briefing/gateway/transcript context to lanes that can write, run shell, modify the repo or publish (--approve does not cover it)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
-    .action(async (taskArg: string | undefined, opts: { dryRoute: boolean; explain: boolean; llm: boolean; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; approveContext: boolean; format: string }) => {
+    .action(async (taskArg: string | undefined, opts: { dryRoute: boolean; explain: boolean; llm: boolean; research?: string; model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string; sessionScope?: string; gatewayUrl?: string; timeout: string; approve: boolean; approveContext: boolean; format: string }) => {
       const task = (taskArg ?? (await readStdin())).trim();
       if (!task) {
         stdio.err('no task given (pass as an argument or via stdin)');
@@ -275,6 +277,7 @@ export function buildProgram(): Command {
           approve: opts.approve, approveContext: opts.approveContext, model: opts.model ?? null, effort: opts.effort ?? null,
           session: opts.session, resume: opts.resume, briefingWorkspace: opts.briefingWorkspace,
           sessionScope: opts.sessionScope, gatewayUrl: opts.gatewayUrl ?? null,
+          research: parseResearchKind(opts.research),
           format: parseFormat(opts.format),
         },
         stdio,
@@ -291,6 +294,7 @@ export function buildProgram(): Command {
     .option('--explain', 'include per-agent routing scores', false)
     .option('--llm', 'deprecated; ambiguous routes require human selection', false)
     .option('--model <name>', 'model override for the chosen agent')
+    .option('--research <kind>', 'declare web research: google (agy/Gemini) | general (Comet); overrides keywords')
     .option('--effort <level>', 'reasoning-effort override for the chosen agent')
     .option('--session <name>', 'persist/continue a named session')
     .option('--resume', 'continue the most recent session', false)
@@ -303,7 +307,7 @@ export function buildProgram(): Command {
     .option('--allow-self', 'allow --to the agent you are running inside (a second session on the same quota)', false)
     .option('--format <fmt>', 'output format: text | json', 'text')
     .action(async (taskArg: string | undefined, opts: {
-      to?: string; dryRoute: boolean; verbose: boolean; explain: boolean; llm: boolean;
+      to?: string; dryRoute: boolean; verbose: boolean; explain: boolean; llm: boolean; research?: string;
       model?: string; effort?: string; session?: string; resume: boolean; briefingWorkspace?: string;
       sessionScope?: string; gatewayUrl?: string;
       timeout: string; approve: boolean; approveContext: boolean; format: string;
@@ -322,6 +326,7 @@ export function buildProgram(): Command {
           model: opts.model ?? null, effort: opts.effort ?? null,
           session: opts.session, resume: opts.resume, briefingWorkspace: opts.briefingWorkspace,
           sessionScope: opts.sessionScope, gatewayUrl: opts.gatewayUrl ?? null,
+          research: parseResearchKind(opts.research),
           to: opts.to,
           format: parseFormat(opts.format),
         },
