@@ -75,6 +75,8 @@ export interface AskOptions {
   sessionScope?: string;
   /** Memory gatekeeper base URL; defaults from `AGENTCTL_GATEWAY_URL`. */
   gatewayUrl?: string | null;
+  /** Resume this native worker session (a woken quota-wait job); ignored by lanes without resume. */
+  resumeSessionId?: string | null;
 }
 
 export interface AskCommandResult {
@@ -102,6 +104,8 @@ export interface RouteOptions {
   gatewayUrl?: string | null;
   /** Internal marker used to keep delegate route-log entries compatible. */
   delegate?: boolean;
+  /** Pinned (`to`) delegate only: resume this native worker session; see AskOptions. */
+  resumeSessionId?: string | null;
   /** Cancels the in-flight worker call (job cancel, MCP client abort). */
   signal?: AbortSignal;
   /** Agents the router must not pick, e.g. the calling agent (see `--caller`). */
@@ -226,6 +230,7 @@ async function executeSingleAsk(
     approve: boolean;
     approveContext: boolean;
     signal?: AbortSignal;
+    resumeSessionId?: string | null;
   },
   warnings: string[],
 ): Promise<{ exitCode: number; result: AskResult; error?: string }> {
@@ -290,7 +295,8 @@ async function executeSingleAsk(
   }
 
   const nativeAgent = !!registry.getPreset(args.to)?.session?.supportsResume;
-  const resumeId = sess && nativeAgent ? sess.record.native[args.to] ?? null : null;
+  const resumeId = !nativeAgent ? null
+    : args.resumeSessionId ?? (sess ? sess.record.native[args.to] ?? null : null);
   const briefingWorkspace = resolveBriefingWorkspace(args.briefingWorkspace);
   const prompt = await buildWorkerPrompt({
     agent: args.to,
@@ -413,6 +419,7 @@ export async function agentAsk(
       approve,
       approveContext: opts.approveContext ?? false,
       ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
     },
     warnings,
   );
@@ -549,6 +556,7 @@ export async function agentDelegate(
       sessionScope: opts.sessionScope,
       gatewayUrl: opts.gatewayUrl,
       ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
     });
     const ask = askResult.results[0];
     return {

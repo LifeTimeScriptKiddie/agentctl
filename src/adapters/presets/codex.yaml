@@ -55,14 +55,15 @@ models:
 # STILL TO VERIFY before enabling (one live 2-call test): that
 #   `-c sandbox_mode="read-only"` actually takes effect on resume (i.e. an
 #   unknown/ignored key must not silently fall back to a permissive default).
-# Don't weaken the sandbox to get memory. Once
-# verified, uncomment — resumeExtraArgs re-asserts the sandbox the subcommand
-# doesn't inherit:
-# session:
-#   supportsResume: true
-#   idFrom: codex_thread
-#   resumeStyle: codex_resume
-#   resumeExtraArgs: ['-c', 'sandbox_mode="read-only"']
+# Don't weaken the sandbox to get memory. Until verified the id is captured
+# only (quota-wait records it on a parked job; see docs/QUOTA-WAIT.md) and
+# supportsResume stays false, so nothing is resumed. Once verified, flip it —
+# resumeExtraArgs re-asserts the sandbox the subcommand doesn't inherit:
+session:
+  supportsResume: false
+  idFrom: codex_thread
+  resumeStyle: codex_resume
+  resumeExtraArgs: ['-c', 'sandbox_mode="read-only"']
 healthProbe: [which, codex]
 capabilities:
   canReadFiles: true

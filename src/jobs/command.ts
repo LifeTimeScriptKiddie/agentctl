@@ -5,6 +5,9 @@ import { getJob, listJobs, pruneJobs, readJobEvents, readJobResult, isJobId } fr
 import { cancelJob, runJob, startJob, waitForJob, type JobInput } from './runner.js';
 import { compactForCaller, progressFromEvents } from '../core/callerResult.js';
 import { lintTaskGraph, specWarnings, type TaskSpecInput } from '../graph/specRules.js';
+import { loadRegistry } from '../core/loadRegistry.js';
+import { installScheduler, schedulerStatus, uninstallScheduler } from './scheduler.js';
+import { wakeJobs } from './wake.js';
 
 /** Read `--json` as inline JSON, `-` for stdin, or `@path` for a file. */
 async function readJsonArg(value: string): Promise<unknown> {
@@ -120,9 +123,12 @@ export function registerJobsCommands(program: Command): void {
     .option('--approve', 'allow destructive/outward-facing intents', false)
     .option('--approve-context', 'send injected context to shell/write lanes', false)
     .option('--caller <agents>', 'calling agent(s) to keep out of routing (or AGENTCTL_CALLER)')
+    .option('--wait-for-quota', 'at a usage limit, park the job and resume it after the reset (default for Daybreak)')
+    .option('--no-wait-for-quota', 'fail at a usage limit instead of waiting, even on Daybreak')
     .action((task: string, o: Record<string, string | boolean | undefined>) => guard('start', () => {
       const input: JobInput = {
         kind: 'delegate', task,
+        ...(typeof o.waitForQuota === 'boolean' ? { waitForQuota: o.waitForQuota } : {}),
         timeoutSeconds: Number(o.timeout),
         approve: o.approve === true,
         approveContext: o.approveContext === true,
@@ -157,6 +163,8 @@ export function registerJobsCommands(program: Command): void {
       emit('wait', exit, {
         job_id: id, status: r.record.status, done: r.done,
         ...(r.done ? { result: compactForCaller(r.result, id) } : { progress: progressFromEvents(readJobEvents(id).events) }),
+        ...(r.record.status === 'waiting_quota' && r.record.quota
+          ? { resume_at: r.record.quota.resumeAt, note: r.record.error } : {}),
       });
     })());
 
@@ -191,6 +199,34 @@ export function registerJobsCommands(program: Command): void {
   jobs.command('prune').option('--days <n>', 'remove finished jobs older than this', '14')
     .action((o: { days: string }) => guard('prune', () => {
       emit('prune', 0, { removed: pruneJobs(Number(o.days) * 86_400_000) });
+    })());
+
+  jobs.command('wake').argument('[id]')
+    .option('--due', 'wake every parked job whose reset time has passed (what the OS timer runs)', false)
+    .option('--force', 'resume now, ignoring the reset time and the cap cache', false)
+    .description('resume jobs parked at a usage limit (status waiting_quota)')
+    .action((id: string | undefined, o: { due: boolean; force: boolean }) => guard('wake', () => {
+      if (!id && !o.due) throw new Error('give a job id, or --due for every parked job that is due');
+      const registry = loadRegistry();
+      const report = wakeJobs({
+        ...(id ? { id: requireId(id) } : {}),
+        force: o.force,
+        quotaKeyOf: (agent) => registry.getPreset(agent)?.quotaAccount ?? agent,
+      });
+      // The timer exists only while jobs are parked; the sweep that empties the list removes it.
+      // emit before removing: unloading the LaunchAgent ends this process when the timer ran it.
+      const removeTimer = o.due && report.remaining === 0 && schedulerStatus().installed;
+      emit('wake', 0, { ...report, ...(removeTimer ? { scheduler: 'removed' } : {}) });
+      if (removeTimer) uninstallScheduler();
+    })());
+
+  jobs.command('scheduler').argument('<action>', 'install | uninstall | status')
+    .description('the OS timer that wakes parked jobs (launchd on macOS, systemd or cron on Linux)')
+    .action((action: string) => guard('scheduler', () => {
+      if (action === 'install') emit('scheduler', 0, installScheduler());
+      else if (action === 'uninstall') emit('scheduler', 0, uninstallScheduler());
+      else if (action === 'status') emit('scheduler', 0, schedulerStatus());
+      else throw new Error(`unknown action '${action}': use install, uninstall or status`);
     })());
 
   // Internal: the detached runner process started by `jobs start` / MCP.

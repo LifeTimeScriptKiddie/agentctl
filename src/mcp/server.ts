@@ -164,6 +164,14 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
   /** Caller-sized wait response: compact result when done, progress and the next call otherwise. */
   const waitView = (id: string, waited: Awaited<ReturnType<typeof waitForJob>>) => (waited.done
     ? { job_id: id, status: waited.record.status, done: true, result: compactForCaller(waited.result, id) }
+    : waited.record.status === 'waiting_quota' && waited.record.quota
+    ? {
+        job_id: id, status: 'waiting_quota', done: false,
+        resume_at: waited.record.quota.resumeAt,
+        note: waited.record.error,
+        next: `parked at a usage limit; agentctl resumes it automatically after ${waited.record.quota.resumeAt}. `
+          + `Do not poll before then: tell the user, carry on with other work, and check later with agentctl_job_status "${id}".`,
+      }
     : {
         job_id: id, status: waited.record.status, done: false,
         progress: progressFromEvents(readJobEvents(id).events),
@@ -251,6 +259,9 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       briefing_workspace: z.string().optional().describe('Team-memory workspace to brief the worker from.'),
       timeout_seconds: z.number().int().min(10).max(3600).optional().describe('Per-worker timeout (default 600).'),
       wait_seconds: z.number().int().min(0).max(300).optional().describe(`Max seconds to wait here (capped at ${maxWait}).`),
+      wait_for_quota: z.boolean().optional().describe(
+        'At a usage limit, park the job and resume it after the reset instead of failing. '
+        + 'Default: on for Daybreak (cyber is never rerouted), off elsewhere.'),
       ...approvalShape(),
     }),
     annotations: { readOnlyHint: false, openWorldHint: true },
@@ -273,6 +284,7 @@ export function createAgentctlMcpServer(opts: McpServerOptions = {}): McpServer 
       ...(to ? { to } : {}),
       ...(args.research ? { research: args.research } : {}),
       model, effort: args.effort ?? null,
+      ...(args.wait_for_quota !== undefined ? { waitForQuota: args.wait_for_quota } : {}),
       timeoutSeconds: args.timeout_seconds ?? 600,
       approve: opts.allowApprove ? approval.approve ?? false : false,
       approveContext: opts.allowApprove ? approval.approve_context ?? false : false,

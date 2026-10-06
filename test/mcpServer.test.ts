@@ -8,6 +8,7 @@ import * as exec from '../src/util/exec.js';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 import { createAgentctlMcpServer, type McpServerOptions } from '../src/mcp/server.js';
 import { runJob } from '../src/jobs/runner.js';
+import { createJob, updateJob } from '../src/jobs/store.js';
 
 vi.mock('../src/util/exec.js', () => ({ run: vi.fn() }));
 const runMock = vi.mocked(exec.run);
@@ -82,6 +83,18 @@ describe('agentctl MCP server', () => {
     expect(waited.result).toHaveProperty('full_result');
     const events = payload(await client.callTool({ name: 'agentctl_job_events', arguments: { job_id: r.job_id } }));
     expect((events.events as Array<{ type: string }>).map((e) => e.type)[0]).toBe('queued');
+  });
+
+  it('answers a poll on a parked job at once, with when it resumes and not to poll before then', async () => {
+    const client = await connect();
+    const job = createJob({ kind: 'delegate', input: { kind: 'delegate', task: 't' }, summary: 't' });
+    updateJob(job.id, { status: 'waiting_quota', error: 'usage limit on codex', quota: {
+      resumeAt: '2030-01-01T00:00:00.000Z', waitingSince: '2029-12-31T20:00:00.000Z', waits: 1,
+      agent: 'codex', model: 'gpt-daybreak-blue-latest', sessionId: null,
+    } });
+    const waited = payload(await client.callTool({ name: 'agentctl_job_wait', arguments: { job_id: job.id, wait_seconds: 5 } }));
+    expect(waited).toMatchObject({ status: 'waiting_quota', done: false, resume_at: '2030-01-01T00:00:00.000Z' });
+    expect(String(waited.next)).toMatch(/Do not poll before then/);
   });
 
   it('refuses destructive requests and ignores a client-sent approve flag without --allow-approve', async () => {

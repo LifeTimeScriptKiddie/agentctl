@@ -377,6 +377,9 @@ export class SubprocessAdapter implements AgentAdapter {
         }),
         normalizedJson: parsed.normalizedJson,
         usage,
+        // A run cut off mid-task (e.g. by a usage limit) already opened a native
+        // session; keep its id so a parked job can resume it after the reset.
+        sessionId: extractSessionId(this.preset.session?.idFrom, outcome.stdout, parsed.normalizedJson),
       };
     }
 

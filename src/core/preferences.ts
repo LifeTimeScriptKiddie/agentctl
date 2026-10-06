@@ -16,6 +16,17 @@ const agentPrefSchema = z.object({
   defaultModel: z.string().trim().min(1).nullable().optional(),
 });
 
+const quotaWaitSchema = z.object({
+  /** Models whose jobs always wait at a usage limit instead of failing (never rerouted). */
+  models: z.array(z.string().trim().min(1)).default(['gpt-daybreak-blue-latest']),
+  wakeIntervalMinutes: z.number().int().min(1).max(60).default(5),
+  resetGraceMinutes: z.number().int().min(0).max(60).default(2),
+  fallbackRetryMinutes: z.number().int().min(5).max(24 * 60).default(30),
+  maxWaits: z.number().int().min(1).max(100).default(12),
+  maxWaitHours: z.number().min(1).max(24 * 31).default(192),
+});
+export type QuotaWaitSettings = z.infer<typeof quotaWaitSchema>;
+
 const preferencesSchema = z.object({
   version: z.literal(1),
   updatedAt: z.string(),
@@ -52,6 +63,8 @@ const preferencesSchema = z.object({
     capCache: z.boolean().default(true),
     selfTune: z.boolean().default(false),
   }).default({ usageLedger: true, routeLog: true, sessionTraces: true, capCache: true, selfTune: false }),
+  /** Park jobs at a usage limit and resume after the reset (docs/QUOTA-WAIT.md). */
+  quotaWait: quotaWaitSchema.optional(),
 });
 
 export type Preferences = z.infer<typeof preferencesSchema>;
@@ -160,4 +173,9 @@ export function preferredOrchestratorBackup(
   const b = prefs?.orchestratorBackup;
   if (!b?.agent) return null;
   return { agent: b.agent, model: b.model ?? null };
+}
+
+/** Quota-wait settings, with defaults when unset or no preferences file exists. */
+export function quotaWaitSettings(prefs: Preferences | null = loadPreferencesQuiet()): QuotaWaitSettings {
+  return quotaWaitSchema.parse(prefs?.quotaWait ?? {});
 }

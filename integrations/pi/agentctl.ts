@@ -298,6 +298,10 @@ export async function waitCompact(
     if (!waited.ok && waited.error) return { job_id: id, error: waited.error };
     last = (waited.result ?? last) as Record<string, unknown>;
     if (last.done === true) return last;
+    // Parked at a usage limit until resume_at (hours): agentctl resumes it on its own.
+    if (last.status === "waiting_quota") {
+      return { ...last, next: `parked until ${String(last.resume_at)}; resumes automatically. Check later with agentctl_job_wait "${id}".` };
+    }
     onUpdate?.(toolText({ job_id: id, status: last.status, progress: last.progress }));
     if (Date.now() >= deadline) return { ...last, next: `call agentctl_job_wait with job_id "${id}"` };
   }
@@ -331,12 +335,14 @@ export function registerAgentctlTools(pi: ExtensionAPI): void {
         task: str("Self-contained task for the worker, including the context it needs."),
         to: str("Optional agent to pin: codex, codex_write, claude, cursor, agy."),
         wait_seconds: { type: "integer", minimum: 0, maximum: 300, description: "How long to wait here (default 120)." },
+        wait_for_quota: { type: "boolean", description: "At a usage limit, park and resume after the reset instead of failing (default: on for Daybreak)." },
       },
       required: ["task"],
     } as never,
     async execute(_id, params, signal, onUpdate, ctx) {
-      const p = params as { task: string; to?: string; wait_seconds?: number };
-      const argv = ["delegate", ...(p.to ? ["--to", p.to] : []), p.task];
+      const p = params as { task: string; to?: string; wait_seconds?: number; wait_for_quota?: boolean };
+      const quota = p.wait_for_quota === undefined ? [] : [p.wait_for_quota ? "--wait-for-quota" : "--no-wait-for-quota"];
+      const argv = ["delegate", ...(p.to ? ["--to", p.to] : []), ...quota, p.task];
       return toolText(await startAndWait(argv, ctx.cwd, p.wait_seconds ?? 120, signal, onUpdate as ToolUpdate));
     },
   } as never);

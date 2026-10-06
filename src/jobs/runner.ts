@@ -9,6 +9,9 @@ import { agentAsk, agentDelegate, agentOrchestrate, agentRunTasks } from '../api
 import { loadRegistry } from '../core/loadRegistry.js';
 import { harnessSourceHashes, harnessVersion } from '../mcp/harnessText.js';
 import type { AskResult } from '../core/ask.js';
+import { quotaWaitSettings, type QuotaWaitSettings } from '../core/preferences.js';
+import { continuationPrompt, decidePark, writeCheckpoint, type QuotaRecord } from './quotaWait.js';
+import { ensureScheduler } from './scheduler.js';
 import {
   appendJobEvent, cancelRequested, createJob, getJob, isTerminal, readJobInput, readJobResult,
   requestCancel, updateJob, writeJobResult,
@@ -47,6 +50,11 @@ export interface JobInput {
   tasks?: unknown[];
   /** Orchestrate/tasks: untrusted background from the caller, quoted for the lead or workers. */
   context?: string;
+  /**
+   * Delegate/ask only: park at a usage limit and resume after the reset instead
+   * of failing. Unset = the quotaWait.models default (Daybreak always waits).
+   */
+  waitForQuota?: boolean;
 }
 
 /** Graph node ids only (never instruction text). */
@@ -101,6 +109,8 @@ export function startJob(
   }
   const record = createJob({
     kind: input.kind, input: input as unknown as Record<string, unknown>, summary: text, caller: opts.caller ?? null,
+    // recorded so a job woken later by the OS timer runs in the same directory
+    cwd: opts.cwd ?? process.cwd(),
   });
   const pid = (opts.launch ?? defaultLauncher)(record.id, opts.cwd);
   return pid === null ? record : updateJob(record.id, { pid });
@@ -113,12 +123,20 @@ export function startJob(
  */
 export async function runJob(
   id: string,
-  opts: { registry?: AdapterRegistry; pollMs?: number } = {},
+  opts: {
+    registry?: AdapterRegistry; pollMs?: number;
+    /** installs the wake timer when a job parks (tests inject a stub) */
+    ensureScheduler?: () => void;
+    settings?: QuotaWaitSettings;
+  } = {},
 ): Promise<JobRecord> {
   const current = getJob(id);
   if (!current) throw new Error(`no job '${id}'`);
   if (current.status !== 'queued') return current;
   const input = readJobInput(id) as unknown as JobInput;
+  // A job woken after a quota wait carries its earlier park: rerun on the same
+  // lane and model, resuming the worker's native session when the lane can.
+  const parked = current.quota;
   const controller = new AbortController();
   // Cancellation is the `cancel` marker file, polled here. Signal handlers are
   // deliberately not used: execa's signal-exit counts process listeners as its
@@ -133,6 +151,10 @@ export async function runJob(
   appendJobEvent(id, { type: 'started', kind: input.kind, harness: harnessVersion(), harness_sources: harnessSourceHashes() });
   const registry = opts.registry ?? loadRegistry();
   const signal = controller.signal;
+  const resumed = parked ? resumeParams(registry, input, parked) : null;
+  if (resumed) appendJobEvent(id, { type: 'resumed', agent: parked!.agent, model: parked!.model, native: resumed.resumeSessionId !== null });
+  /** The worker call of a delegate/ask job, for the quota-wait decision. */
+  let worker: AskResult | null = null;
 
   let exitCode = 1;
   let error: string | null = null;
@@ -197,13 +219,14 @@ export async function runJob(
       error = r.error ?? null;
     } else if (input.kind === 'delegate') {
       const r = await agentDelegate(registry, {
-        task: input.task ?? '',
-        ...(input.to ? { to: input.to } : {}),
+        task: resumed?.prompt ?? input.task ?? '',
+        ...(resumed ? { to: resumed.to } : input.to ? { to: input.to } : {}),
         timeoutSeconds: input.timeoutSeconds,
         approve: input.approve ?? false,
         approveContext: input.approveContext ?? false,
-        model: input.model ?? null,
+        model: resumed ? resumed.model : input.model ?? null,
         effort: input.effort ?? null,
+        ...(resumed?.resumeSessionId ? { resumeSessionId: resumed.resumeSessionId } : {}),
         ...(input.briefingWorkspace ? { briefingWorkspace: input.briefingWorkspace } : {}),
         ...(input.excludeAgents?.length ? { excludeAgents: input.excludeAgents } : {}),
         ...(input.research ? { research: input.research } : {}),
@@ -215,22 +238,25 @@ export async function runJob(
         tier: r.route.tier, ambiguous: r.route.ambiguous,
       });
       if (r.ask) appendJobEvent(id, { type: 'worker_result', ...workerFields(r.ask, signal.aborted) });
+      worker = r.ask ?? null;
       exitCode = r.exitCode;
       error = r.error ?? null;
     } else {
       const r = await agentAsk(registry, {
-        to: input.to ?? '',
-        prompt: input.prompt ?? '',
+        to: resumed?.to ?? input.to ?? '',
+        prompt: resumed?.prompt ?? input.prompt ?? '',
         timeoutSeconds: input.timeoutSeconds,
         approve: input.approve ?? false,
         approveContext: input.approveContext ?? false,
-        model: input.model ?? null,
+        model: resumed ? resumed.model : input.model ?? null,
+        ...(resumed?.resumeSessionId ? { resumeSessionId: resumed.resumeSessionId } : {}),
         effort: input.effort ?? null,
         ...(input.briefingWorkspace ? { briefingWorkspace: input.briefingWorkspace } : {}),
         signal,
       });
       writeJobResult(id, r);
       for (const a of r.results) appendJobEvent(id, { type: 'worker_result', ...workerFields(a, signal.aborted) });
+      worker = r.results.length === 1 ? r.results[0]! : null;
       exitCode = r.exitCode;
       error = r.error ?? null;
     }
@@ -241,12 +267,59 @@ export async function runJob(
     clearInterval(poll);
   }
 
+  if (!signal.aborted && worker && (input.kind === 'delegate' || input.kind === 'ask')) {
+    const settings = opts.settings ?? quotaWaitSettings();
+    const decision = decidePark({
+      worker, requested: input.waitForQuota, previous: parked, settings,
+      quotaKey: registry.getPreset(worker.agent)?.quotaAccount ?? worker.agent,
+    });
+    if (decision.park) return park(id, decision.quota, worker, opts.ensureScheduler ?? (() => { ensureScheduler(); }));
+    if (decision.reason) error = `${error ?? 'usage limit'} (${decision.reason})`;
+  }
+
   const status = signal.aborted ? 'cancelled' : exitCode === 0 ? 'succeeded' : 'failed';
   appendJobEvent(id, { type: status, exitCode, ...(error ? { error } : {}) });
   return updateJob(id, {
     status, exitCode, error: signal.aborted ? (error ?? 'cancelled') : error,
     finishedAt: new Date().toISOString(),
   });
+}
+
+/** How a woken job reruns: same lane and model, native resume when the lane supports it. */
+function resumeParams(
+  registry: AdapterRegistry,
+  input: JobInput,
+  quota: QuotaRecord,
+): { to: string; model: string | null; prompt: string; resumeSessionId: string | null } {
+  const native = !!quota.sessionId && !!registry.getPreset(quota.agent)?.session?.supportsResume;
+  return {
+    to: quota.agent,
+    model: quota.model,
+    prompt: continuationPrompt(input.task ?? input.prompt ?? '', quota, native),
+    resumeSessionId: native ? quota.sessionId : null,
+  };
+}
+
+/** Park the job until its reset: checkpoint, record, make sure the wake timer exists, exit. */
+function park(id: string, quota: QuotaRecord, worker: AskResult, ensure: () => void): JobRecord {
+  const record = getJob(id);
+  const checkpoint = writeCheckpoint(id, record?.cwd ?? null, quota.waits);
+  const reason = worker.text.replace(/\s+/g, ' ').trim().slice(0, 300);
+  const parked = updateJob(id, {
+    status: 'waiting_quota', quota, pid: null, exitCode: null,
+    error: `usage limit on ${quota.agent}${quota.model ? `/${quota.model}` : ''}; resumes after ${quota.resumeAt}${reason ? `: ${reason}` : ''}`,
+  });
+  appendJobEvent(id, {
+    type: 'quota_wait', agent: quota.agent, model: quota.model, resumeAt: quota.resumeAt,
+    waits: quota.waits, session: quota.sessionId !== null, checkpoint: checkpoint !== null,
+  });
+  try {
+    ensure();
+  } catch (e) {
+    // Still parked: `agentctl jobs wake` by hand (or `jobs scheduler install`) picks it up.
+    appendJobEvent(id, { type: 'scheduler_error', error: e instanceof Error ? e.message : String(e) });
+  }
+  return parked;
 }
 
 /**
@@ -262,7 +335,7 @@ export function cancelJob(id: string, opts: { force?: boolean } = {}): JobRecord
   requestCancel(id);
   appendJobEvent(id, { type: 'cancel_requested', ...(opts.force ? { force: true } : {}) });
   const cancelled = () => updateJob(id, { status: 'cancelled', finishedAt: new Date().toISOString(), exitCode: 1, error: 'cancelled' });
-  if (record.status === 'queued' && record.pid === null) return cancelled();
+  if ((record.status === 'queued' && record.pid === null) || record.status === 'waiting_quota') return cancelled();
   if (opts.force && record.pid !== null) {
     try {
       process.kill(record.pid, 'SIGKILL');
@@ -286,6 +359,8 @@ export async function waitForJob(
     const record = getJob(id);
     if (!record) throw new Error(`no job '${id}'`);
     if (isTerminal(record.status)) return { record, done: true, result: readJobResult(id) };
+    // Parked for hours: return now rather than holding the caller until its timeout.
+    if (record.status === 'waiting_quota') return { record, done: false, result: null };
     if (Date.now() >= deadline) return { record, done: false, result: null };
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
   }

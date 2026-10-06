@@ -14,6 +14,8 @@ import { resolveModel } from './adapters/subprocess.js';
 import { preferredModel } from './core/preferences.js';
 import { agentctlHome } from './core/agentHome.js';
 import type { CallerContext } from './core/caller.js';
+import { schedulerStatus } from './jobs/scheduler.js';
+import { parkedJobs } from './jobs/wake.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -35,6 +37,26 @@ export interface DoctorOptions {
   now?: Date;
   /** override where MCP client configs are read from (tests) */
   mcpConfigs?: Array<{ client: string; path: string }>;
+  /** override the wake-timer check (tests) */
+  schedulerInstalled?: () => boolean;
+}
+
+function quotaWaitChecks(now: Date, installed: () => boolean = () => schedulerStatus().installed): Check[] {
+  const parked = parkedJobs();
+  if (parked.length === 0) return [];
+  const checks: Check[] = parked.map((j) => ({
+    area: 'jobs', name: j.id, status: 'ok' as CheckStatus,
+    detail: `waiting for ${j.quota!.agent}${j.quota!.model ? `/${j.quota!.model}` : ''} quota; resumes after `
+      + `${new Date(j.quota!.resumeAt).toLocaleString()} (wait ${j.quota!.waits})`,
+    ...(Date.parse(j.quota!.resumeAt) < now.getTime() - 30 * 60_000
+      ? { status: 'warn' as CheckStatus, fix: `overdue: \`agentctl jobs wake ${j.id}\`` } : {}),
+  }));
+  if (!installed()) {
+    checks.push({ area: 'jobs', name: 'wake timer', status: 'warn',
+      detail: `${parked.length} parked job(s) but no wake timer, so nothing will resume them`,
+      fix: 'agentctl jobs scheduler install' });
+  }
+  return checks;
 }
 
 const DEFAULT_MCP_CONFIGS = (): Array<{ client: string; path: string }> => [
@@ -172,7 +194,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<Check[]> {
   // 6. team memory (shared_ptr): which provider briefs workers, and its contract version
   checks.push(...await teamMemoryChecks());
 
-  // 7. features
+  // 7. jobs parked at a usage limit, and the timer that wakes them
+  checks.push(...quotaWaitChecks(now, opts.schedulerInstalled));
+
+  // 8. features
   const off = FEATURES.filter((f) => !featureEnabled(f.name, prefs)).map((f) => f.name);
   checks.push({ area: 'features', name: 'optional features', status: 'ok',
     detail: off.length ? `off: ${off.join(', ')}` : 'all on', fix: 'agentctl features' });

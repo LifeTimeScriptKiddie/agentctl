@@ -326,6 +326,16 @@ describe('parseResetAt', () => {
     expect(parseResetAt('2026-07-27T12:30:00Z', now)?.toISOString()).toBe('2026-07-27T12:30:00.000Z');
   });
 
+  it('sums compound durations instead of stopping at the first unit', () => {
+    const at = (s: string) => parseResetAt(s, now)?.toISOString();
+    expect(at('try again in 4 hours 12 minutes')).toBe('2026-07-27T14:12:00.000Z');
+    expect(at('try again in 1 hour and 30 minutes.')).toBe('2026-07-27T11:30:00.000Z');
+    expect(at('resets in 1h 30m')).toBe('2026-07-27T11:30:00.000Z');
+    expect(at('weekly limit: try again in 2 days')).toBe('2026-07-29T10:00:00.000Z');
+    expect(at('try again in 45 minutes')).toBe('2026-07-27T10:45:00.000Z');
+    expect(at('in 5 months')).toBeUndefined();
+  });
+
   it('reads epoch seconds and milliseconds alike', () => {
     const target = Date.parse('2026-07-27T12:00:00Z');
     expect(parseResetAt(target / 1000, now)?.getTime()).toBe(target);

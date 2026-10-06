@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { AdapterRegistry } from '../src/adapters/registry.js';
 import { agentctlPathIn, formatDoctor, runDoctor } from '../src/doctor.js';
 import { saveLimits, markExhausted } from '../src/core/limitStore.js';
+import { createJob, updateJob } from '../src/jobs/store.js';
 
 const noCaller = { agent: null, via: null, sandboxNoNetwork: false, nestedUnderAgentctl: false } as const;
 let home: string;
@@ -29,6 +30,19 @@ function registryWith(available: string[]): AdapterRegistry {
 }
 
 describe('doctor', () => {
+  it('lists parked jobs and warns when no wake timer will resume them', async () => {
+    const job = createJob({ kind: 'delegate', input: {}, summary: 's' });
+    updateJob(job.id, { status: 'waiting_quota', quota: {
+      resumeAt: '2030-01-01T00:00:00.000Z', waitingSince: '2029-12-31T20:00:00.000Z', waits: 2,
+      agent: 'codex', model: 'gpt-daybreak-blue-latest', sessionId: null,
+    } });
+    const checks = await runDoctor({ registry: registryWith([]), caller: noCaller, home, mcpConfigs: [], schedulerInstalled: () => false });
+    expect(checks.find((c) => c.name === job.id)).toMatchObject({ area: 'jobs', status: 'ok', detail: expect.stringMatching(/codex\/gpt-daybreak-blue-latest quota.*wait 2/) });
+    expect(checks.find((c) => c.name === 'wake timer')).toMatchObject({ status: 'warn', fix: 'agentctl jobs scheduler install' });
+    const ok = await runDoctor({ registry: registryWith([]), caller: noCaller, home, mcpConfigs: [], schedulerInstalled: () => true });
+    expect(ok.find((c) => c.name === 'wake timer')).toBeUndefined();
+  });
+
   it('finds the agentctl build an MCP config points at', () => {
     expect(agentctlPathIn('args = ["/Users/u/code/agentctl/current/dist/cli.js", "mcp"]')).toBe('/Users/u/code/agentctl/current/dist/cli.js');
     expect(agentctlPathIn('{"mcpServers":{}}')).toBeNull();

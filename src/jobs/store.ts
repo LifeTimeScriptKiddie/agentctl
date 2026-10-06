@@ -19,13 +19,14 @@ import { redact, redactDeep } from '../core/redact.js';
 export const JOB_KINDS = ['orchestrate', 'tasks', 'delegate', 'ask'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 export const TERMINAL_STATUSES = ['succeeded', 'failed', 'cancelled'] as const;
-export type JobStatus = 'queued' | 'running' | (typeof TERMINAL_STATUSES)[number];
+/** `waiting_quota`: parked at a usage limit until `resumeAt` (see docs/QUOTA-WAIT.md). */
+export type JobStatus = 'queued' | 'running' | 'waiting_quota' | (typeof TERMINAL_STATUSES)[number];
 
 const JobRecordSchema = z.object({
   version: z.literal(1),
   id: z.string(),
   kind: z.enum(JOB_KINDS),
-  status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']),
+  status: z.enum(['queued', 'running', 'waiting_quota', 'succeeded', 'failed', 'cancelled']),
   /** Short, redacted description for listings (goal or task, clipped). */
   summary: z.string(),
   caller: z.string().nullable(),
@@ -35,6 +36,21 @@ const JobRecordSchema = z.object({
   pid: z.number().int().nullable(),
   exitCode: z.number().int().nullable(),
   error: z.string().nullable(),
+  /** Working directory the job runs in; a woken job relaunches there. */
+  cwd: z.string().nullable().default(null),
+  /** Quota wait (optional so job files written before it still load). */
+  quota: z.object({
+    /** when the wake sweep may resume this job */
+    resumeAt: z.string(),
+    /** first park, for the maxWaitHours limit */
+    waitingSince: z.string(),
+    /** how many times this job has parked */
+    waits: z.number().int(),
+    agent: z.string(),
+    model: z.string().nullable(),
+    /** native session to resume, when the worker CLI reported one */
+    sessionId: z.string().nullable(),
+  }).nullable().default(null),
 });
 export type JobRecord = z.infer<typeof JobRecordSchema>;
 
@@ -77,6 +93,7 @@ export function createJob(opts: {
   input: Record<string, unknown>;
   summary: string;
   caller?: string | null;
+  cwd?: string | null;
   now?: Date;
 }): JobRecord {
   const now = opts.now ?? new Date();
@@ -89,7 +106,7 @@ export function createJob(opts: {
   const record: JobRecord = {
     version: 1, id, kind: opts.kind, status: 'queued', summary: clip(opts.summary),
     caller: opts.caller ?? null, createdAt: now.toISOString(), startedAt: null, finishedAt: null,
-    pid: null, exitCode: null, error: null,
+    pid: null, exitCode: null, error: null, cwd: opts.cwd ?? null, quota: null,
   };
   writeJobRecord(record);
   appendJobEvent(id, { type: 'queued' });

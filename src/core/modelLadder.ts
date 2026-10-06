@@ -64,12 +64,18 @@ export function parseResetAt(source: unknown, now: Date = new Date()): Date | nu
   const iso = Date.parse(source);
   if (!Number.isNaN(iso) && new Date(iso) > now) return new Date(iso);
 
-  const rel = source.match(/\bin\s+(\d+)\s*(second|minute|hour)s?\b/i);
+  // "in 4 hours 12 minutes", "in 2 days", "in 1h 30m": sum every part, so a
+  // compound duration isn't cut to its first unit (and resumed an hour early).
+  const rel = source.match(/\bin\s+((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,]*(?:and\s+)?)+)/i);
   if (rel) {
-    const n = Number(rel[1]);
-    const unit = rel[2]!.toLowerCase();
-    const factor = unit === 'second' ? 1000 : unit === 'minute' ? 60_000 : 3_600_000;
-    return new Date(now.getTime() + n * factor);
+    let ms = 0;
+    for (const part of rel[1]!.matchAll(/(\d+)\s*([a-z]+)/gi)) {
+      const unit = part[2]!.toLowerCase();
+      const factor = unit.startsWith('d') ? 86_400_000 : unit.startsWith('h') ? 3_600_000
+        : unit.startsWith('m') ? 60_000 : 1000;
+      ms += Number(part[1]) * factor;
+    }
+    if (ms > 0) return new Date(now.getTime() + ms);
   }
 
   const at = source.match(/\b(?:resets?|try again)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
