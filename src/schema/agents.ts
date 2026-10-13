@@ -136,6 +136,8 @@ export const PresetSchema = z.object({
   cdpEndpoint: z.string().nullable().default(null),
   /** auto-launch a dedicated debuggable browser instance if none is reachable. */
   autoLaunch: z.boolean().default(false),
+  /** launch the managed instance with no window (`--headless=new`); a blocked call retries once with one. */
+  headless: z.boolean().default(false),
   /** macOS app to launch for the managed instance (e.g. "Comet", "Google Chrome"). */
   appName: z.string().default('Comet'),
   /** profile dir for the managed instance; null → ~/.agentctl/chrome-profile. */

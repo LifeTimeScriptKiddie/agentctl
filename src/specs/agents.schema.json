@@ -365,6 +365,10 @@
             "default": false,
             "type": "boolean"
           },
+          "headless": {
+            "default": false,
+            "type": "boolean"
+          },
           "appName": {
             "default": "Comet",
             "type": "string"

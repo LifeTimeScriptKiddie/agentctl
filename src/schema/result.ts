@@ -49,6 +49,8 @@ export const AdapterResultBaseSchema = z.object({
   model: z.string().nullable().default(null),
   /** rungs walked down the step-down ladder before this result (0 = first choice). */
   steppedDown: z.number().int().nonnegative().default(0),
+  /** set when the adapter fell back to another mode for this call, e.g. a headless browser retried with a window. */
+  fallback: z.string().optional(),
 });
 
 /**

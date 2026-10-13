@@ -17,6 +17,12 @@ cdpEndpoint: null
 # is reachable — so you never touch your main browser. Log into Perplexity once
 # in the managed window; the profile persists.
 autoLaunch: false
+# Run the managed instance with no window (needs autoLaunch: true; `comet setup`
+# still opens a window for the login). Headless Chrome is flagged more often by
+# Cloudflare: a call that hits a challenge page or gets no answer quits the
+# headless instance and retries once with a window, which then stays up for
+# later calls. The job's worker_result event records it as `fallback`.
+headless: false
 appName: Google Chrome
 userDataDir: null   # → ~/.agentctl/chrome-profile
 capabilities:

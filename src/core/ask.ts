@@ -35,6 +35,8 @@ export interface AskResult {
   steppedDown: number;
   /** Redacted, size-bounded native adapter output for evidence-aware verification. */
   evidence: string;
+  /** why the adapter switched mode for this call (e.g. headless browser → window), if it did. */
+  fallback?: string;
 }
 
 export function boundedEvidence(text: string, max = 48_000): string {
@@ -68,6 +70,7 @@ export async function askOne(
     model: r.model ?? null,
     steppedDown: r.steppedDown ?? 0,
     evidence: boundedEvidence(r.stdout),
+    ...(r.fallback ? { fallback: r.fallback } : {}),
   };
 }
 

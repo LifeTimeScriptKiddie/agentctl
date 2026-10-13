@@ -69,6 +69,7 @@ function workerFields(r: AskResult, cancelled = false): Record<string, unknown> 
     agent: r.agent, model: r.model, ok: r.ok, failureClass: !r.ok && cancelled ? 'cancelled' : r.failureClass,
     costUsd: r.costUsd, steppedDown: r.steppedDown,
     inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+    ...(r.fallback ? { fallback: r.fallback } : {}),
   };
 }
 

@@ -549,9 +549,10 @@ export async function cmdComet(
     io.out(`${h?.available ? '✓' : '✗'} comet — ${h?.detail ?? 'unknown'}`);
     return h?.available ? 0 : 1;
   }
-  // setup: launch the managed browser so you can log into Perplexity once
+  // setup: launch the managed browser so you can log into Perplexity once —
+  // always with a window, even when the preset runs headless.
   io.out(`launching a dedicated ${preset.appName} for agentctl — log into Perplexity in the window that opens…`);
-  const r = await launchManagedBrowser(preset);
+  const r = await launchManagedBrowser(preset, { headless: false });
   io.out(r.ok ? `✓ ${r.detail}; reachable at ${r.endpoint}` : `✗ ${r.detail}`);
   if (r.ok) io.out('your Perplexity login in that window persists; future searches reuse it.');
   return r.ok ? 0 : 1;

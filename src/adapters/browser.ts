@@ -47,8 +47,11 @@ export function defaultProfileDir(): string {
   return join(agentctlHome(), 'chrome-profile');
 }
 
+/** `--headless=new` keeps the full browser (same profile, cookies, login) with no window. */
+const HEADLESS_FLAG = '--headless=new';
+
 /** argv for `open` to launch a debuggable instance on an explicitly configured port. */
-export function buildLaunchArgs(appName: string, port: number, userDataDir: string, url: string): string[] {
+export function buildLaunchArgs(appName: string, port: number, userDataDir: string, url: string, headless = false): string[] {
   return [
     '-na',
     appName,
@@ -57,6 +60,7 @@ export function buildLaunchArgs(appName: string, port: number, userDataDir: stri
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
+    ...(headless ? [HEADLESS_FLAG] : []),
     url,
   ];
 }
@@ -81,7 +85,7 @@ export function buildLaunchArgs(appName: string, port: number, userDataDir: stri
  * Pipe launch itself works for Chrome and Comet (checked with Playwright 1.60),
  * so revisit this if the adapter owns the browser lifetime per call.
  */
-export function buildManagedLaunchArgs(appName: string, userDataDir: string, url: string): string[] {
+export function buildManagedLaunchArgs(appName: string, userDataDir: string, url: string, headless = false): string[] {
   return [
     '-na',
     appName,
@@ -91,8 +95,15 @@ export function buildManagedLaunchArgs(appName: string, userDataDir: string, url
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
+    ...(headless ? [HEADLESS_FLAG] : []),
     url,
   ];
+}
+
+/** A `/json/version` body from a headless browser: Chrome reports `HeadlessChrome/<ver>`. */
+export function isHeadlessVersion(version: unknown): boolean {
+  const v = version as { Browser?: unknown; 'User-Agent'?: unknown } | null;
+  return [v?.Browser, v?.['User-Agent']].some((s) => typeof s === 'string' && /headless/i.test(s));
 }
 
 export interface DevToolsActivePort {
@@ -192,6 +203,38 @@ async function waitForManagedEndpoint(profileDir: string, timeoutMs: number): Pr
   return last;
 }
 
+/** Whether the managed browser now answering on the profile's port runs headless. */
+async function managedIsHeadless(profileDir: string): Promise<boolean> {
+  const active = readDevToolsActivePort(profileDir);
+  if (!active) return false;
+  try {
+    const r = await fetch(`http://127.0.0.1:${active.port}/json/version`, { signal: AbortSignal.timeout(2000) });
+    return r.ok && isHeadlessVersion(await r.json());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Quit the managed browser (CDP `Browser.close`) and wait for its endpoint to
+ * go away, so a relaunch on the same profile does not hand off to the old
+ * process. Only ever called on the managed instance, never a user's browser.
+ */
+async function closeManagedBrowser(pw: any, wsEndpoint: string, profileDir: string): Promise<void> {
+  try {
+    const browser = await pw.chromium.connectOverCDP(wsEndpoint, { timeout: 3000 });
+    const session = await browser.newBrowserCDPSession();
+    await session.send('Browser.close').catch(() => {});
+    await browser.close().catch(() => {});
+  } catch {
+    /* already gone */
+  }
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && (await verifiedManagedEndpoint(profileDir)).ok) {
+    await new Promise((res) => setTimeout(res, 300));
+  }
+}
+
 /** Poll the CDP endpoint's /json/version until it responds or times out. */
 async function waitForCdp(endpoint: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -224,18 +267,25 @@ function profileDirFor(preset: Preset): string {
  * Returns whether the endpoint is reachable afterward. An explicit preset
  * `cdpEndpoint` uses that fixed port; otherwise Chrome picks the port and the
  * endpoint is verified against the profile's DevToolsActivePort file.
+ *
+ * `headless` defaults to the preset's. Asking for a window while the managed
+ * instance runs headless quits it first and relaunches it with a window (one
+ * profile can only be open once); a headless request reuses a windowed one.
  */
 export async function launchManagedBrowser(
   preset: Preset,
+  opts: { headless?: boolean } = {},
 ): Promise<{ ok: boolean; endpoint: string; detail: string; profileDir: string }> {
+  const headless = opts.headless ?? preset.headless;
   const profileDir = prepareProfileDir(preset);
   const startUrl = 'https://www.perplexity.ai/';
+  const mode = headless ? ' headless' : '';
   if (preset.cdpEndpoint) {
     const endpoint = preset.cdpEndpoint;
     if (await waitForCdp(endpoint, 1500)) {
       return { ok: true, endpoint, profileDir, detail: 'a debuggable browser is already reachable' };
     }
-    const args = buildLaunchArgs(preset.appName, parsePort(endpoint), profileDir, startUrl);
+    const args = buildLaunchArgs(preset.appName, parsePort(endpoint), profileDir, startUrl, headless);
     await run('open', args, { timeoutMs: 10000 }).catch(() => {});
     const ok = await waitForCdp(endpoint, 25000);
     return {
@@ -243,18 +293,22 @@ export async function launchManagedBrowser(
       endpoint,
       profileDir,
       detail: ok
-        ? `launched ${preset.appName} (profile ${profileDir})`
+        ? `launched${mode} ${preset.appName} (profile ${profileDir})`
         : `launched ${preset.appName} but CDP did not come up at ${endpoint}`,
     };
   }
   const existing = await verifiedManagedEndpoint(profileDir);
   if (existing.ok) {
-    return { ok: true, endpoint: existing.wsEndpoint, profileDir, detail: 'the managed browser is already running' };
+    const pw = !headless && (await managedIsHeadless(profileDir)) ? await loadPlaywright() : null;
+    if (!pw) {
+      return { ok: true, endpoint: existing.wsEndpoint, profileDir, detail: 'the managed browser is already running' };
+    }
+    await closeManagedBrowser(pw, existing.wsEndpoint, profileDir);
   }
-  await run('open', buildManagedLaunchArgs(preset.appName, profileDir, startUrl), { timeoutMs: 10000 }).catch(() => {});
+  await run('open', buildManagedLaunchArgs(preset.appName, profileDir, startUrl, headless), { timeoutMs: 10000 }).catch(() => {});
   const ready = await waitForManagedEndpoint(profileDir, 25000);
   return ready.ok
-    ? { ok: true, endpoint: ready.wsEndpoint, profileDir, detail: `launched ${preset.appName} (profile ${profileDir})` }
+    ? { ok: true, endpoint: ready.wsEndpoint, profileDir, detail: `launched${mode} ${preset.appName} (profile ${profileDir})` }
     : {
         ok: false,
         endpoint: '',
@@ -292,6 +346,30 @@ export async function extractAnswer(page: any): Promise<string> {
   // chrome and the echoed prompt. Returning '' lets the caller keep waiting and
   // ultimately fail honestly instead of shipping chrome as the answer.
   return '';
+}
+
+const CHALLENGE_TITLE = /just a moment|attention required|verify you are human|security check/i;
+const CHALLENGE_SELECTOR = 'iframe[src*="challenges.cloudflare.com"], #challenge-form, #cf-challenge-running';
+
+/** True when the page is a bot challenge (Cloudflare interstitial or Turnstile) instead of Perplexity. */
+export async function isChallengePage(page: any): Promise<boolean> {
+  try {
+    if (CHALLENGE_TITLE.test(await page.title())) return true;
+    return (await page.$(CHALLENGE_SELECTOR)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why a headless attempt should be retried once with a window, or null. A bot
+ * challenge, a missing input box or an empty answer are what headless gets
+ * wrong; a timeout, cancel or setup problem would fail the same way headed.
+ */
+export function headedRetryReason(result: AdapterResult, challenge: boolean): string | null {
+  if (result.ok) return null;
+  if (challenge) return 'bot challenge page';
+  return result.failureClass === 'parse_error' ? result.stderr : null;
 }
 
 /**
@@ -457,7 +535,11 @@ export class BrowserAdapter implements AgentAdapter {
     if (!this.preset.autoLaunch) {
       return { browser: null, reason: this.unreachableHint(target.reason) };
     }
-    const launch = await launchManagedBrowser(this.preset);
+    return this.launchAndConnect(pw);
+  }
+
+  private async launchAndConnect(pw: any, opts: { headless?: boolean } = {}): Promise<{ browser: any | null; reason: string }> {
+    const launch = await launchManagedBrowser(this.preset, opts);
     if (!launch.ok) return { browser: null, reason: launch.detail };
     try {
       return { browser: await pw.chromium.connectOverCDP(launch.endpoint, { timeout: 5000 }), reason: '' };
@@ -486,10 +568,33 @@ export class BrowserAdapter implements AgentAdapter {
     if (!conn.browser) {
       return this.notConfigured(Date.now() - start, conn.reason);
     }
-    const browser = conn.browser;
+    // Only the managed instance is ever relaunched; a fixed cdpEndpoint is the user's own browser.
+    const managed = !this.preset.cdpEndpoint;
+    const headless = managed && (await managedIsHeadless(profileDirFor(this.preset)));
+    const first = await this.attempt(conn.browser, request, start, opts);
+    const reason = headless ? headedRetryReason(first.result, first.challenge) : null;
+    if (!reason || opts.signal?.aborted) return first.result;
+
+    const fallback = `headless attempt failed (${reason}); retried with a window`;
+    const headed = await this.launchAndConnect(pw, { headless: false });
+    if (!headed.browser) {
+      return { ...first.result, fallback: `${fallback}, but the relaunch failed: ${headed.reason}` };
+    }
+    const second = await this.attempt(headed.browser, request, start, opts);
+    return { ...second.result, fallback };
+  }
+
+  /** One Perplexity round trip on an attached browser; disconnects it before returning. */
+  private async attempt(
+    browser: any,
+    request: AdapterRequest,
+    start: number,
+    opts: InvokeOptions,
+  ): Promise<{ result: AdapterResult; challenge: boolean }> {
     const abort = () => { void browser.close().catch(() => {}); };
     opts.signal?.addEventListener('abort', abort, { once: true });
     if (opts.signal?.aborted) abort();
+    const done = (result: AdapterResult, challenge = false) => ({ result, challenge });
 
     try {
       // Always open a FRESH page so we never scrape a stale answer from an
@@ -501,12 +606,16 @@ export class BrowserAdapter implements AgentAdapter {
 
       const input = await firstVisible(page, INPUT_SELECTORS, 15000);
       if (!input) {
+        const challenge = await isChallengePage(page);
+        await page.close().catch(() => {});
         await browser.close().catch(() => {});
-        return failResult({
+        return done(failResult({
           adapter: this.name, transport: this.transport, failureClass: 'parse_error',
           durationMs: Date.now() - start,
-          reason: 'could not find the Perplexity input box (DOM may have changed, or an auth wall is showing)',
-        });
+          reason: challenge
+            ? 'a bot challenge page is showing instead of Perplexity'
+            : 'could not find the Perplexity input box (DOM may have changed, or an auth wall is showing)',
+        }), challenge);
       }
 
       await input.click();
@@ -523,6 +632,7 @@ export class BrowserAdapter implements AgentAdapter {
 
       const remaining = Math.max(5000, request.timeoutSeconds * 1000 - (Date.now() - start));
       const answer = await waitForAnswer(page, remaining);
+      const challenge = !answer.text && (await isChallengePage(page));
 
       let dir: string | undefined;
       if (process.env.AGENTCTL_CAPTURE_EVIDENCE === '1') {
@@ -535,30 +645,30 @@ export class BrowserAdapter implements AgentAdapter {
       await browser.close().catch(() => {});
 
       if (!answer.text) {
-        return failResult({
+        return done(failResult({
           adapter: this.name, transport: this.transport, failureClass: 'parse_error',
           durationMs: Date.now() - start, reason: 'no answer text captured', rawPath: dir,
-        });
+        }), challenge);
       }
       if (answer.partial) {
-        return failResult({
+        return done(failResult({
           adapter: this.name, transport: this.transport, failureClass: 'timeout',
           durationMs: Date.now() - start,
           reason: 'answer did not stabilize before timeout', rawPath: dir,
-        });
+        }));
       }
       // Only the persisted evidence copy is redacted (captureEvidence); callers get the answer as captured.
-      return okResult({
+      return done(okResult({
         adapter: this.name, transport: this.transport,
         normalizedText: answer.text, durationMs: Date.now() - start, rawPath: dir,
-      });
+      }));
     } catch (e) {
       await browser.close().catch(() => {});
-      return failResult({
+      return done(failResult({
         adapter: this.name, transport: this.transport, failureClass: 'transport_error',
         durationMs: Date.now() - start,
         reason: opts.signal?.aborted ? 'cancelled' : e instanceof Error ? e.message : String(e),
-      });
+      }));
     } finally {
       opts.signal?.removeEventListener('abort', abort);
     }

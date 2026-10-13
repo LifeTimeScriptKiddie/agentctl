@@ -8,7 +8,9 @@ import {
   BrowserAdapter, buildLaunchArgs, buildManagedLaunchArgs, parsePort, defaultProfileDir,
   parseDevToolsActivePort, matchDevToolsVersion, verifiedManagedEndpoint,
   parseLsofUids, checkDevToolsListenerOwner, evidenceDir, captureEvidence,
+  isHeadlessVersion, headedRetryReason, isChallengePage,
 } from '../src/adapters/browser.js';
+import { okResult, failResult } from '../src/adapters/protocol.js';
 import { loadPreset } from '../src/assets.js';
 import { PresetSchema } from '../src/schema/agents.js';
 import type { AdapterRequest } from '../src/schema/index.js';
@@ -120,6 +122,54 @@ describe('managed-launch helpers', () => {
 
   it('ships the comet preset without a fixed CDP port', () => {
     expect(PresetSchema.parse(loadPreset('comet')).cdpEndpoint).toBeNull();
+  });
+
+  it('adds --headless=new before the URL only when asked', () => {
+    const managed = buildManagedLaunchArgs('Google Chrome', '/tmp/profile', 'https://www.perplexity.ai/', true);
+    expect(managed.slice(-2)).toEqual(['--headless=new', 'https://www.perplexity.ai/']);
+    expect(buildLaunchArgs('Comet', 9222, '/tmp/profile', 'https://x/', true).slice(-2)).toEqual(['--headless=new', 'https://x/']);
+    expect(buildManagedLaunchArgs('Google Chrome', '/tmp/profile', 'https://x/')).not.toContain('--headless=new');
+  });
+
+  it('ships the comet preset with a window by default', () => {
+    expect(PresetSchema.parse(loadPreset('comet')).headless).toBe(false);
+    expect(PresetSchema.parse({ name: 'x', family: 'browser', transport: 'browser' }).headless).toBe(false);
+  });
+
+  it('tells a headless browser from its /json/version', () => {
+    expect(isHeadlessVersion({ Browser: 'HeadlessChrome/141.0.7390.0' })).toBe(true);
+    expect(isHeadlessVersion({ 'User-Agent': 'Mozilla/5.0 HeadlessChrome/141.0' })).toBe(true);
+    expect(isHeadlessVersion({ Browser: 'Chrome/141.0.7390.0', 'User-Agent': 'Mozilla/5.0 Chrome/141.0' })).toBe(false);
+    expect(isHeadlessVersion(null)).toBe(false);
+  });
+});
+
+describe('headless → headed retry', () => {
+  const ok = okResult({ adapter: 'comet', transport: 'browser', normalizedText: 'answer', durationMs: 1 });
+  const fail = (failureClass: 'parse_error' | 'timeout' | 'transport_error', reason: string) =>
+    failResult({ adapter: 'comet', transport: 'browser', failureClass, durationMs: 1, reason });
+
+  it('retries a challenge page, a missing input box or an empty answer', () => {
+    expect(headedRetryReason(fail('parse_error', 'could not find the input'), true)).toBe('bot challenge page');
+    expect(headedRetryReason(fail('parse_error', 'no answer text captured'), false)).toBe('no answer text captured');
+  });
+
+  it('does not retry a success, a timeout or a transport error', () => {
+    expect(headedRetryReason(ok, true)).toBeNull();
+    expect(headedRetryReason(fail('timeout', 'answer did not stabilize'), false)).toBeNull();
+    expect(headedRetryReason(fail('transport_error', 'cancelled'), false)).toBeNull();
+  });
+
+  const fakePage = (title: string, challengeEl: boolean) => ({
+    title: async () => title,
+    $: async (sel: string) => (challengeEl && sel.includes('challenges.cloudflare.com') ? {} : null),
+  });
+
+  it('spots Cloudflare interstitials by title or challenge frame', async () => {
+    expect(await isChallengePage(fakePage('Just a moment...', false))).toBe(true);
+    expect(await isChallengePage(fakePage('Perplexity', true))).toBe(true);
+    expect(await isChallengePage(fakePage('Perplexity', false))).toBe(false);
+    expect(await isChallengePage({ title: async () => { throw new Error('closed'); } })).toBe(false);
   });
 });
 
