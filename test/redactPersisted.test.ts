@@ -62,10 +62,10 @@ describe('redact patterns', () => {
   });
 
   it('redacts URL credentials but keeps the host', () => {
-    expect(redact('git clone https://alice:pa55w0rd@github.com/org/repo.git')).toBe(
-      'git clone https://[REDACTED]@github.com/org/repo.git',
+    expect(redact('git clone https://alice:pa55w0rd@example.com/org/repo.git')).toBe(
+      'git clone https://[REDACTED]@example.com/org/repo.git',
     );
-    expect(redact('postgres://svc:pw@db.internal:5432/app')).toBe('postgres://[REDACTED]@db.internal:5432/app');
+    expect(redact('postgres://svc:pw@example.com:5432/app')).toBe('postgres://[REDACTED]@example.com:5432/app');
     expect(redact('http://localhost:8080/path@x')).toBe('http://localhost:8080/path@x');
   });
 
@@ -74,12 +74,12 @@ describe('redact patterns', () => {
       a: 'password=abcdefgh"def',
       b: 'line\npassword=xyzxyzxyz\\',
       c: '-----BEGIN EC PRIVATE KEY-----\nAAA\n-----END EC PRIVATE KEY-----',
-      d: 'https://u:p@h.test/',
+      d: 'https://u:p@example.com/',
     };
     const parsed = JSON.parse(redact(JSON.stringify(value))) as Record<string, string>;
     expect(parsed.a).toBe('password=[REDACTED]"def');
     expect(parsed.c).toBe('[REDACTED]');
-    expect(parsed.d).toBe('https://[REDACTED]@h.test/');
+    expect(parsed.d).toBe('https://[REDACTED]@example.com/');
   });
 
   it('redactDeep scrubs nested strings and leaves other values alone', () => {
@@ -110,14 +110,14 @@ describe('persisted state is redacted', () => {
 
   it('appendSessionExchange redacts the prompt and the answer', () => {
     const result: AskResult = {
-      agent: 'codex', ok: true, text: `done; used https://bot:tok@git.example/repo`, failureClass: 'none',
+      agent: 'codex', ok: true, text: `done; used https://bot:tok@example.com/repo`, failureClass: 'none',
       sessionId: null, costUsd: null, usage: NULL_USAGE, model: null, steppedDown: 0, evidence: '',
     };
     const prompt = `use token ${GH} to open the PR`;
     const rec = appendSessionExchange(newSession(1, 's'), prompt, 'codex', result);
     expect(rec.transcript.map(t => t.text)).toEqual([
       'use token [REDACTED] to open the PR',
-      'done; used https://[REDACTED]@git.example/repo',
+      'done; used https://[REDACTED]@example.com/repo',
     ]);
     // Replaying the same prompt is still recognized as the same exchange.
     expect(appendSessionExchange(rec, prompt, 'codex', result)).toBe(rec);
@@ -142,7 +142,7 @@ describe('persisted state is redacted', () => {
       ...newSession(1, 'chat-1'),
       transcript: [
         { role: 'user' as const, agent: null, text: `my token is ${GH}` },
-        { role: 'assistant' as const, agent: 'codex', text: 'cloned https://bot:hunter2@git.example/r' },
+        { role: 'assistant' as const, agent: 'codex', text: 'cloned https://bot:hunter2@example.com/r' },
       ],
     };
     saveSession(rec, 2);
@@ -151,7 +151,7 @@ describe('persisted state is redacted', () => {
     expect(onDisk).not.toContain('hunter2');
     expect(loadSession('chat-1')?.transcript.map(t => t.text)).toEqual([
       'my token is [REDACTED]',
-      'cloned https://[REDACTED]@git.example/r',
+      'cloned https://[REDACTED]@example.com/r',
     ]);
     expect(rec.transcript[0]!.text).toBe(`my token is ${GH}`);
   });

@@ -35,7 +35,7 @@ describe('scoped session resume', () => {
   });
 
   it('derives a valid, distinct scope from very long directory paths', () => {
-    const deep = `/Users/x/${'nested-directory/'.repeat(20)}`;
+    const deep = `/work/x/${'nested-directory/'.repeat(20)}`;
     const a = directorySessionScope(`${deep}a`);
     const b = directorySessionScope(`${deep}b`);
     expect(a.length).toBeLessThanOrEqual(200);

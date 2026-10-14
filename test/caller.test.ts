@@ -20,8 +20,8 @@ describe('caller detection', () => {
 
   it('an agentctl dispatch ancestor means nested; the MCP server itself does not', () => {
     expect(isAgentctlDispatch('node /opt/homebrew/bin/agentctl ask --to codex --model x')).toBe(true);
-    expect(isAgentctlDispatch('/opt/homebrew/bin/node /Users/u/code/agentctl/current/dist/cli.js orchestrate "g"')).toBe(true);
-    expect(isAgentctlDispatch('/opt/homebrew/bin/node /Users/u/code/agentctl/current/dist/cli.js mcp --caller codex')).toBe(false);
+    expect(isAgentctlDispatch('/opt/homebrew/bin/node /opt/agentctl/current/dist/cli.js orchestrate "g"')).toBe(true);
+    expect(isAgentctlDispatch('/opt/homebrew/bin/node /opt/agentctl/current/dist/cli.js mcp --caller codex')).toBe(false);
   });
 
   it('the 2026-09-24 case: Codex sandbox, network off, nested codex MCP server', () => {

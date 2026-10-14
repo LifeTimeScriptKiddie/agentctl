@@ -26,7 +26,7 @@ const noLaunch = () => null;
 
 describe('job store', () => {
   it('creates private job files with a validated id and a redacted summary', () => {
-    const job = createJob({ kind: 'delegate', input: { kind: 'delegate', task: 't' }, summary: 'use token ghp_abcdefghijklmnopqrstuvwxyz0123 now' });
+    const job = createJob({ kind: 'delegate', input: { kind: 'delegate', task: 't' }, summary: `use token ghp_${'a'.repeat(36)} now` });
     expect(isJobId(job.id)).toBe(true);
     expect(job.status).toBe('queued');
     expect(job.summary).toContain('[REDACTED]');

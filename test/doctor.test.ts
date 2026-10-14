@@ -44,7 +44,7 @@ describe('doctor', () => {
   });
 
   it('finds the agentctl build an MCP config points at', () => {
-    expect(agentctlPathIn('args = ["/Users/u/code/agentctl/current/dist/cli.js", "mcp"]')).toBe('/Users/u/code/agentctl/current/dist/cli.js');
+    expect(agentctlPathIn('args = ["/opt/agentctl/current/dist/cli.js", "mcp"]')).toBe('/opt/agentctl/current/dist/cli.js');
     expect(agentctlPathIn('{"mcpServers":{}}')).toBeNull();
   });
 

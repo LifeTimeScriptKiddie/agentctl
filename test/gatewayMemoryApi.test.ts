@@ -102,7 +102,7 @@ describe('gateway memory HTTP client', () => {
     await getGatewayReview('https://memory.example.com', 'w');
     expect(stderr).not.toHaveBeenCalled();
     await getGatewayReview('http://memory.example.com', 'w');
-    await postGatewayWrite('http://10.0.0.5:8741', { mode: 'propose' });
+    await postGatewayWrite('http://gw.example.com:8741', { mode: 'propose' });
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(String(stderr.mock.calls[0]?.[0])).toContain('http://memory.example.com');
   });
